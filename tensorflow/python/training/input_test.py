@@ -14,21 +14,19 @@
 # ==============================================================================
 """Tests for training.input."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import itertools
 import os
 
 import numpy as np
-from six.moves import xrange  # pylint: disable=redefined-builtin
 
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors_impl
+from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import test as test_lib
@@ -39,6 +37,8 @@ from tensorflow.python.training import queue_runner_impl
 from tensorflow.python.util import compat
 
 
+# Queue-based input pipelines are not supported when eager execution is enabled.
+# Please use tf.data instead in TF2.
 class MatchFilenamesOnceTest(test_lib.TestCase):
 
   def test(self):
@@ -51,44 +51,47 @@ class MatchFilenamesOnceTest(test_lib.TestCase):
     for name in additional:
       open(name, "w").write("Some contents")
     filenames = list(set(filenames + additional))
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       star = inp.match_filenames_once(os.path.join(self.get_temp_dir(), "*"))
       question = inp.match_filenames_once(
           os.path.join(self.get_temp_dir(), "match_filenames.?"))
       one = inp.match_filenames_once(additional[1])
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
-      self.assertItemsEqual(map(compat.as_bytes, filenames), star.eval())
-      self.assertItemsEqual(map(compat.as_bytes, additional), question.eval())
-      self.assertItemsEqual([compat.as_bytes(additional[1])], one.eval())
+      self.assertItemsEqual(
+          map(compat.as_bytes, filenames), self.evaluate(star))
+      self.assertItemsEqual(
+          map(compat.as_bytes, additional), self.evaluate(question))
+      self.assertItemsEqual([compat.as_bytes(additional[1])],
+                            self.evaluate(one))
 
 
 class LimitEpochsTest(test_lib.TestCase):
 
   def testNoLimit(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       seven = constant_op.constant(7)
       seven_forever = inp.limit_epochs(seven)
       variables.local_variables_initializer().run()
       for _ in range(100):
-        self.assertEqual(7, seven_forever.eval())
+        self.assertEqual(7, self.evaluate(seven_forever))
 
   def testLimit(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       love_me = constant_op.constant("Love Me")
       love_me_two_times = inp.limit_epochs(love_me, num_epochs=2)
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
-      self.assertEqual(b"Love Me", love_me_two_times.eval())
-      self.assertEqual(b"Love Me", love_me_two_times.eval())
+      self.assertEqual(b"Love Me", self.evaluate(love_me_two_times))
+      self.assertEqual(b"Love Me", self.evaluate(love_me_two_times))
       with self.assertRaises(errors_impl.OutOfRangeError):
-        love_me_two_times.eval()
+        self.evaluate(love_me_two_times)
 
 
 class InputProducerTest(test_lib.TestCase):
 
   def testNoShuffle(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       input_tensor = [[1, 2, 3, 4],
                       [5, 6, 7, 8],
                       [9, 10, 11, 12]]
@@ -97,21 +100,22 @@ class InputProducerTest(test_lib.TestCase):
           input_tensor, num_epochs=num_epochs, shuffle=False)
       dequeue_many = queue.dequeue_many(len(input_tensor) * num_epochs)
       dequeue = queue.dequeue()
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       # No randomness, so just see repeated copies of the input.
-      self.assertAllEqual(input_tensor * num_epochs, dequeue_many.eval())
+      self.assertAllEqual(input_tensor * num_epochs,
+                          self.evaluate(dequeue_many))
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        dequeue.eval()
+        self.evaluate(dequeue)
       for thread in threads:
         thread.join()
 
   def testNoShapeInference(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       # Disable shape inference for the input.
       input_value = [[1, 2, 3, 4],
                      [5, 6, 7, 8],
@@ -122,58 +126,59 @@ class InputProducerTest(test_lib.TestCase):
           input_tensor, element_shape=[4], num_epochs=num_epochs, shuffle=False)
       dequeue_many = queue.dequeue_many(len(input_value) * num_epochs)
       dequeue = queue.dequeue()
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       # No randomness, so just see repeated copies of the input.
-      self.assertAllEqual(input_value * num_epochs, dequeue_many.eval())
+      self.assertAllEqual(input_value * num_epochs, self.evaluate(dequeue_many))
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        dequeue.eval()
+        self.evaluate(dequeue)
       for thread in threads:
         thread.join()
 
   def testShapeError(self):
-    input_tensor = array_ops.placeholder(dtypes.float32, None)
-    with self.assertRaisesRegexp(ValueError, "fully defined shape"):
-      _ = inp.input_producer(input_tensor)
+    with ops.Graph().as_default():
+      input_tensor = array_ops.placeholder(dtypes.float32, None)
+      with self.assertRaisesRegex(ValueError, "fully defined shape"):
+        _ = inp.input_producer(input_tensor)
 
 
 class StringInputProducerTest(test_lib.TestCase):
 
   def testNoShuffle(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       strings = [b"to", b"be", b"or", b"not", b"to", b"be"]
       num_epochs = 3
       queue = inp.string_input_producer(
           strings, num_epochs=num_epochs, shuffle=False)
       dequeue_many = queue.dequeue_many(len(strings) * num_epochs)
       dequeue = queue.dequeue()
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       # No randomness, so just see repeated copies of the input.
-      output = dequeue_many.eval()
+      output = self.evaluate(dequeue_many)
       self.assertAllEqual(strings * num_epochs, output)
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        dequeue.eval()
+        self.evaluate(dequeue)
       for thread in threads:
         thread.join()
 
   def testShuffle(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       strings = [b"a", b"b", b"c"]
       num_epochs = 600
       queue = inp.string_input_producer(
           strings, num_epochs=num_epochs, shuffle=True, seed=271828)
       dequeue_many = queue.dequeue_many(len(strings))
       dequeue = queue.dequeue()
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
@@ -184,7 +189,7 @@ class StringInputProducerTest(test_lib.TestCase):
       for e in expected:
         frequency[e] = 0
       for _ in range(num_epochs):
-        output = dequeue_many.eval()
+        output = self.evaluate(dequeue_many)
         key = b"".join(output)
         self.assertIn(key, expected)
         frequency[key] += 1
@@ -200,13 +205,13 @@ class StringInputProducerTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        dequeue.eval()
+        self.evaluate(dequeue)
       for thread in threads:
         thread.join()
 
   def testNullStringPython(self):
     # Graph-construction time check for empty string list:
-    with self.test_session():
+    with self.cached_session():
       with self.assertRaises(ValueError):
         _ = inp.string_input_producer([])
 
@@ -214,23 +219,23 @@ class StringInputProducerTest(test_lib.TestCase):
     # Runtime check for empty string list.  This is slightly oblique:
     # The queue runner should die with an assertion error on the null
     # input tensor, causing the dequeue to fail with an OutOfRangeError.
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       coord = coordinator.Coordinator()
       queue = inp.string_input_producer(
           constant_op.constant(
               [], dtype=dtypes.string))
       dequeue = queue.dequeue()
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners(coord=coord)
       with self.assertRaises(errors_impl.OutOfRangeError):
-        dequeue.eval()
+        self.evaluate(dequeue)
       coord.request_stop()
       for thread in threads:
         thread.join()
 
   def testSharedName(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       strings = [b"to", b"be", b"or", b"not", b"to", b"be"]
       queue = inp.string_input_producer(
           strings, shared_name="SHARED_NAME_XYZ", name="Q")
@@ -238,7 +243,7 @@ class StringInputProducerTest(test_lib.TestCase):
                              queue.queue_ref.op.node_def.attr["shared_name"])
 
   def testConstructionRace(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       strings = [b"to", b"be", b"or", b"not", b"to", b"be"]
       queue = inp.string_input_producer(strings, shuffle=False)
       coord = coordinator.Coordinator()
@@ -252,7 +257,7 @@ class StringInputProducerTest(test_lib.TestCase):
           # writing of the `tf.Graph` object. However, many users
           # write code this way, so we include this test to ensure
           # that we can support it.
-          self.assertEquals(string, sess.run(queue.dequeue()))
+          self.assertEqual(string, self.evaluate(queue.dequeue()))
       coord.request_stop()
       coord.join(threads)
 
@@ -260,36 +265,36 @@ class StringInputProducerTest(test_lib.TestCase):
 class RangeInputProducerTest(test_lib.TestCase):
 
   def testNoShuffle(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       num_epochs = 3
       range_size = 5
       queue = inp.range_input_producer(
           range_size, num_epochs=num_epochs, shuffle=False)
       dequeue_many = queue.dequeue_many(range_size * num_epochs)
       dequeue = queue.dequeue()
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       # No randomness, so just see repeated copies of the input.
-      output = dequeue_many.eval()
-      self.assertAllEqual(list(xrange(range_size)) * num_epochs, output)
+      output = self.evaluate(dequeue_many)
+      self.assertAllEqual(list(range(range_size)) * num_epochs, output)
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        dequeue.eval()
+        self.evaluate(dequeue)
       for thread in threads:
         thread.join()
 
   def testShuffle(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       num_epochs = 200
       range_size = 2
       queue = inp.range_input_producer(
           range_size, num_epochs=num_epochs, shuffle=True, seed=314159)
       dequeue_many = queue.dequeue_many(range_size)
       dequeue = queue.dequeue()
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
@@ -300,7 +305,7 @@ class RangeInputProducerTest(test_lib.TestCase):
       for e in expected:
         frequency[e] = 0
       for _ in range(num_epochs):
-        output = dequeue_many.eval()
+        output = self.evaluate(dequeue_many)
         key = 10 * (output[0] + 1) + (output[1] + 1)
         self.assertIn(key, expected)
         frequency[key] += 1
@@ -316,12 +321,12 @@ class RangeInputProducerTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        dequeue.eval()
+        self.evaluate(dequeue)
       for thread in threads:
         thread.join()
 
   def testSharedName(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       range_size = 5
       queue = inp.range_input_producer(
           range_size, shared_name="SHARED_NAME_XYZ", name="Q")
@@ -332,31 +337,31 @@ class RangeInputProducerTest(test_lib.TestCase):
 class SliceInputProducerTest(test_lib.TestCase):
 
   def testNoShuffle(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       num_epochs = 3
       source_strings = [b"Alpha", b"Beta", b"Delta", b"Gamma"]
       source_ints = [2, 3, 5, 7]
       slices = inp.slice_input_producer(
           [source_strings, source_ints], num_epochs=num_epochs, shuffle=False)
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       # No randomness, so just see repeated copies of the input.
       num_items = len(source_strings) * num_epochs
-      output = [sess.run(slices) for _ in range(num_items)]
+      output = [self.evaluate(slices) for _ in range(num_items)]
       out_strings, out_ints = zip(*output)
       self.assertAllEqual(source_strings * num_epochs, out_strings)
       self.assertAllEqual(source_ints * num_epochs, out_ints)
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(slices)
+        self.evaluate(slices)
       for thread in threads:
         thread.join()
 
   def testShuffle(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       num_epochs = 1200
       source_strings = ["A", "B", "D", "G"]
       source_ints = [7, 3, 5, 2]
@@ -365,7 +370,7 @@ class SliceInputProducerTest(test_lib.TestCase):
           num_epochs=num_epochs,
           shuffle=True,
           seed=161803)
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
@@ -379,8 +384,8 @@ class SliceInputProducerTest(test_lib.TestCase):
       for e in expected:
         frequency[e] = 0
       for _ in range(num_epochs):
-        output = [sess.run(slices) for _ in range(len(source_strings))]
-        key = b",".join([s + compat.as_bytes(str(i)) for s, i in output])
+        output = [self.evaluate(slices) for _ in range(len(source_strings))]
+        key = b",".join(s + compat.as_bytes(str(i)) for s, i in output)
         self.assertIn(key, expected)
         frequency[key] += 1
 
@@ -395,12 +400,12 @@ class SliceInputProducerTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(slices)
+        self.evaluate(slices)
       for thread in threads:
         thread.join()
 
   def testSharedName(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       source_strings = ["A", "B", "D", "G"]
       source_ints = [7, 3, 5, 2]
       slices = inp.slice_input_producer(
@@ -418,29 +423,29 @@ class DictHelperTest(test_lib.TestCase):
   def testListInputs(self):
     l = [1, 2, 3, 11, 22, 33]
     l2 = inp._as_tensor_list(l)
-    self.assertEquals(l, l2)
+    self.assertEqual(l, l2)
     l3 = inp._as_original_type(l, l2)
-    self.assertEquals(l, l3)
+    self.assertEqual(l, l3)
 
   def testDictInputs(self):
     d = {"a": 1, "b": 2, "c": 3, "aa": 11, "bb": 22, "cc": 33}
     l = inp._as_tensor_list(d)
-    self.assertEquals([1, 11, 2, 22, 3, 33], l)
+    self.assertEqual([1, 11, 2, 22, 3, 33], l)
     d2 = inp._as_original_type(d, l)
-    self.assertEquals(d, d2)
+    self.assertEqual(d, d2)
 
   def testHeterogeneousKeysDictInputs(self):
     d = {"z": 1, 1: 42, ("a", "b"): 100}
     l = inp._as_tensor_list(d)
-    self.assertEquals([100, 42, 1], l)
+    self.assertEqual([100, 42, 1], l)
     d2 = inp._as_original_type(d, l)
-    self.assertEquals(d, d2)
+    self.assertEqual(d, d2)
 
 
 class BatchTest(test_lib.TestCase):
 
   def _testOneThreadHelper(self, use_dict):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -448,9 +453,9 @@ class BatchTest(test_lib.TestCase):
       counter = examples.count_up_to(num_batches * batch_size)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(
-              array_ops.stack([zero64, zero64 + 1]), [2, 1]),
+              array_ops_stack.stack([zero64, zero64 + 1]), [2, 1]),
           values=math_ops.cast(
-              array_ops.stack([counter, -counter]), dtypes.float32),
+              array_ops_stack.stack([counter, -counter]), dtypes.float32),
           dense_shape=[2])
       if use_dict:
         batched = inp.batch(
@@ -465,12 +470,12 @@ class BatchTest(test_lib.TestCase):
         batched = inp.batch(
             [counter, sparse_counter, "string"], batch_size=batch_size)
         batched_fetch = batched
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       for i in range(num_batches):
-        results = sess.run(batched_fetch)
+        results = self.evaluate(batched_fetch)
         self.assertAllEqual(results[0],
                             np.arange(i * batch_size, (i + 1) * batch_size))
         self.assertAllEqual(
@@ -487,7 +492,7 @@ class BatchTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched_fetch)
+        self.evaluate(batched_fetch)
       for thread in threads:
         thread.join()
 
@@ -497,23 +502,48 @@ class BatchTest(test_lib.TestCase):
   def testOneThreadDict(self):
     self._testOneThreadHelper(use_dict=True)
 
+  def testUint32DataTypes(self):
+    with ops.Graph().as_default():
+      values = constant_op.constant([0, 1, 2, 3, 4, 5], dtype=dtypes.uint32)
+      batched = inp.batch([values], batch_size=2)
+      with self.cached_session() as sess:
+        coord = coordinator.Coordinator()
+        threads = queue_runner_impl.start_queue_runners(sess=sess, coord=coord)
+        self.evaluate(batched)
+        coord.request_stop()
+        for thread in threads:
+          thread.join()
+
+  def testUint64DataTypes(self):
+    with ops.Graph().as_default():
+      values = constant_op.constant([0, 1, 2, 3, 4, 5], dtype=dtypes.uint64)
+      batched = inp.batch([values], batch_size=2)
+      with self.cached_session() as sess:
+        coord = coordinator.Coordinator()
+        threads = queue_runner_impl.start_queue_runners(sess=sess, coord=coord)
+        self.evaluate(batched)
+        coord.request_stop()
+        for thread in threads:
+          thread.join()
+
   def testOneThreadDynamicPad(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
       examples = variables.Variable(zero64)
       counter = examples.count_up_to(num_batches * batch_size)
       string = array_ops.tile(["string"],
-                              math_ops.to_int32(array_ops.stack([counter])))
-      variables.global_variables_initializer().run()
+                              math_ops.cast(array_ops_stack.stack([counter]),
+                                            dtypes.int32))
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       batched = inp.batch(
           [counter, string], batch_size=batch_size, dynamic_pad=True)
       threads = queue_runner_impl.start_queue_runners()
 
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         expected_results = np.arange(i * batch_size, (i + 1) * batch_size)
         max_len = expected_results[-1]
         self.assertAllEqual(results[0], expected_results)
@@ -523,12 +553,12 @@ class BatchTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
   def testOneThreadEnqueueMany(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -536,16 +566,17 @@ class BatchTest(test_lib.TestCase):
       counter = examples.count_up_to(num_batches * batch_size)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       pre_batched = inp.batch([counter, sparse_counter, "string"], batch_size=2)
       batched = inp.batch(pre_batched, enqueue_many=True, batch_size=batch_size)
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         self.assertAllEqual(results[0],
                             np.arange(i * batch_size, (i + 1) * batch_size))
         self.assertAllEqual(
@@ -558,12 +589,12 @@ class BatchTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
   def testManyThreads(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -572,19 +603,20 @@ class BatchTest(test_lib.TestCase):
       counter = examples.count_up_to(num_batches * batch_size)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       batched = inp.batch(
           [counter, sparse_counter, "string"],
           batch_size=batch_size,
           num_threads=4)
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       all_counts = []
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         tf_logging.info("Batch %d: %s", i, results[0])
         self.assertEqual(len(results[0]), batch_size)
         self.assertAllEqual(results[0], results[1].values)
@@ -598,12 +630,12 @@ class BatchTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
   def testOneThreadSmallerBatch(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       extra_elements = 5
@@ -612,20 +644,20 @@ class BatchTest(test_lib.TestCase):
       counter = examples.count_up_to(num_batches * batch_size + extra_elements)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(
-              array_ops.stack([zero64, zero64 + 1]), [2, 1]),
+              array_ops_stack.stack([zero64, zero64 + 1]), [2, 1]),
           values=math_ops.cast(
-              array_ops.stack([counter, -counter]), dtypes.float32),
+              array_ops_stack.stack([counter, -counter]), dtypes.float32),
           dense_shape=[2])
       batched = inp.batch(
           [counter, sparse_counter, "string"],
           batch_size=batch_size,
           allow_smaller_final_batch=True)
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         self.assertAllEqual(results[0],
                             np.arange(i * batch_size, (i + 1) * batch_size))
         self.assertAllEqual(
@@ -641,7 +673,7 @@ class BatchTest(test_lib.TestCase):
         self.assertAllEqual(results[2], [b"string"] * batch_size)
 
       # Reached the final batch with extra_elements.
-      results = sess.run(batched)
+      results = self.evaluate(batched)
       self.assertAllEqual(results[0],
                           np.arange(num_batches * batch_size,
                                     num_batches * batch_size + extra_elements))
@@ -655,12 +687,12 @@ class BatchTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
   def testManyThreadsSmallerBatch(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       extra_elements = 5
@@ -670,20 +702,21 @@ class BatchTest(test_lib.TestCase):
       counter = examples.count_up_to(num_batches * batch_size + extra_elements)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       batched = inp.batch(
           [counter, sparse_counter, "string"],
           batch_size=batch_size,
           num_threads=4,
           allow_smaller_final_batch=True)
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       all_counts = []
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         tf_logging.info("Batch %d: %s", i, results[0])
         self.assertEqual(len(results[0]), batch_size)
         self.assertAllEqual(results[0], results[1].values)
@@ -695,7 +728,7 @@ class BatchTest(test_lib.TestCase):
         self.assertAllEqual(results[2], [b"string"] * batch_size)
 
       # Reached the final batch with extra_elements.
-      results = sess.run(batched)
+      results = self.evaluate(batched)
       tf_logging.info("Last Batch: %s", results[0])
       self.assertEqual(len(results[0]), extra_elements)
       self.assertAllEqual(results[0], results[1].values)
@@ -710,12 +743,12 @@ class BatchTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
   def testSharedName(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -732,50 +765,55 @@ class BatchTest(test_lib.TestCase):
           batched[0].op.inputs[0].op.node_def.attr["shared_name"])
 
   def testCannotInferRankError(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       x = array_ops.placeholder(dtype=dtypes.int64)
-      with self.assertRaisesRegexp(ValueError, "Cannot infer Tensor's rank"):
+      with self.assertRaisesRegex(ValueError, "Cannot infer Tensor's rank"):
         inp.batch([x], batch_size=2)
 
   def testBatchedSparseTensorInferredShape(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0]], values=[1.0], dense_shape=[1])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.batch([sparse], batch_size=2)
-    self.assertAllEqual((2,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0]], values=[1.0], dense_shape=[1])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.batch([sparse], batch_size=2)
+      self.assertAllEqual((2,), batched.dense_shape.get_shape().as_list())
 
   def testBatchedSparseTensorInferredShapeEnqueueMany(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0]], values=[1.0], dense_shape=[1])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.batch([sparse], batch_size=2, enqueue_many=True)
-    self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0]], values=[1.0], dense_shape=[1])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.batch([sparse], batch_size=2, enqueue_many=True)
+      self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
 
   def testBatchedSparseTensorInferredShapeUnknownRank(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.batch([sparse], batch_size=2)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.batch([sparse], batch_size=2)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testBatchedSparseTensorInferredShapeUnknownRankEnqueueMany(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.batch([sparse], batch_size=2, enqueue_many=True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.batch([sparse], batch_size=2, enqueue_many=True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testSingleElementDict(self):
-    x = inp.batch({"c": [12, 12]}, batch_size=8)
-    self.assertAllEqual((8, 2), x["c"].get_shape().as_list())
+    with ops.Graph().as_default():
+      x = inp.batch({"c": [12, 12]}, batch_size=8)
+      self.assertAllEqual((8, 2), x["c"].get_shape().as_list())
 
   def _testKeepInputHelper(self, num_threads, enqueue_many,
                            keep_input_vector=False):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 5
       num_batches = 4
       examples = variables.Variable(0)
@@ -783,7 +821,8 @@ class BatchTest(test_lib.TestCase):
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.zeros(
               [1, 1], dtype=dtypes.int64),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       to_batch = [counter, sparse_counter, "string"]
       if enqueue_many:
@@ -801,26 +840,38 @@ class BatchTest(test_lib.TestCase):
       threads = queue_runner_impl.start_queue_runners()
 
       for _ in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         self.assertAllEqual([0] * batch_size, np.mod(results[0], 2))
         self.assertAllEqual([0] * batch_size, np.mod(results[1].values, 2))
         self.assertAllEqual([b"string"] * batch_size, results[2])
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testSingleThreadKeepInput(self):
     self._testKeepInputHelper(1, False)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testSingleThreadKeepInputEnqueueMany(self):
     self._testKeepInputHelper(1, True)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testMultipleThreadKeepInput(self):
     self._testKeepInputHelper(5, False)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testMultipleThreadKeepInputEnqueueMany(self):
     self._testKeepInputHelper(5, True)
 
@@ -831,106 +882,125 @@ class BatchTest(test_lib.TestCase):
     self._testKeepInputHelper(5, True, keep_input_vector=True)
 
   def testInvalidKeepInputVector(self):
-    # Can't have vector `keep_input` with `enqueue_many=False`.
-    with self.assertRaisesRegexp(ValueError, "`keep_input` cannot be a vector"):
-      inp.maybe_batch([array_ops.zeros(5)],
-                      keep_input=constant_op.constant([True, False]),
-                      batch_size=1,
-                      enqueue_many=False)
-    # Can't have `keep_input` with more than one dimension.
-    with self.assertRaisesRegexp(ValueError, "must be 0 or 1 dimensions"):
-      inp.maybe_batch([array_ops.zeros(5)],
-                      keep_input=constant_op.constant([[True], [False]]),
-                      batch_size=1,
-                      enqueue_many=True)
-    # `keep_input` must have dimensions determined at graph construction.
-    with self.assertRaisesRegexp(ValueError,
-                                 "must be known at graph construction"):
-      inp.maybe_batch([array_ops.zeros(5)],
-                      keep_input=array_ops.placeholder(dtypes.bool),
-                      batch_size=1,
-                      enqueue_many=True)
+    with ops.Graph().as_default():
+      # Can't have vector `keep_input` with `enqueue_many=False`.
+      with self.assertRaisesRegex(ValueError,
+                                  "`keep_input` cannot be a vector"):
+        inp.maybe_batch([array_ops.zeros(5)],
+                        keep_input=constant_op.constant([True, False]),
+                        batch_size=1,
+                        enqueue_many=False)
+      # Can't have `keep_input` with more than one dimension.
+      with self.assertRaisesRegex(ValueError, "must be 0 or 1 dimensions"):
+        inp.maybe_batch([array_ops.zeros(5)],
+                        keep_input=constant_op.constant([[True], [False]]),
+                        batch_size=1,
+                        enqueue_many=True)
+      # `keep_input` must have dimensions determined at graph construction.
+      with self.assertRaisesRegex(ValueError,
+                                  "must be known at graph construction"):
+        inp.maybe_batch([array_ops.zeros(5)],
+                        keep_input=array_ops.placeholder(dtypes.bool),
+                        batch_size=1,
+                        enqueue_many=True)
 
   def testMaybeBatchedSparseTensorInferredShape(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0]], values=[1.0], dense_shape=[1])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_batch([sparse], keep_input=True, batch_size=2)
-    self.assertAllEqual((2,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0]], values=[1.0], dense_shape=[1])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_batch([sparse], keep_input=True, batch_size=2)
+      self.assertAllEqual((2,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeEnqueueMany(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0]], values=[1.0], dense_shape=[1])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_batch(
-        [sparse], keep_input=True, batch_size=2, enqueue_many=True)
-    self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0]], values=[1.0], dense_shape=[1])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_batch([sparse],
+                                keep_input=True,
+                                batch_size=2,
+                                enqueue_many=True)
+      self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeEnqueueManyPerExample(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0], [0]], values=[1.0, 2.0], dense_shape=[2])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_batch(
-        [sparse], keep_input=[True, False], batch_size=2, enqueue_many=True)
-    self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0], [0]], values=[1.0, 2.0], dense_shape=[2])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_batch([sparse],
+                                keep_input=[True, False],
+                                batch_size=2,
+                                enqueue_many=True)
+      self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRank(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_batch([sparse], keep_input=True, batch_size=2)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_batch([sparse], keep_input=True, batch_size=2)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRankEnqueueMany(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_batch(
-        [sparse], keep_input=True, batch_size=2, enqueue_many=True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_batch([sparse],
+                                keep_input=True,
+                                batch_size=2,
+                                enqueue_many=True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRankPerExample(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_batch(
-        [sparse], keep_input=[True, False], batch_size=2, enqueue_many=True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_batch([sparse],
+                                keep_input=[True, False],
+                                batch_size=2,
+                                enqueue_many=True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testMaybeBatchCorrectValues(self):
-    sparse_t = sparse_tensor.SparseTensor(
-        indices=[[0, 1], [0, 2], [1, 0], [1, 3]],
-        dense_shape=[2, 4],
-        values=[5, 4, 7, 2])
-    keep = constant_op.constant([True, False])
-    batched = inp.maybe_batch(
-        [sparse_t], keep_input=keep, batch_size=1, enqueue_many=True)
+    with ops.Graph().as_default():
+      sparse_t = sparse_tensor.SparseTensor(
+          indices=[[0, 1], [0, 2], [1, 0], [1, 3]],
+          dense_shape=[2, 4],
+          values=[5, 4, 7, 2])
+      keep = constant_op.constant([True, False])
+      batched = inp.maybe_batch([sparse_t],
+                                keep_input=keep,
+                                batch_size=1,
+                                enqueue_many=True)
 
-    with self.test_session():
-      coord = coordinator.Coordinator()
-      threads = queue_runner_impl.start_queue_runners(coord=coord)
+      with self.cached_session():
+        coord = coordinator.Coordinator()
+        threads = queue_runner_impl.start_queue_runners(coord=coord)
 
-      batched_np = batched.eval()
+        batched_np = self.evaluate(batched)
 
-      coord.request_stop()
-      for thread in threads:
-        thread.join()
+        coord.request_stop()
+        for thread in threads:
+          thread.join()
 
-    self.assertAllEqual([[0, 1], [0, 2]], batched_np.indices)
-    self.assertAllEqual([5, 4], batched_np.values)
-    self.assertAllEqual([1, 4], batched_np.dense_shape)
+      self.assertAllEqual([[0, 1], [0, 2]], batched_np.indices)
+      self.assertAllEqual([5, 4], batched_np.values)
+      self.assertAllEqual([1, 4], batched_np.dense_shape)
 
 
 class BatchJoinTest(test_lib.TestCase):
 
   def _testTwoThreadsHelper(self, use_dict):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       # Two threads, the first generates (0..69, "a").
       num_a = 70
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -938,7 +1008,8 @@ class BatchJoinTest(test_lib.TestCase):
       counter = examples.count_up_to(num_a)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
 
       # The second generates (99, "b") 90 times and then stops.
@@ -948,7 +1019,8 @@ class BatchJoinTest(test_lib.TestCase):
               99, dtype=dtypes.int64), num_b)
       sparse_ninety_nine = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(ninety_nine, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(ninety_nine, dtypes.float32)]),
           dense_shape=[1])
 
       # These get joined together and grouped into batches of 5.
@@ -984,7 +1056,7 @@ class BatchJoinTest(test_lib.TestCase):
                           batched_fetch[1].dense_shape.get_shape().as_list())
       self.assertAllEqual((batch_size,), batched_fetch[2].get_shape().as_list())
 
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
@@ -994,7 +1066,7 @@ class BatchJoinTest(test_lib.TestCase):
       saw_both = 0
       num_batches = (num_a + num_b) // batch_size
       for i in range(num_batches):
-        results = sess.run(batched_fetch)
+        results = self.evaluate(batched_fetch)
         self.assertEqual(3, len(results))
         self.assertEqual(batch_size, len(results[0]))
         self.assertEqual(batch_size, len(results[2]))
@@ -1008,13 +1080,16 @@ class BatchJoinTest(test_lib.TestCase):
         self.assertEqual(len(which_a) + len(which_b), batch_size)
         if which_a and which_b:
           saw_both += 1
-        all_a.extend([results[0][i] for i in which_a])
+        all_a.extend(results[0][i] for i in which_a)
         seen_b += len(which_b)
         self.assertAllEqual([99] * len(which_b),
                             [results[0][i] for i in which_b])
 
-      # Some minimum level of mixing of the results of both threads.
-      self.assertGreater(saw_both, 1)
+      # We'd like to see some minimum level of mixing of the results of both
+      # threads, but we can't rely on fair thread scheduling, so we just log.
+      # self.assertGreater(saw_both, 1)
+      tf_logging.info("testTwoThreads%s saw both count: %s",
+                      "Dict" if use_dict else "", saw_both)
 
       # Verify the order of results from "a" were preserved.
       self.assertAllEqual(all_a, np.arange(num_a))
@@ -1022,18 +1097,19 @@ class BatchJoinTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched_fetch)
+        self.evaluate(batched_fetch)
       for thread in threads:
         thread.join()
 
-  def DISABLED_testTwoThreads(self):
+  def testTwoThreads(self):
     self._testTwoThreadsHelper(use_dict=False)
 
-  def DISABLED_testTwoThreadsDict(self):
+  def testTwoThreadsDict(self):
     self._testTwoThreadsHelper(use_dict=True)
 
   def testMismatchedDictKeys(self):
-    with self.assertRaisesRegexp(ValueError, "must have the same keys"):
+    with ops.Graph().as_default(), self.assertRaisesRegex(
+        ValueError, "must have the same keys"):
       inp.batch_join(
           [{
               "c": 12,
@@ -1046,8 +1122,8 @@ class BatchJoinTest(test_lib.TestCase):
           }],
           batch_size=8)
 
-  def DISABLED_testTwoThreadsDynamicPad(self):
-    with self.test_session() as sess:
+  def testTwoThreadsDynamicPad(self):
+    with ops.Graph().as_default(), self.cached_session():
       # Two threads, the first generates (0..69, ["a"] * 1..70).
       num_a = 70
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -1062,10 +1138,12 @@ class BatchJoinTest(test_lib.TestCase):
 
       # These get joined together and grouped into batches of 5.
       batch_size = 5
-      a = array_ops.tile(["a"],
-                         math_ops.to_int32(array_ops.stack([counter + 1])))
-      b = array_ops.tile(["b"],
-                         math_ops.to_int32(array_ops.stack([ninety_nine])))
+      a = array_ops.tile(
+          ["a"],
+          math_ops.cast(array_ops_stack.stack([counter + 1]), dtypes.int32))
+      b = array_ops.tile(
+          ["b"],
+          math_ops.cast(array_ops_stack.stack([ninety_nine]), dtypes.int32))
       batched = inp.batch_join(
           [[counter, a], [ninety_nine, b]],
           batch_size=batch_size,
@@ -1076,7 +1154,7 @@ class BatchJoinTest(test_lib.TestCase):
       self.assertAllEqual((batch_size,), batched[0].get_shape().as_list())
       self.assertAllEqual((batch_size, None), batched[1].get_shape().as_list())
 
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
@@ -1087,7 +1165,7 @@ class BatchJoinTest(test_lib.TestCase):
       saw_both = 0
       num_batches = (num_a + num_b) // batch_size
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         self.assertEqual(2, len(results))
         self.assertEqual(len(results[0]), batch_size)
         self.assertEqual(len(results[1]), batch_size)
@@ -1101,13 +1179,15 @@ class BatchJoinTest(test_lib.TestCase):
         self.assertEqual(len(which_a) + len(which_b), batch_size)
         if which_a and which_b:
           saw_both += 1
-        all_a.extend([results[0][i] for i in which_a])
+        all_a.extend(results[0][i] for i in which_a)
         seen_b += len(which_b)
         self.assertAllEqual([99] * len(which_b),
                             [results[0][i] for i in which_b])
 
-      # Some minimum level of mixing of the results of both threads.
-      self.assertGreater(saw_both, 1)
+      # We'd like to see some minimum level of mixing of the results of both
+      # threads, but we can't rely on fair thread scheduling, so we just log.
+      # self.assertGreater(saw_both, 1)
+      tf_logging.info("testTwoThreadsDynamicPad saw both count: %s", saw_both)
 
       # Verify the order of results from "a" were preserved.
       self.assertAllEqual(  # tiled "a" with counter + 1
@@ -1117,12 +1197,12 @@ class BatchJoinTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
-  def DISABLED_testTwoThreadsSmallerBatch(self):
-    with self.test_session() as sess:
+  def testTwoThreadsSmallerBatch(self):
+    with ops.Graph().as_default(), self.cached_session():
       extra_elements = 2
       # Two threads, the first generates (0..69, "a").
       num_a = 70 + extra_elements
@@ -1131,7 +1211,8 @@ class BatchJoinTest(test_lib.TestCase):
       counter = examples.count_up_to(num_a)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
 
       # The second generates (99, "b") 90 times and then stops.
@@ -1141,7 +1222,8 @@ class BatchJoinTest(test_lib.TestCase):
               99, dtype=dtypes.int64), num_b)
       sparse_ninety_nine = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(ninety_nine, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(ninety_nine, dtypes.float32)]),
           dense_shape=[1])
 
       # These get joined together and grouped into batches of 5.
@@ -1160,7 +1242,7 @@ class BatchJoinTest(test_lib.TestCase):
       self.assertAllEqual((2,), batched[1].dense_shape.get_shape().as_list())
       self.assertAllEqual((None,), batched[2].get_shape().as_list())
 
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
@@ -1170,7 +1252,7 @@ class BatchJoinTest(test_lib.TestCase):
       saw_both = 0
       num_batches = (num_a + num_b) // batch_size
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         tf_logging.info("Batch %d: %s", i, results[0])
         self.assertEqual(len(results[0]), batch_size)
         self.assertEqual(len(results[2]), batch_size)
@@ -1184,13 +1266,13 @@ class BatchJoinTest(test_lib.TestCase):
         self.assertEqual(len(which_a) + len(which_b), batch_size)
         if which_a and which_b:
           saw_both += 1
-        all_a.extend([results[0][i] for i in which_a])
+        all_a.extend(results[0][i] for i in which_a)
         seen_b += len(which_b)
         self.assertAllEqual([99] * len(which_b),
                             [results[0][i] for i in which_b])
 
       # Reached the final batch with 2 * extra_elements.
-      results = sess.run(batched)
+      results = self.evaluate(batched)
       tf_logging.info("Last Batch: %s", results[0])
       self.assertEqual(len(results[0]), 2 * extra_elements)
       self.assertEqual(len(results[2]), 2 * extra_elements)
@@ -1204,11 +1286,13 @@ class BatchJoinTest(test_lib.TestCase):
       self.assertEqual(len(which_a) + len(which_b), 2 * extra_elements)
       if which_a and which_b:
         saw_both += 1
-      all_a.extend([results[0][i] for i in which_a])
+      all_a.extend(results[0][i] for i in which_a)
       seen_b += len(which_b)
 
-      # Some minimum level of mixing of the results of both threads.
-      self.assertGreater(saw_both, 1)
+      # We'd like to see some minimum level of mixing of the results of both
+      # threads, but we can't rely on fair thread scheduling, so we just log.
+      # self.assertGreater(saw_both, 1)
+      tf_logging.info("testTwoThreadsSmallerBatch saw both count: %s", saw_both)
 
       # Verify the order of results from "a" were preserved.
       self.assertAllEqual(all_a, np.arange(num_a))
@@ -1216,12 +1300,12 @@ class BatchJoinTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
-  def DISABLED_testTwoThreadsDynamicPadSmallerBatch(self):
-    with self.test_session() as sess:
+  def testTwoThreadsDynamicPadSmallerBatch(self):
+    with ops.Graph().as_default(), self.cached_session():
       extra_elements = 2
       # Two threads, the first generates (0..69, ["a"] * 1..70).
       num_a = 70 + extra_elements
@@ -1237,10 +1321,12 @@ class BatchJoinTest(test_lib.TestCase):
 
       # These get joined together and grouped into batches of 5.
       batch_size = 5
-      a = array_ops.tile(["a"],
-                         math_ops.to_int32(array_ops.stack([counter + 1])))
-      b = array_ops.tile(["b"],
-                         math_ops.to_int32(array_ops.stack([ninety_nine])))
+      a = array_ops.tile(
+          ["a"],
+          math_ops.cast(array_ops_stack.stack([counter + 1]), dtypes.int32))
+      b = array_ops.tile(
+          ["b"],
+          math_ops.cast(array_ops_stack.stack([ninety_nine]), dtypes.int32))
       batched = inp.batch_join(
           [[counter, a], [ninety_nine, b]],
           batch_size=batch_size,
@@ -1252,7 +1338,7 @@ class BatchJoinTest(test_lib.TestCase):
       self.assertAllEqual((None,), batched[0].get_shape().as_list())
       self.assertAllEqual((None, None), batched[1].get_shape().as_list())
 
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
@@ -1263,7 +1349,7 @@ class BatchJoinTest(test_lib.TestCase):
       saw_both = 0
       num_batches = (num_a + num_b) // batch_size
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         tf_logging.info("Batch %d: %s", i, results[0])
         self.assertEqual(len(results[0]), batch_size)
         self.assertEqual(len(results[1]), batch_size)
@@ -1277,13 +1363,13 @@ class BatchJoinTest(test_lib.TestCase):
         self.assertEqual(len(which_a) + len(which_b), batch_size)
         if which_a and which_b:
           saw_both += 1
-        all_a.extend([results[0][i] for i in which_a])
+        all_a.extend(results[0][i] for i in which_a)
         seen_b += len(which_b)
         self.assertAllEqual([99] * len(which_b),
                             [results[0][i] for i in which_b])
 
       # Reached the final batch with 2 * extra_elements.
-      results = sess.run(batched)
+      results = self.evaluate(batched)
       tf_logging.info("Last Batch: %s", results[0])
       self.assertEqual(len(results[0]), 2 * extra_elements)
       self.assertEqual(len(results[1]), 2 * extra_elements)
@@ -1297,11 +1383,14 @@ class BatchJoinTest(test_lib.TestCase):
       self.assertEqual(len(which_a) + len(which_b), 2 * extra_elements)
       if which_a and which_b:
         saw_both += 1
-      all_a.extend([results[0][i] for i in which_a])
+      all_a.extend(results[0][i] for i in which_a)
       seen_b += len(which_b)
 
-      # Some minimum level of mixing of the results of both threads.
-      self.assertGreater(saw_both, 1)
+      # We'd like to see some minimum level of mixing of the results of both
+      # threads, but we can't rely on fair thread scheduling, so we just log.
+      # self.assertGreater(saw_both, 1)
+      tf_logging.info("testTwoThreadsDynamicPadSmallerBatch saw both count: %s",
+                      saw_both)
 
       # Verify the order of results from "a" were preserved.
       self.assertAllEqual(  # tiled "a" with counter + 1
@@ -1311,12 +1400,12 @@ class BatchJoinTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
   def testSharedName(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -1338,18 +1427,19 @@ class BatchJoinTest(test_lib.TestCase):
           batched[0].op.inputs[0].op.node_def.attr["shared_name"])
 
   def testCannotInferRankError(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       x = array_ops.placeholder(dtype=dtypes.int64)
-      with self.assertRaisesRegexp(ValueError, "Cannot infer Tensor's rank"):
+      with self.assertRaisesRegex(ValueError, "Cannot infer Tensor's rank"):
         inp.batch_join([[x]], batch_size=2)
 
   def testSingleElementDict(self):
-    x = inp.batch_join([{"c": [12, 12]}], batch_size=8)
-    self.assertAllEqual((8, 2), x["c"].get_shape().as_list())
+    with ops.Graph().as_default():
+      x = inp.batch_join([{"c": [12, 12]}], batch_size=8)
+      self.assertAllEqual((8, 2), x["c"].get_shape().as_list())
 
   def _testKeepInputHelper(self, num_threads, enqueue_many,
                            keep_input_vector=False):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 5
       num_batches = 4
       examples = variables.Variable(0)
@@ -1357,7 +1447,8 @@ class BatchJoinTest(test_lib.TestCase):
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.zeros(
               [1, 1], dtype=dtypes.int64),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       to_batch = [counter, sparse_counter, "string"]
       if enqueue_many:
@@ -1374,7 +1465,7 @@ class BatchJoinTest(test_lib.TestCase):
       threads = queue_runner_impl.start_queue_runners()
 
       for _ in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         self.assertAllEqual(
             [0] * batch_size,
             np.mod(results[0], 2),)
@@ -1385,19 +1476,31 @@ class BatchJoinTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testSingleThreadKeepInput(self):
     self._testKeepInputHelper(1, False)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testSingleThreadKeepInputEnqueueMany(self):
     self._testKeepInputHelper(1, True)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testMultipleThreadKeepInput(self):
     self._testKeepInputHelper(5, False)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testMultipleThreadKeepInputEnqueueMany(self):
     self._testKeepInputHelper(5, True)
 
@@ -1408,106 +1511,125 @@ class BatchJoinTest(test_lib.TestCase):
     self._testKeepInputHelper(5, True, keep_input_vector=True)
 
   def testInvalidKeepInputVector(self):
-    # Can't have vector `keep_input` with `enqueue_many=False`.
-    with self.assertRaisesRegexp(ValueError, "`keep_input` cannot be a vector"):
-      inp.maybe_batch_join([[array_ops.zeros(5)]],
-                           keep_input=constant_op.constant([True, False]),
-                           batch_size=1,
-                           enqueue_many=False)
-    # Can't have `keep_input` with more than one dimension.
-    with self.assertRaisesRegexp(ValueError, "must be 0 or 1 dimensions"):
-      inp.maybe_batch_join([[array_ops.zeros(5)]],
-                           keep_input=constant_op.constant([[True], [False]]),
-                           batch_size=1,
-                           enqueue_many=True)
-    # `keep_input` must have dimensions determined at graph construction.
-    with self.assertRaisesRegexp(ValueError,
-                                 "must be known at graph construction"):
-      inp.maybe_batch_join([[array_ops.zeros(5)]],
-                           keep_input=array_ops.placeholder(dtypes.bool),
-                           batch_size=1,
-                           enqueue_many=True)
+    with ops.Graph().as_default():
+      # Can't have vector `keep_input` with `enqueue_many=False`.
+      with self.assertRaisesRegex(ValueError,
+                                  "`keep_input` cannot be a vector"):
+        inp.maybe_batch_join([[array_ops.zeros(5)]],
+                             keep_input=constant_op.constant([True, False]),
+                             batch_size=1,
+                             enqueue_many=False)
+      # Can't have `keep_input` with more than one dimension.
+      with self.assertRaisesRegex(ValueError, "must be 0 or 1 dimensions"):
+        inp.maybe_batch_join([[array_ops.zeros(5)]],
+                             keep_input=constant_op.constant([[True], [False]]),
+                             batch_size=1,
+                             enqueue_many=True)
+      # `keep_input` must have dimensions determined at graph construction.
+      with self.assertRaisesRegex(ValueError,
+                                  "must be known at graph construction"):
+        inp.maybe_batch_join([[array_ops.zeros(5)]],
+                             keep_input=array_ops.placeholder(dtypes.bool),
+                             batch_size=1,
+                             enqueue_many=True)
 
   def testMaybeBatchedSparseTensorInferredShape(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0]], values=[1.0], dense_shape=[1])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_batch_join([[sparse]], keep_input=True, batch_size=2)
-    self.assertAllEqual((2,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0]], values=[1.0], dense_shape=[1])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_batch_join([[sparse]], keep_input=True, batch_size=2)
+      self.assertAllEqual((2,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeEnqueueMany(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0]], values=[1.0], dense_shape=[1])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_batch_join(
-        [[sparse]], keep_input=True, batch_size=2, enqueue_many=True)
-    self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0]], values=[1.0], dense_shape=[1])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_batch_join([[sparse]],
+                                     keep_input=True,
+                                     batch_size=2,
+                                     enqueue_many=True)
+      self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeEnqueueManyPerExample(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0], [0]], values=[1.0, 2.0], dense_shape=[2])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_batch_join(
-        [[sparse]], keep_input=[True, False], batch_size=2, enqueue_many=True)
-    self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0], [0]], values=[1.0, 2.0], dense_shape=[2])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_batch_join([[sparse]],
+                                     keep_input=[True, False],
+                                     batch_size=2,
+                                     enqueue_many=True)
+      self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRank(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_batch_join([[sparse]], keep_input=True, batch_size=2)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_batch_join([[sparse]], keep_input=True, batch_size=2)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRankEnqueueMany(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_batch_join(
-        [[sparse]], keep_input=True, batch_size=2, enqueue_many=True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_batch_join([[sparse]],
+                                     keep_input=True,
+                                     batch_size=2,
+                                     enqueue_many=True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRankPerExample(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_batch_join(
-        [[sparse]], keep_input=[True, False], batch_size=2, enqueue_many=True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_batch_join([[sparse]],
+                                     keep_input=[True, False],
+                                     batch_size=2,
+                                     enqueue_many=True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testMaybeBatchCorrectValues(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0, 1], [0, 2], [1, 0], [1, 3]],
-        dense_shape=[2, 4],
-        values=[5, 4, 7, 2])
-    keep = constant_op.constant([True, False])
-    batched = inp.maybe_batch_join(
-        [[sparse]], keep_input=keep, batch_size=1, enqueue_many=True)
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0, 1], [0, 2], [1, 0], [1, 3]],
+          dense_shape=[2, 4],
+          values=[5, 4, 7, 2])
+      keep = constant_op.constant([True, False])
+      batched = inp.maybe_batch_join([[sparse]],
+                                     keep_input=keep,
+                                     batch_size=1,
+                                     enqueue_many=True)
 
-    with self.test_session():
-      coord = coordinator.Coordinator()
-      threads = queue_runner_impl.start_queue_runners(coord=coord)
+      with self.cached_session():
+        coord = coordinator.Coordinator()
+        threads = queue_runner_impl.start_queue_runners(coord=coord)
 
-      batched_np = batched.eval()
+        batched_np = self.evaluate(batched)
 
-      coord.request_stop()
-      for thread in threads:
-        thread.join()
+        coord.request_stop()
+        for thread in threads:
+          thread.join()
 
-    self.assertAllEqual([[0, 1], [0, 2]], batched_np.indices)
-    self.assertAllEqual([5, 4], batched_np.values)
-    self.assertAllEqual([1, 4], batched_np.dense_shape)
+      self.assertAllEqual([[0, 1], [0, 2]], batched_np.indices)
+      self.assertAllEqual([5, 4], batched_np.values)
+      self.assertAllEqual([1, 4], batched_np.dense_shape)
 
 
 class ShuffleBatchTest(test_lib.TestCase):
 
   def _testOneThreadHelper(self, use_dict):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -1515,7 +1637,8 @@ class ShuffleBatchTest(test_lib.TestCase):
       counter = examples.count_up_to(num_batches * batch_size)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       if use_dict:
         batched = inp.shuffle_batch(
@@ -1537,13 +1660,13 @@ class ShuffleBatchTest(test_lib.TestCase):
             min_after_dequeue=16,
             seed=141421)
         batched_fetch = batched
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       all_counts = []
       for i in range(num_batches):
-        results = sess.run(batched_fetch)
+        results = self.evaluate(batched_fetch)
         self.assertEqual(len(results[0]), batch_size)
         all_counts.extend(results[0])
         self.assertAllEqual(
@@ -1561,7 +1684,7 @@ class ShuffleBatchTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched_fetch)
+        self.evaluate(batched_fetch)
       for thread in threads:
         thread.join()
 
@@ -1572,7 +1695,7 @@ class ShuffleBatchTest(test_lib.TestCase):
     self._testOneThreadHelper(use_dict=True)
 
   def testOneThreadSmallerBatch(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       extra_elements = 5
@@ -1582,7 +1705,8 @@ class ShuffleBatchTest(test_lib.TestCase):
       counter = examples.count_up_to(total_elements)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       batched = inp.shuffle_batch(
           [counter, sparse_counter, "string"],
@@ -1592,13 +1716,13 @@ class ShuffleBatchTest(test_lib.TestCase):
           seed=141421,
           allow_smaller_final_batch=True)
       batched_fetch = batched
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       all_counts = []
       for _ in range(num_batches):
-        results = sess.run(batched_fetch)
+        results = self.evaluate(batched_fetch)
         self.assertEqual(len(results[0]), batch_size)
         all_counts.extend(results[0])
         self.assertAllEqual(
@@ -1609,7 +1733,7 @@ class ShuffleBatchTest(test_lib.TestCase):
         self.assertAllEqual(results[2], [b"string"] * batch_size)
 
       # Reached the final batch with extra elements.
-      results = sess.run(batched)
+      results = self.evaluate(batched)
       self.assertAllEqual(results[1].dense_shape, [extra_elements, 1])
       self.assertAllEqual(results[2], [b"string"] * extra_elements)
       all_counts.extend(results[0])
@@ -1623,12 +1747,12 @@ class ShuffleBatchTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched_fetch)
+        self.evaluate(batched_fetch)
       for thread in threads:
         thread.join()
 
   def testManyThreads(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -1636,7 +1760,8 @@ class ShuffleBatchTest(test_lib.TestCase):
       counter = examples.count_up_to(num_batches * batch_size)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       batched = inp.shuffle_batch(
           [counter, sparse_counter, "string"],
@@ -1645,13 +1770,13 @@ class ShuffleBatchTest(test_lib.TestCase):
           min_after_dequeue=16,
           seed=173205,
           num_threads=4)
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       all_counts = []
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         tf_logging.info("Batch %d: %s", i, results[0])
         self.assertEqual(len(results[0]), batch_size)
         all_counts.extend(results[0])
@@ -1670,12 +1795,12 @@ class ShuffleBatchTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
   def testManyThreadsSmallerBatch(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       extra_elements = 5
@@ -1685,7 +1810,8 @@ class ShuffleBatchTest(test_lib.TestCase):
       counter = examples.count_up_to(total_elements)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       batched = inp.shuffle_batch(
           [counter, sparse_counter, "string"],
@@ -1695,13 +1821,13 @@ class ShuffleBatchTest(test_lib.TestCase):
           seed=173205,
           num_threads=4,
           allow_smaller_final_batch=True)
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
       all_counts = []
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         tf_logging.info("Batch %d: %s", i, results[0])
         self.assertEqual(len(results[0]), batch_size)
         all_counts.extend(results[0])
@@ -1713,7 +1839,7 @@ class ShuffleBatchTest(test_lib.TestCase):
         self.assertAllEqual(results[2], [b"string"] * batch_size)
 
       # Reached the final batch with extra elements.
-      results = sess.run(batched)
+      results = self.evaluate(batched)
       self.assertAllEqual(results[0].shape, [extra_elements])
       self.assertAllEqual(results[1].dense_shape, [extra_elements, 1])
       self.assertAllEqual(results[2], [b"string"] * extra_elements)
@@ -1728,12 +1854,12 @@ class ShuffleBatchTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
   def testSharedName(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -1753,7 +1879,7 @@ class ShuffleBatchTest(test_lib.TestCase):
 
   def _testKeepInputHelper(self, num_threads, enqueue_many,
                            keep_input_vector=False):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 5
       num_batches = 4
       examples = variables.Variable(0)
@@ -1761,7 +1887,8 @@ class ShuffleBatchTest(test_lib.TestCase):
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.zeros(
               [1, 1], dtype=dtypes.int64),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       to_batch = [counter, sparse_counter, "string"]
       if enqueue_many:
@@ -1781,26 +1908,38 @@ class ShuffleBatchTest(test_lib.TestCase):
       threads = queue_runner_impl.start_queue_runners()
 
       for _ in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         self.assertAllEqual([0] * batch_size, np.mod(results[0], 2))
         self.assertAllEqual([0] * batch_size, np.mod(results[1].values, 2))
         self.assertAllEqual([b"string"] * batch_size, results[2])
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testSingleThreadKeepInput(self):
     self._testKeepInputHelper(1, False)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testSingleThreadKeepInputEnqueueMany(self):
     self._testKeepInputHelper(1, True)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testMultipleThreadKeepInput(self):
     self._testKeepInputHelper(5, False)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testMultipleThreadKeepInputEnqueueMany(self):
     self._testKeepInputHelper(5, True)
 
@@ -1811,80 +1950,111 @@ class ShuffleBatchTest(test_lib.TestCase):
     self._testKeepInputHelper(5, True, keep_input_vector=True)
 
   def testInvalidKeepInputVector(self):
-    # Can't have vector `keep_input` with `enqueue_many=False`.
-    with self.assertRaisesRegexp(ValueError, "`keep_input` cannot be a vector"):
-      inp.maybe_shuffle_batch([array_ops.zeros(5)], 1, 10, 1,
-                              keep_input=constant_op.constant([True, False]),
-                              enqueue_many=False)
-    # Can't have `keep_input` with more than one dimension.
-    with self.assertRaisesRegexp(ValueError, "must be 0 or 1 dimensions"):
-      inp.maybe_shuffle_batch([array_ops.zeros(5)], 1, 10, 1,
-                              keep_input=constant_op.constant([[True]]),
-                              enqueue_many=True)
-    # `keep_input` must have dimensions determined at graph construction.
-    with self.assertRaisesRegexp(ValueError,
-                                 "must be known at graph construction"):
-      inp.maybe_shuffle_batch([array_ops.zeros(5)], 1, 10, 1,
-                              keep_input=array_ops.placeholder(dtypes.bool),
-                              enqueue_many=True)
+    with ops.Graph().as_default():
+      # Can't have vector `keep_input` with `enqueue_many=False`.
+      with self.assertRaisesRegex(ValueError,
+                                  "`keep_input` cannot be a vector"):
+        inp.maybe_shuffle_batch([array_ops.zeros(5)],
+                                1,
+                                10,
+                                1,
+                                keep_input=constant_op.constant([True, False]),
+                                enqueue_many=False)
+      # Can't have `keep_input` with more than one dimension.
+      with self.assertRaisesRegex(ValueError, "must be 0 or 1 dimensions"):
+        inp.maybe_shuffle_batch([array_ops.zeros(5)],
+                                1,
+                                10,
+                                1,
+                                keep_input=constant_op.constant([[True]]),
+                                enqueue_many=True)
+      # `keep_input` must have dimensions determined at graph construction.
+      with self.assertRaisesRegex(ValueError,
+                                  "must be known at graph construction"):
+        inp.maybe_shuffle_batch([array_ops.zeros(5)],
+                                1,
+                                10,
+                                1,
+                                keep_input=array_ops.placeholder(dtypes.bool),
+                                enqueue_many=True)
 
   def testMaybeBatchedSparseTensorInferredShape(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0]], values=[1.0], dense_shape=[1])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_shuffle_batch([sparse], 2, 10, 1, True)
-    self.assertAllEqual((2,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0]], values=[1.0], dense_shape=[1])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_shuffle_batch([sparse], 2, 10, 1, True)
+      self.assertAllEqual((2,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeEnqueueMany(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0]], values=[1.0], dense_shape=[1])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_shuffle_batch(
-        [sparse], 2, 10, 1, True, enqueue_many=True)
-    self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0]], values=[1.0], dense_shape=[1])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_shuffle_batch([sparse],
+                                        2,
+                                        10,
+                                        1,
+                                        True,
+                                        enqueue_many=True)
+      self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeEnqueueManyPerExample(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0], [0]], values=[1.0, 2.0], dense_shape=[2])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_shuffle_batch(
-        [sparse], 2, 10, 1, [True, False], enqueue_many=True)
-    self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0], [0]], values=[1.0, 2.0], dense_shape=[2])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_shuffle_batch([sparse],
+                                        2,
+                                        10,
+                                        1, [True, False],
+                                        enqueue_many=True)
+      self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRank(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_shuffle_batch([sparse], 2, 10, 1, True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_shuffle_batch([sparse], 2, 10, 1, True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRankEnqueueMany(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_shuffle_batch(
-        [sparse], 2, 10, 1, True, enqueue_many=True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_shuffle_batch([sparse],
+                                        2,
+                                        10,
+                                        1,
+                                        True,
+                                        enqueue_many=True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRankPerExample(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_shuffle_batch(
-        [sparse], 2, 10, 1, [True, False], enqueue_many=True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_shuffle_batch([sparse],
+                                        2,
+                                        10,
+                                        1, [True, False],
+                                        enqueue_many=True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
 
 class ShuffleBatchJoinTest(test_lib.TestCase):
 
   def _testTwoThreadsHelper(self, use_dict):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       # Two threads, the first generates (0..24, "a").
       num_a = 25
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -1892,7 +2062,8 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
       counter = examples.count_up_to(num_a)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
 
       # The second generates (99, "b") 35 times and then stops.
@@ -1902,7 +2073,8 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
               99, dtype=dtypes.int64), num_b)
       sparse_ninety_nine = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(ninety_nine, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(ninety_nine, dtypes.float32)]),
           dense_shape=[1])
 
       # These get joined together and grouped into batches of 5.
@@ -1944,7 +2116,7 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
                           batched_fetch[1].dense_shape.get_shape().as_list())
       self.assertAllEqual((batch_size,), batched_fetch[2].get_shape().as_list())
 
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
@@ -1954,7 +2126,7 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
       saw_both = 0
       num_batches = (num_a + num_b) // batch_size
       for i in range(num_batches):
-        results = sess.run(batched_fetch)
+        results = self.evaluate(batched_fetch)
         self.assertEqual(3, len(results))
         self.assertEqual(len(results[0]), batch_size)
         self.assertEqual(len(results[2]), batch_size)
@@ -1968,7 +2140,7 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
         self.assertEqual(len(which_a) + len(which_b), batch_size)
         if which_a and which_b:
           saw_both += 1
-        all_a.extend([results[0][i] for i in which_a])
+        all_a.extend(results[0][i] for i in which_a)
         seen_b += len(which_b)
         self.assertAllEqual([99] * len(which_b),
                             [results[0][i] for i in which_b])
@@ -1984,7 +2156,7 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched_fetch)
+        self.evaluate(batched_fetch)
       for thread in threads:
         thread.join()
 
@@ -1995,7 +2167,7 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
     self._testTwoThreadsHelper(use_dict=True)
 
   def testTwoThreadsSmallerBatch(self):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       # Two threads, the first generates (0..26, "a").
       extra_elements = 2
       num_a = 25 + extra_elements
@@ -2004,7 +2176,8 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
       counter = examples.count_up_to(num_a)
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
 
       # The second generates (99, "b") 37 times and then stops.
@@ -2014,7 +2187,8 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
               99, dtype=dtypes.int64), num_b)
       sparse_ninety_nine = sparse_tensor.SparseTensor(
           indices=array_ops.reshape(zero64, [1, 1]),
-          values=array_ops.stack([math_ops.cast(ninety_nine, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(ninety_nine, dtypes.float32)]),
           dense_shape=[1])
 
       # These get joined together and grouped into batches of 5.
@@ -2036,7 +2210,7 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
       self.assertAllEqual((2,), batched[1].dense_shape.get_shape().as_list())
       self.assertAllEqual((None,), batched[2].get_shape().as_list())
 
-      variables.global_variables_initializer().run()
+      self.evaluate(variables.global_variables_initializer())
       variables.local_variables_initializer().run()
       threads = queue_runner_impl.start_queue_runners()
 
@@ -2046,7 +2220,7 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
       saw_both = 0
       num_batches = (num_a + num_b) // batch_size
       for i in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         tf_logging.info("Batch %d: %s", i, results[0])
         self.assertEqual(len(results[0]), batch_size)
         self.assertEqual(len(results[2]), batch_size)
@@ -2060,13 +2234,13 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
         self.assertEqual(len(which_a) + len(which_b), batch_size)
         if which_a and which_b:
           saw_both += 1
-        all_a.extend([results[0][i] for i in which_a])
+        all_a.extend(results[0][i] for i in which_a)
         seen_b += len(which_b)
         self.assertAllEqual([99] * len(which_b),
                             [results[0][i] for i in which_b])
 
       # Reached end with 2 * extra_elements left
-      results = sess.run(batched)
+      results = self.evaluate(batched)
       self.assertEqual(len(results[0]), 2 * extra_elements)
       self.assertAllEqual(results[1].dense_shape, [2 * extra_elements, 1])
       self.assertEqual(len(results[2]), 2 * extra_elements)
@@ -2079,7 +2253,7 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
       self.assertEqual(len(which_a) + len(which_b), 2 * extra_elements)
       if which_a and which_b:
         saw_both += 1
-      all_a.extend([results[0][i] for i in which_a])
+      all_a.extend(results[0][i] for i in which_a)
       seen_b += len(which_b)
 
       # Some minimum level of mixing of the results of both threads.
@@ -2093,12 +2267,13 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
   def testMismatchedDictKeys(self):
-    with self.assertRaisesRegexp(ValueError, "must have the same keys"):
+    with ops.Graph().as_default(), self.assertRaisesRegex(
+        ValueError, "must have the same keys"):
       inp.shuffle_batch_join(
           [{
               "c": 12,
@@ -2115,7 +2290,7 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
           seed=223607)
 
   def testSharedName(self):
-    with self.test_session():
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 10
       num_batches = 3
       zero64 = constant_op.constant(0, dtype=dtypes.int64)
@@ -2140,7 +2315,7 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
 
   def _testKeepInputHelper(self, num_threads, enqueue_many,
                            keep_input_vector=False):
-    with self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session():
       batch_size = 5
       num_batches = 4
       examples = variables.Variable(0)
@@ -2148,7 +2323,8 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
       sparse_counter = sparse_tensor.SparseTensor(
           indices=array_ops.zeros(
               [1, 1], dtype=dtypes.int64),
-          values=array_ops.stack([math_ops.cast(counter, dtypes.float32)]),
+          values=array_ops_stack.stack(
+              [math_ops.cast(counter, dtypes.float32)]),
           dense_shape=[1])
       to_batch = [counter, sparse_counter, "string"]
       if enqueue_many:
@@ -2167,26 +2343,38 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
       threads = queue_runner_impl.start_queue_runners()
 
       for _ in range(num_batches):
-        results = sess.run(batched)
+        results = self.evaluate(batched)
         self.assertAllEqual([0] * batch_size, np.mod(results[0], 2))
         self.assertAllEqual([0] * batch_size, np.mod(results[1].values, 2))
         self.assertAllEqual([b"string"] * batch_size, results[2])
 
       # Reached the limit.
       with self.assertRaises(errors_impl.OutOfRangeError):
-        sess.run(batched)
+        self.evaluate(batched)
       for thread in threads:
         thread.join()
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testSingleThreadKeepInput(self):
     self._testKeepInputHelper(1, False)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testSingleThreadKeepInputEnqueueMany(self):
     self._testKeepInputHelper(1, True)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testMultipleThreadKeepInput(self):
     self._testKeepInputHelper(5, False)
 
+  @test_util.run_v1_only("Input pipelines based on Queues are not supported "
+                         "when eager execution is enabled. TF2 uses tf.data "
+                         "instead.")
   def testMultipleThreadKeepInputEnqueueMany(self):
     self._testKeepInputHelper(5, True)
 
@@ -2197,77 +2385,107 @@ class ShuffleBatchJoinTest(test_lib.TestCase):
     self._testKeepInputHelper(5, True, keep_input_vector=True)
 
   def testInvalidKeepInputVector(self):
-    # Can't have vector `keep_input` with `enqueue_many=False`.
-    with self.assertRaisesRegexp(ValueError, "`keep_input` cannot be a vector"):
-      inp.maybe_shuffle_batch_join(
-          [[array_ops.zeros(5)]], 1, 10, 1,
-          keep_input=constant_op.constant([True, False]),
-          enqueue_many=False)
-    # Can't have `keep_input` with more than one dimension.
-    with self.assertRaisesRegexp(ValueError, "must be 0 or 1 dimensions"):
-      inp.maybe_shuffle_batch_join(
-          [[array_ops.zeros(5)]], 1, 10, 1,
-          keep_input=constant_op.constant([[True]]),
-          enqueue_many=True)
-    # `keep_input` must have dimensions determined at graph construction.
-    with self.assertRaisesRegexp(ValueError,
-                                 "must be known at graph construction"):
-      inp.maybe_shuffle_batch_join(
-          [[array_ops.zeros(5)]], 1, 10, 1,
-          keep_input=array_ops.placeholder(dtypes.bool),
-          enqueue_many=True)
+    with ops.Graph().as_default():
+      # Can't have vector `keep_input` with `enqueue_many=False`.
+      with self.assertRaisesRegex(ValueError,
+                                  "`keep_input` cannot be a vector"):
+        inp.maybe_shuffle_batch_join([[array_ops.zeros(5)]],
+                                     1,
+                                     10,
+                                     1,
+                                     keep_input=constant_op.constant(
+                                         [True, False]),
+                                     enqueue_many=False)
+      # Can't have `keep_input` with more than one dimension.
+      with self.assertRaisesRegex(ValueError, "must be 0 or 1 dimensions"):
+        inp.maybe_shuffle_batch_join([[array_ops.zeros(5)]],
+                                     1,
+                                     10,
+                                     1,
+                                     keep_input=constant_op.constant([[True]]),
+                                     enqueue_many=True)
+      # `keep_input` must have dimensions determined at graph construction.
+      with self.assertRaisesRegex(ValueError,
+                                  "must be known at graph construction"):
+        inp.maybe_shuffle_batch_join([[array_ops.zeros(5)]],
+                                     1,
+                                     10,
+                                     1,
+                                     keep_input=array_ops.placeholder(
+                                         dtypes.bool),
+                                     enqueue_many=True)
 
   def testMaybeBatchedSparseTensorInferredShape(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0]], values=[1.0], dense_shape=[1])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_shuffle_batch_join([[sparse]], 2, 10, 1, True)
-    self.assertAllEqual((2,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0]], values=[1.0], dense_shape=[1])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_shuffle_batch_join([[sparse]], 2, 10, 1, True)
+      self.assertAllEqual((2,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeEnqueueMany(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0]], values=[1.0], dense_shape=[1])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_shuffle_batch_join(
-        [[sparse]], 2, 10, 1, True, enqueue_many=True)
-    self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0]], values=[1.0], dense_shape=[1])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_shuffle_batch_join([[sparse]],
+                                             2,
+                                             10,
+                                             1,
+                                             True,
+                                             enqueue_many=True)
+      self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeEnqueueManyPerExample(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=[[0], [0]], values=[1.0, 2.0], dense_shape=[2])
-    self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
-    batched = inp.maybe_shuffle_batch_join(
-        [[sparse]], 2, 10, 1, [True, False], enqueue_many=True)
-    self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=[[0], [0]], values=[1.0, 2.0], dense_shape=[2])
+      self.assertAllEqual((1,), sparse.dense_shape.get_shape().as_list())
+      batched = inp.maybe_shuffle_batch_join([[sparse]],
+                                             2,
+                                             10,
+                                             1, [True, False],
+                                             enqueue_many=True)
+      self.assertAllEqual((1,), batched.dense_shape.get_shape().as_list())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRank(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_shuffle_batch_join([[sparse]], 2, 10, 1, True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_shuffle_batch_join([[sparse]], 2, 10, 1, True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRankEnqueueMany(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_shuffle_batch_join(
-        [[sparse]], 2, 10, 1, True, enqueue_many=True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_shuffle_batch_join([[sparse]],
+                                             2,
+                                             10,
+                                             1,
+                                             True,
+                                             enqueue_many=True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
   def testMaybeBatchedSparseTensorInferredShapeUnknownRankPerExample(self):
-    sparse = sparse_tensor.SparseTensor(
-        indices=array_ops.placeholder(dtypes.int64),
-        values=array_ops.placeholder(dtypes.float32),
-        dense_shape=array_ops.placeholder(dtypes.int64))
-    self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
-    batched = inp.maybe_shuffle_batch_join(
-        [[sparse]], 2, 10, 1, [True, False], enqueue_many=True)
-    self.assertIs(None, batched.dense_shape.get_shape().num_elements())
+    with ops.Graph().as_default():
+      sparse = sparse_tensor.SparseTensor(
+          indices=array_ops.placeholder(dtypes.int64),
+          values=array_ops.placeholder(dtypes.float32),
+          dense_shape=array_ops.placeholder(dtypes.int64))
+      self.assertIs(None, sparse.dense_shape.get_shape().num_elements())
+      batched = inp.maybe_shuffle_batch_join([[sparse]],
+                                             2,
+                                             10,
+                                             1, [True, False],
+                                             enqueue_many=True)
+      self.assertIs(None, batched.dense_shape.get_shape().num_elements())
 
 
 if __name__ == "__main__":

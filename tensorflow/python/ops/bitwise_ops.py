@@ -15,24 +15,14 @@
 
 """Operations for manipulating the binary representations of integers.
 
-@@bitwise_and
-@@bitwise_or
-@@bitwise_xor
-@@invert
-@@left_shift
-@@right_shift
+API docstring: tensorflow.bitwise
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 from tensorflow.python.framework import ops
 # go/tf-wildcard-import
 # pylint: disable=wildcard-import
 from tensorflow.python.ops.gen_bitwise_ops import *
 # pylint: enable=wildcard-import
-from tensorflow.python.util.all_util import remove_undocumented
 
 ops.NotDifferentiable("BitwiseAnd")
 ops.NotDifferentiable("BitwiseOr")
@@ -41,5 +31,3 @@ ops.NotDifferentiable("Invert")
 ops.NotDifferentiable("PopulationCount")
 ops.NotDifferentiable("LeftShift")
 ops.NotDifferentiable("RightShift")
-
-remove_undocumented(__name__)

@@ -15,10 +15,7 @@
 """Unit tests for tf_inspect."""
 
 # pylint: disable=unused-import
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import functools
 import inspect
 
 from tensorflow.python.platform import test
@@ -54,6 +51,12 @@ def test_decorated_function_with_defaults(a, b=2, c='Hello'):
 
 
 @test_decorator('decorator')
+def test_decorated_function_with_varargs_and_kwonlyargs(*args, b=2, c='Hello'):
+  """Test Decorated Function With both varargs and keyword args."""
+  return [args, b, c]
+
+
+@test_decorator('decorator')
 class TestDecoratedClass(object):
   """Test Decorated Class."""
 
@@ -75,39 +78,471 @@ class TfInspectTest(test.TestCase):
     self.assertEqual((2, 'Hello'), argspec.defaults)
 
   def testGetArgSpecOnDecoratorThatChangesArgspec(self):
-    argspec = tf_inspect.ArgSpec(
+    argspec = tf_inspect.FullArgSpec(
         args=['a', 'b', 'c'],
         varargs=None,
-        keywords=None,
-        defaults=(1, 'hello'))
+        varkw=None,
+        defaults=(1, 'hello'),
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={},
+    )
 
     decorator = tf_decorator.TFDecorator('', test_undecorated_function, '',
                                          argspec)
-    self.assertEqual(argspec, tf_inspect.getargspec(decorator))
+    self.assertEqual(argspec, tf_inspect.getfullargspec(decorator))
 
   def testGetArgSpecIgnoresDecoratorsThatDontProvideArgspec(self):
-    argspec = tf_inspect.ArgSpec(
+    argspec = tf_inspect.FullArgSpec(
         args=['a', 'b', 'c'],
         varargs=None,
-        keywords=None,
-        defaults=(1, 'hello'))
+        varkw=None,
+        defaults=(1, 'hello'),
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={},
+    )
 
-    inner_decorator = tf_decorator.TFDecorator('', test_undecorated_function,
-                                               '', argspec)
+    inner_decorator = tf_decorator.TFDecorator(
+        '', test_undecorated_function, '', argspec
+    )
     outer_decorator = tf_decorator.TFDecorator('', inner_decorator)
     self.assertEqual(argspec, tf_inspect.getargspec(outer_decorator))
 
+  def testGetArgSpecThatContainsVarargsAndKwonlyArgs(self):
+    argspec = tf_inspect.getargspec(
+        test_decorated_function_with_varargs_and_kwonlyargs
+    )
+    self.assertEqual(['b', 'c'], argspec.args)
+    self.assertEqual((2, 'Hello'), argspec.defaults)
+
   def testGetArgSpecReturnsOutermostDecoratorThatChangesArgspec(self):
-    outer_argspec = tf_inspect.ArgSpec(
-        args=['a'], varargs=None, keywords=None, defaults=None)
-    inner_argspec = tf_inspect.ArgSpec(
-        args=['b'], varargs=None, keywords=None, defaults=None)
+    outer_argspec = tf_inspect.FullArgSpec(
+        args=['a'],
+        varargs=None,
+        varkw=None,
+        defaults=(),
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={},
+    )
+    inner_argspec = tf_inspect.FullArgSpec(
+        args=['b'],
+        varargs=None,
+        varkw=None,
+        defaults=(),
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={},
+    )
 
     inner_decorator = tf_decorator.TFDecorator('', test_undecorated_function,
                                                '', inner_argspec)
     outer_decorator = tf_decorator.TFDecorator('', inner_decorator, '',
                                                outer_argspec)
-    self.assertEqual(outer_argspec, tf_inspect.getargspec(outer_decorator))
+    self.assertEqual(outer_argspec, tf_inspect.getfullargspec(outer_decorator))
+
+  def testGetArgSpecOnPartialPositionalArgumentOnly(self):
+    """Tests getargspec on partial function with only positional arguments."""
+
+    def func(m, n):
+      return 2 * m + n
+
+    partial_func = functools.partial(func, 7)
+    argspec = tf_inspect.ArgSpec(
+        args=['n'], varargs=None, keywords=None, defaults=None)
+
+    self.assertEqual(argspec, tf_inspect.getargspec(partial_func))
+
+  def testGetArgSpecOnPartialArgumentWithConvertibleToFalse(self):
+    """Tests getargspec on partial function with args that convert to False."""
+
+    def func(m, n):
+      return 2 * m + n
+
+    partial_func = functools.partial(func, m=0)
+
+    with self.assertRaisesRegex(ValueError, 'keyword-only arguments'):
+      tf_inspect.getargspec(partial_func)
+
+  def testGetArgSpecOnPartialInvalidArgspec(self):
+    """Tests getargspec on partial function that doesn't have valid argspec."""
+
+    def func(m, n, l, k=4):
+      return 2 * m + l + n * k
+
+    partial_func = functools.partial(func, n=7)
+
+    with self.assertRaisesRegex(ValueError, 'keyword-only arguments'):
+      tf_inspect.getargspec(partial_func)
+
+  def testGetArgSpecOnPartialValidArgspec(self):
+    """Tests getargspec on partial function with valid argspec."""
+
+    def func(m, n, l, k=4):
+      return 2 * m + l + n * k
+
+    partial_func = functools.partial(func, n=7, l=2)
+    argspec = tf_inspect.ArgSpec(
+        args=['m', 'n', 'l', 'k'],
+        varargs=None,
+        keywords=None,
+        defaults=(7, 2, 4))
+
+    self.assertEqual(argspec, tf_inspect.getargspec(partial_func))
+
+  def testGetArgSpecOnPartialNoArgumentsLeft(self):
+    """Tests getargspec on partial function that prunes all arguments."""
+
+    def func(m, n):
+      return 2 * m + n
+
+    partial_func = functools.partial(func, 7, 10)
+    argspec = tf_inspect.ArgSpec(
+        args=[], varargs=None, keywords=None, defaults=None)
+
+    self.assertEqual(argspec, tf_inspect.getargspec(partial_func))
+
+  def testGetArgSpecOnPartialKeywordArgument(self):
+    """Tests getargspec on partial function that prunes some arguments."""
+
+    def func(m, n):
+      return 2 * m + n
+
+    partial_func = functools.partial(func, n=7)
+    argspec = tf_inspect.ArgSpec(
+        args=['m', 'n'], varargs=None, keywords=None, defaults=(7,))
+
+    self.assertEqual(argspec, tf_inspect.getargspec(partial_func))
+
+  def testGetArgSpecOnPartialKeywordArgumentWithDefaultValue(self):
+    """Tests getargspec on partial function that prunes argument by keyword."""
+
+    def func(m=1, n=2):
+      return 2 * m + n
+
+    partial_func = functools.partial(func, n=7)
+    argspec = tf_inspect.ArgSpec(
+        args=['m', 'n'], varargs=None, keywords=None, defaults=(1, 7))
+
+    self.assertEqual(argspec, tf_inspect.getargspec(partial_func))
+
+  def testGetArgSpecOnPartialWithVarargs(self):
+    """Tests getargspec on partial function with variable arguments."""
+
+    def func(m, *arg):
+      return m + len(arg)
+
+    partial_func = functools.partial(func, 7, 8)
+    argspec = tf_inspect.ArgSpec(
+        args=[], varargs='arg', keywords=None, defaults=None)
+
+    self.assertEqual(argspec, tf_inspect.getargspec(partial_func))
+
+  def testGetArgSpecOnPartialWithVarkwargs(self):
+    """Tests getargspec on partial function with variable keyword arguments."""
+
+    def func(m, n, **kwarg):
+      return m * n + len(kwarg)
+
+    partial_func = functools.partial(func, 7)
+    argspec = tf_inspect.ArgSpec(
+        args=['n'], varargs=None, keywords='kwarg', defaults=None)
+
+    self.assertEqual(argspec, tf_inspect.getargspec(partial_func))
+
+  def testGetArgSpecOnPartialWithDecorator(self):
+    """Tests getargspec on decorated partial function."""
+
+    @test_decorator('decorator')
+    def func(m=1, n=2):
+      return 2 * m + n
+
+    partial_func = functools.partial(func, n=7)
+    argspec = tf_inspect.ArgSpec(
+        args=['m', 'n'], varargs=None, keywords=None, defaults=(1, 7))
+
+    self.assertEqual(argspec, tf_inspect.getargspec(partial_func))
+
+  def testGetArgSpecOnPartialWithDecoratorThatChangesArgspec(self):
+    """Tests getargspec on partial function with decorated argspec."""
+
+    argspec = tf_inspect.FullArgSpec(
+        args=['a', 'b', 'c'],
+        varargs=None,
+        varkw=None,
+        defaults=(1, 'hello'),
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={},
+    )
+    decorator = tf_decorator.TFDecorator('', test_undecorated_function, '',
+                                         argspec)
+    signature = inspect.Signature([
+        inspect.Parameter(
+            'a', inspect.Parameter.KEYWORD_ONLY, default=2
+        ),
+        inspect.Parameter(
+            'b', inspect.Parameter.KEYWORD_ONLY, default=1
+        ),
+        inspect.Parameter(
+            'c', inspect.Parameter.KEYWORD_ONLY, default='hello'
+        ),
+    ])
+    partial_with_decorator = functools.partial(decorator, a=2)
+    self.assertEqual(argspec, tf_inspect.getfullargspec(decorator))
+    self.assertEqual(signature, inspect.signature(partial_with_decorator))
+
+  def testGetArgSpecOnCallableObject(self):
+
+    class Callable(object):
+
+      def __call__(self, a, b=1, c='hello'):
+        pass
+
+    argspec = tf_inspect.ArgSpec(
+        args=['self', 'a', 'b', 'c'],
+        varargs=None,
+        keywords=None,
+        defaults=(1, 'hello'))
+
+    test_obj = Callable()
+    self.assertEqual(argspec, tf_inspect.getargspec(test_obj))
+
+  def testGetArgSpecOnInitClass(self):
+
+    class InitClass(object):
+
+      def __init__(self, a, b=1, c='hello'):
+        pass
+
+    argspec = tf_inspect.ArgSpec(
+        args=['self', 'a', 'b', 'c'],
+        varargs=None,
+        keywords=None,
+        defaults=(1, 'hello'))
+
+    self.assertEqual(argspec, tf_inspect.getargspec(InitClass))
+
+  def testGetArgSpecOnNewClass(self):
+
+    class NewClass(object):
+
+      def __new__(cls, a, b=1, c='hello'):
+        pass
+
+    argspec = tf_inspect.ArgSpec(
+        args=['cls', 'a', 'b', 'c'],
+        varargs=None,
+        keywords=None,
+        defaults=(1, 'hello'))
+
+    self.assertEqual(argspec, tf_inspect.getargspec(NewClass))
+
+  def testGetFullArgSpecOnDecoratorsThatDontProvideFullArgSpec(self):
+    argspec = tf_inspect.getfullargspec(test_decorated_function_with_defaults)
+    self.assertEqual(['a', 'b', 'c'], argspec.args)
+    self.assertEqual((2, 'Hello'), argspec.defaults)
+
+  def testGetFullArgSpecOnDecoratorThatChangesFullArgSpec(self):
+    argspec = tf_inspect.FullArgSpec(
+        args=['a', 'b', 'c'],
+        varargs=None,
+        varkw=None,
+        defaults=(1, 'hello'),
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+
+    decorator = tf_decorator.TFDecorator('', test_undecorated_function, '',
+                                         argspec)
+    self.assertEqual(argspec, tf_inspect.getfullargspec(decorator))
+
+  def testGetFullArgSpecIgnoresDecoratorsThatDontProvideFullArgSpec(self):
+    argspec = tf_inspect.FullArgSpec(
+        args=['a', 'b', 'c'],
+        varargs=None,
+        varkw=None,
+        defaults=(1, 'hello'),
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+
+    inner_decorator = tf_decorator.TFDecorator('', test_undecorated_function,
+                                               '', argspec)
+    outer_decorator = tf_decorator.TFDecorator('', inner_decorator)
+    self.assertEqual(argspec, tf_inspect.getfullargspec(outer_decorator))
+
+  def testGetFullArgSpecReturnsOutermostDecoratorThatChangesFullArgSpec(self):
+    outer_argspec = tf_inspect.FullArgSpec(
+        args=['a'],
+        varargs=None,
+        varkw=None,
+        defaults=None,
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+    inner_argspec = tf_inspect.FullArgSpec(
+        args=['b'],
+        varargs=None,
+        varkw=None,
+        defaults=None,
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+
+    inner_decorator = tf_decorator.TFDecorator('', test_undecorated_function,
+                                               '', inner_argspec)
+    outer_decorator = tf_decorator.TFDecorator('', inner_decorator, '',
+                                               outer_argspec)
+    self.assertEqual(outer_argspec, tf_inspect.getfullargspec(outer_decorator))
+
+  def testGetFullArgsSpecForPartial(self):
+
+    def func(a, b):
+      del a, b
+
+    partial_function = functools.partial(func, 1)
+    argspec = tf_inspect.FullArgSpec(
+        args=['b'],
+        varargs=None,
+        varkw=None,
+        defaults=None,
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+
+    self.assertEqual(argspec, tf_inspect.getfullargspec(partial_function))
+
+  def testGetFullArgSpecOnPartialNoArgumentsLeft(self):
+    """Tests getfullargspec on partial function that prunes all arguments."""
+
+    def func(m, n):
+      return 2 * m + n
+
+    partial_func = functools.partial(func, 7, 10)
+    argspec = tf_inspect.FullArgSpec(
+        args=[],
+        varargs=None,
+        varkw=None,
+        defaults=None,
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+
+    self.assertEqual(argspec, tf_inspect.getfullargspec(partial_func))
+
+  def testGetFullArgSpecOnPartialWithVarargs(self):
+    """Tests getfullargspec on partial function with variable arguments."""
+
+    def func(m, *arg):
+      return m + len(arg)
+
+    partial_func = functools.partial(func, 7, 8)
+    argspec = tf_inspect.FullArgSpec(
+        args=[],
+        varargs='arg',
+        varkw=None,
+        defaults=None,
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+
+    self.assertEqual(argspec, tf_inspect.getfullargspec(partial_func))
+
+  def testGetFullArgSpecOnPartialWithVarkwargs(self):
+    """Tests getfullargspec.
+
+    Tests on partial function with variable keyword arguments.
+    """
+
+    def func(m, n, **kwarg):
+      return m * n + len(kwarg)
+
+    partial_func = functools.partial(func, 7)
+    argspec = tf_inspect.FullArgSpec(
+        args=['n'],
+        varargs=None,
+        varkw='kwarg',
+        defaults=None,
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+
+    self.assertEqual(argspec, tf_inspect.getfullargspec(partial_func))
+
+  def testGetFullArgSpecOnCallableObject(self):
+
+    class Callable(object):
+
+      def __call__(self, a, b=1, c='hello'):
+        pass
+
+    argspec = tf_inspect.FullArgSpec(
+        args=['self', 'a', 'b', 'c'],
+        varargs=None,
+        varkw=None,
+        defaults=(1, 'hello'),
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+
+    test_obj = Callable()
+    self.assertEqual(argspec, tf_inspect.getfullargspec(test_obj))
+
+  def testGetFullArgSpecOnInitClass(self):
+
+    class InitClass(object):
+
+      def __init__(self, a, b=1, c='hello'):
+        pass
+
+    argspec = tf_inspect.FullArgSpec(
+        args=['self', 'a', 'b', 'c'],
+        varargs=None,
+        varkw=None,
+        defaults=(1, 'hello'),
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+
+    self.assertEqual(argspec, tf_inspect.getfullargspec(InitClass))
+
+  def testGetFullArgSpecOnNewClass(self):
+
+    class NewClass(object):
+
+      def __new__(cls, a, b=1, c='hello'):
+        pass
+
+    argspec = tf_inspect.FullArgSpec(
+        args=['cls', 'a', 'b', 'c'],
+        varargs=None,
+        varkw=None,
+        defaults=(1, 'hello'),
+        kwonlyargs=[],
+        kwonlydefaults=None,
+        annotations={})
+
+    self.assertEqual(argspec, tf_inspect.getfullargspec(NewClass))
+
+  def testSignatureOnDecoratorsThatDontProvideFullArgSpec(self):
+    signature = tf_inspect.signature(test_decorated_function_with_defaults)
+
+    self.assertEqual([
+        tf_inspect.Parameter('a', tf_inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        tf_inspect.Parameter(
+            'b', tf_inspect.Parameter.POSITIONAL_OR_KEYWORD, default=2),
+        tf_inspect.Parameter(
+            'c', tf_inspect.Parameter.POSITIONAL_OR_KEYWORD, default='Hello')
+    ], list(signature.parameters.values()))
+
+  def testSignatureFollowsNestedDecorators(self):
+    signature = tf_inspect.signature(test_decorated_function)
+
+    self.assertEqual(
+        [tf_inspect.Parameter('x', tf_inspect.Parameter.POSITIONAL_OR_KEYWORD)],
+        list(signature.parameters.values()))
 
   def testGetDoc(self):
     self.assertEqual('Test Decorated Function With Defaults Docstring.',
@@ -143,6 +578,18 @@ def test_decorated_function_with_defaults(a, b=2, c='Hello'):
 '''
     self.assertEqual(
         expected, tf_inspect.getsource(test_decorated_function_with_defaults))
+
+  def testGetSourceFile(self):
+    self.assertEqual(
+        __file__,
+        tf_inspect.getsourcefile(test_decorated_function_with_defaults))
+
+  def testGetSourceLines(self):
+    expected = inspect.getsourcelines(
+        test_decorated_function_with_defaults.decorated_target)
+    self.assertEqual(
+        expected,
+        tf_inspect.getsourcelines(test_decorated_function_with_defaults))
 
   def testIsBuiltin(self):
     self.assertEqual(
@@ -189,6 +636,43 @@ def test_decorated_function_with_defaults(a, b=2, c='Hello'):
     self.assertEqual(expected_stack[0][3], actual_stack[0][3])  # Function name
     self.assertEqual(expected_stack[1:], actual_stack[1:])
 
+  def testIsAnyTargetMethod(self):
+    class MyModule:
+
+      def f(self, a):
+        pass
+
+      def __call__(self):
+        pass
+
+    module = MyModule()
+    self.assertTrue(tf_inspect.isanytargetmethod(module))
+    f = module.f
+    self.assertTrue(tf_inspect.isanytargetmethod(f))
+    f = functools.partial(f, 1)
+    self.assertTrue(tf_inspect.isanytargetmethod(f))
+    f = test_decorator('tf_decorator1')(f)
+    self.assertTrue(tf_inspect.isanytargetmethod(f))
+    f = test_decorator('tf_decorator2')(f)
+    self.assertTrue(tf_inspect.isanytargetmethod(f))
+
+    class MyModule2:
+      pass
+    module = MyModule2()
+    self.assertFalse(tf_inspect.isanytargetmethod(module))
+    def f2(x):
+      del x
+    self.assertFalse(tf_inspect.isanytargetmethod(f2))
+    f2 = functools.partial(f2, 1)
+    self.assertFalse(tf_inspect.isanytargetmethod(f2))
+    f2 = test_decorator('tf_decorator1')(f2)
+    self.assertFalse(tf_inspect.isanytargetmethod(f2))
+    f2 = test_decorator('tf_decorator2')(f2)
+    self.assertFalse(tf_inspect.isanytargetmethod(f2))
+    self.assertFalse(tf_inspect.isanytargetmethod(lambda: None))
+    self.assertFalse(tf_inspect.isanytargetmethod(None))
+    self.assertFalse(tf_inspect.isanytargetmethod(1))
+
 
 class TfInspectGetCallArgsTest(test.TestCase):
 
@@ -198,6 +682,28 @@ class TfInspectGetCallArgsTest(test.TestCase):
       pass
 
     self.assertEqual({}, tf_inspect.getcallargs(empty))
+
+  def testClashingParameterNames(self):
+
+    def func(positional, func=1, func_and_positional=2, kwargs=3):
+      return positional, func, func_and_positional, kwargs
+
+    kwargs = {}
+    self.assertEqual(
+        tf_inspect.getcallargs(func, 0, **kwargs), {
+            'positional': 0,
+            'func': 1,
+            'func_and_positional': 2,
+            'kwargs': 3
+        })
+    kwargs = dict(func=4, func_and_positional=5, kwargs=6)
+    self.assertEqual(
+        tf_inspect.getcallargs(func, 0, **kwargs), {
+            'positional': 0,
+            'func': 4,
+            'func_and_positional': 5,
+            'kwargs': 6
+        })
 
   def testUnboundFuncWithOneParamPositional(self):
 
@@ -334,11 +840,14 @@ class TfInspectGetCallArgsTest(test.TestCase):
     decorated = tf_decorator.make_decorator(
         func,
         wrapper,
-        decorator_argspec=tf_inspect.ArgSpec(
+        decorator_argspec=tf_inspect.FullArgSpec(
             args=['a', 'b', 'c'],
             varargs=None,
-            keywords=None,
-            defaults=(3, 'hello')))
+            kwonlyargs={},
+            defaults=(3, 'hello'),
+            kwonlydefaults=None,
+            varkw=None,
+            annotations=None))
 
     self.assertEqual({
         'a': 4,

@@ -25,15 +25,14 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/core/common_runtime/constant_folding.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/common_runtime/shape_refiner.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/graph/subgraph.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/public/session.h"
-#include "tensorflow/core/util/command_line_flags.h"
 #include "tensorflow/tools/graph_transforms/transform_utils.h"
 
 namespace tensorflow {
@@ -114,7 +113,32 @@ Status ReplaceSendRecvs(const GraphDef& original_graph_def,
     output_graph_def->add_node()->MergeFrom(removed_node);
   }
 
-  return Status::OK();
+  return OkStatus();
+}
+
+Status RewriteInputsAsPlaceholders(const TransformFuncContext& context,
+                                   GraphDef* graph_def) {
+  std::unordered_set<string> input_names;
+  for (const string& input_name : context.input_names) {
+    input_names.emplace(ParseTensorName(input_name).first);
+  }
+
+  for (NodeDef& node : *graph_def->mutable_node()) {
+    if (input_names.find(node.name()) == input_names.end()) {
+      continue;
+    }
+    if (node.op() == "PlaceholderWithDefault") {
+      node.set_op("Placeholder");
+      node.clear_input();
+    } else if (node.op() != "Placeholder") {
+      return errors::InvalidArgument(
+          "Input '", node.name(),
+          "' was expected to be a Placeholder or PlaceholderWithDefault op, "
+          "but was ",
+          node.op());
+    }
+  }
+  return OkStatus();
 }
 
 Status RemoveUnusedNodes(const GraphDef& input_graph_def,
@@ -165,8 +189,9 @@ Status RemoveUnusedNodes(const GraphDef& input_graph_def,
       input_graph_def,
       [&](const NodeDef& node) { return used_nodes.count(node.name()) > 0; },
       output_graph_def);
+  TF_RETURN_IF_ERROR(RewriteInputsAsPlaceholders(context, output_graph_def));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Converts a shape inference handle to a PartialTensorShape.
@@ -174,10 +199,10 @@ Status ShapeHandleToTensorShape(const shape_inference::ShapeHandle& handle,
                                 shape_inference::InferenceContext* context,
                                 PartialTensorShape* shape) {
   // The default is already unknown.
-  if (!context->RankKnown(handle)) return Status::OK();
+  if (!context->RankKnown(handle)) return OkStatus();
 
-  std::vector<int64> dims(context->Rank(handle));
-  for (int32 i = 0; i < dims.size(); ++i) {
+  std::vector<int64_t> dims(context->Rank(handle));
+  for (int32_t i = 0; i < dims.size(); ++i) {
     dims[i] = context->Value(context->Dim(handle, i));
   }
   return PartialTensorShape::MakePartialShape(dims.data(), dims.size(), shape);
@@ -273,13 +298,19 @@ Status FoldConstants(const GraphDef& input_graph_def,
   cf_opts.shape_map = &shape_map;
 
   // Exclude specified nodes from constant folding.
+  std::set<string> excluded_ops, excluded_nodes;
   if (context.params.count("exclude_op") > 0) {
-    const auto& excluded_nodes = context.params.at("exclude_op");
-    const std::set<string> excluded_nodes_set(excluded_nodes.begin(),
-                                              excluded_nodes.end());
-    cf_opts.consider = [excluded_nodes_set](const Node* n) {
-      return excluded_nodes_set.find(n->op_def().name()) ==
-             excluded_nodes_set.end();
+    const auto& ops = context.params.at("exclude_op");
+    excluded_ops = std::set<string>(ops.begin(), ops.end());
+  }
+  if (context.params.count("exclude_node") > 0) {
+    const auto& nodes = context.params.at("exclude_node");
+    excluded_nodes = std::set<string>(nodes.begin(), nodes.end());
+  }
+  if (!excluded_ops.empty() || !excluded_nodes.empty()) {
+    cf_opts.consider = [excluded_ops, excluded_nodes](const Node* n) {
+      return excluded_ops.find(n->op_def().name()) == excluded_ops.end() &&
+             excluded_nodes.find(n->name()) == excluded_nodes.end();
     };
   }
 
@@ -299,7 +330,7 @@ Status FoldConstants(const GraphDef& input_graph_def,
                                       &send_recvs_replaced));
   TF_RETURN_IF_ERROR(
       RemoveUnusedNodes(send_recvs_replaced, context, output_graph_def));
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("fold_constants", FoldConstants);

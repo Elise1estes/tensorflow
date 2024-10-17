@@ -13,11 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_SPLIT_LIB_H_
-#define TENSORFLOW_KERNELS_SPLIT_LIB_H_
+#ifndef TENSORFLOW_CORE_KERNELS_SPLIT_LIB_H_
+#define TENSORFLOW_CORE_KERNELS_SPLIT_LIB_H_
 // Functor definition for SplitOp, must be compilable by nvcc.
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/tensor_types.h"
 
 namespace tensorflow {
@@ -48,18 +48,8 @@ struct Split<Eigen::ThreadPoolDevice, T, NDims> {
                   const Eigen::DSizes<Eigen::DenseIndex, NDims>& slice_sizes);
 };
 
-#ifdef TENSORFLOW_USE_SYCL
-template <typename T, int NDims>
-struct Split<Eigen::SyclDevice, T> {
-  void operator()(const Eigen::SyclDevice& d,
-                  typename TTypes<T, NDims>::Tensor output,
-                  typename TTypes<T, NDims>::ConstTensor input,
-                  const Eigen::DSizes<Eigen::DenseIndex, NDims>& slice_indices,
-                  const Eigen::DSizes<Eigen::DenseIndex, NDims>& slice_sizes);
-};
-#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace functor
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_SPLIT_LIB_H_
+#endif  // TENSORFLOW_CORE_KERNELS_SPLIT_LIB_H_

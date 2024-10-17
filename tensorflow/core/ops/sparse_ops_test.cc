@@ -52,6 +52,18 @@ TEST(SparseOpsTest, SparseAddGrad_ShapeFn) {
   INFER_OK(op, "?;[?,?];[?,?];?", "[d1_0];[d2_0]");
 }
 
+TEST(SparseOpsTest, SparseSliceGrad_ShapeFn) {
+  ShapeInferenceTestOp op("SparseSliceGrad");
+
+  // Rank checks.
+  INFER_ERROR("must be rank 2", op, "?;[1];?;?");
+
+  INFER_OK(op, "?;?;?;?", "[?]");
+
+  // input[1].dim(0) determine output.
+  INFER_OK(op, "?;[?,?];?;?", "[d1_0]");
+}
+
 TEST(SparseOpsTest, SparseReorder_ShapeFn) {
   ShapeInferenceTestOp op("SparseReorder");
 
@@ -121,6 +133,13 @@ TEST(SparseOpsTest, SparseToDense_ShapeFn) {
 
 TEST(SparseOpsTest, SparseReduceSum_ShapeFn) {
   ShapeInferenceTestOp op("SparseReduceSum");
+  TF_ASSERT_OK(NodeDefBuilder("test", "SparseReduceSum")
+                   .Input({"input_indices", 0, DT_INT64})
+                   .Input({"input_values", 1, DT_INT64})
+                   .Input({"input_shape", 2, DT_INT64})
+                   .Input({"reduction_axes", 3, DT_INT32})
+                   .Attr("keep_dims", false)
+                   .Finalize(&op.node_def));
 
   // Shape fn always yields unknown.
   INFER_OK(op, "?;?;?;?", "?");
@@ -197,7 +216,7 @@ TEST(SparseOpsTest, SparseTensorDenseMatMul_ShapeFn) {
 
   // first output comes from a, depending on adjoint_a value.
   // When input tensor is known, its values determine output shape.
-  Tensor a_shape_t = test::AsTensor<int64>(std::vector<int64>{3, 1});
+  Tensor a_shape_t = test::AsTensor<int64_t>(std::vector<int64_t>{3, 1});
   op.input_tensors.resize(4);
   op.input_tensors[2] = &a_shape_t;
 
@@ -211,7 +230,7 @@ TEST(SparseOpsTest, SparseTensorDenseMatMul_ShapeFn) {
   INFER_ERROR("must be equal", op, "?;?;[2];[1,2]");  // adjoint_a, !adjoint_b.
 
   // Try with shape tensor describing shape of rank 3.
-  a_shape_t = test::AsTensor<int64>(std::vector<int64>{3, 1, 2});
+  a_shape_t = test::AsTensor<int64_t>(std::vector<int64_t>{3, 1, 2});
   INFER_ERROR("must be rank 2 but is rank 3", op, "?;?;[3];[1,2]");
 }
 

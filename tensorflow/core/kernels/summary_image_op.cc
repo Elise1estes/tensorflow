@@ -31,7 +31,7 @@ class SummaryImageOp : public OpKernel {
   typedef Eigen::Tensor<uint8, 2, Eigen::RowMajor> Uint8Image;
 
   explicit SummaryImageOp(OpKernelConstruction* context) : OpKernel(context) {
-    int64 max_images_tmp;
+    int64_t max_images_tmp;
     OP_REQUIRES_OK(context, context->GetAttr("max_images", &max_images_tmp));
     OP_REQUIRES(context, max_images_tmp < (1LL << 31),
                 errors::InvalidArgument("max_images must be < 2^31"));
@@ -52,7 +52,7 @@ class SummaryImageOp : public OpKernel {
   void Compute(OpKernelContext* c) override {
     const Tensor& tags = c->input(0);
     const Tensor& tensor = c->input(1);
-    OP_REQUIRES(c, IsLegacyScalar(tags.shape()),
+    OP_REQUIRES(c, TensorShapeUtils::IsScalar(tags.shape()),
                 errors::InvalidArgument("Tags must be a scalar"));
     OP_REQUIRES(c,
                 tensor.dims() == 4 &&
@@ -61,7 +61,7 @@ class SummaryImageOp : public OpKernel {
                 errors::InvalidArgument(
                     "Tensor must be 4-D with last dim 1, 3, or 4, not ",
                     tensor.shape().DebugString()));
-    const string& base_tag = tags.scalar<string>()();
+    const string& base_tag = tags.scalar<tstring>()();
 
     OP_REQUIRES(c,
                 tensor.dim_size(0) < (1LL << 31) &&
@@ -77,6 +77,11 @@ class SummaryImageOp : public OpKernel {
     const int w = static_cast<int>(tensor.dim_size(2));
     const int hw = h * w;  // Compact these two dims for simplicity
     const int depth = static_cast<int>(tensor.dim_size(3));
+
+    OP_REQUIRES(c, hw > 0 && depth > 0,
+                errors::InvalidArgument(
+                    "input tensor must have non-zero dims. Found: [",
+                    batch_size, ", ", h, ", ", w, ", ", depth, "]."));
 
     Summary s;
     if (tensor.dtype() == DT_UINT8) {
@@ -101,7 +106,7 @@ class SummaryImageOp : public OpKernel {
 
     Tensor* summary_tensor = nullptr;
     OP_REQUIRES_OK(c, c->allocate_output(0, TensorShape({}), &summary_tensor));
-    CHECK(s.SerializeToString(&summary_tensor->scalar<string>()()));
+    CHECK(SerializeToTString(s, &summary_tensor->scalar<tstring>()()));
   }
 
   template <class T>
@@ -137,9 +142,10 @@ class SummaryImageOp : public OpKernel {
   // differently in the float and uint8 cases: the float case needs a temporary
   // buffer which can be shared across calls to ith_image, but the uint8 case
   // does not.
-  Status AddImages(const string& tag, int batch_size, int w, int h, int depth,
-                   const std::function<Uint8Image(int)>& ith_image,
-                   Summary* s) {
+  absl::Status AddImages(const string& tag, int batch_size, int w, int h,
+                         int depth,
+                         const std::function<Uint8Image(int)>& ith_image,
+                         Summary* s) {
     const int N = std::min<int>(max_images_, batch_size);
     for (int i = 0; i < N; ++i) {
       Summary::Value* v = s->add_value();
@@ -168,7 +174,7 @@ class SummaryImageOp : public OpKernel {
         return errors::Internal("PNG encoding failed");
       }
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   template <class T>

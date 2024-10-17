@@ -14,18 +14,14 @@
 # ==============================================================================
 """gRPC debug server in Python."""
 # pylint: disable=g-bad-import-order
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import json
+import queue
 import threading
 import time
 
 from concurrent import futures
 import grpc
-from six.moves import queue
 
 from tensorflow.core.debug import debug_service_pb2
 from tensorflow.core.framework import graph_pb2
@@ -47,7 +43,7 @@ def _state_change(new_state, node_name, output_slot, debug_op):
   return state_change
 
 
-class EventListenerBaseStreamHandler(object):
+class EventListenerBaseStreamHandler:
   """Per-stream handler of EventListener gRPC streams."""
 
   def __init__(self):
@@ -346,7 +342,10 @@ class EventListenerBaseServicer(debug_service_pb2_grpc.EventListenerServicer):
       if self._server_started:
         raise ValueError("Server has already started running")
 
-      self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+      no_max_message_sizes = [("grpc.max_receive_message_length", -1),
+                              ("grpc.max_send_message_length", -1)]
+      self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=10),
+                                options=no_max_message_sizes)
       debug_service_pb2_grpc.add_EventListenerServicer_to_server(self,
                                                                  self.server)
       self.server.add_insecure_port("[::]:%d" % self._server_port)
@@ -388,7 +387,7 @@ class EventListenerBaseServicer(debug_service_pb2_grpc.EventListenerServicer):
     finally:
       self._server_lock.release()
 
-  def request_watch(self, node_name, output_slot, debug_op, breakpoint=False):
+  def request_watch(self, node_name, output_slot, debug_op, breakpoint=False):  # pylint: disable=redefined-builtin
     """Request enabling a debug tensor watchpoint or breakpoint.
 
     This will let the server send a EventReply to the client side

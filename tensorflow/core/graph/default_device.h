@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_GRAPH_DEFAULT_DEVICE_H_
-#define TENSORFLOW_GRAPH_DEFAULT_DEVICE_H_
+#ifndef TENSORFLOW_CORE_GRAPH_DEFAULT_DEVICE_H_
+#define TENSORFLOW_CORE_GRAPH_DEFAULT_DEVICE_H_
 
 #include <string>
 
@@ -26,7 +26,7 @@ namespace graph {
 
 // Sets the default device for all nodes in graph_def to "device",
 // only if not already set.
-inline void SetDefaultDevice(const string& device, GraphDef* graph_def) {
+inline void SetDefaultDevice(const std::string& device, GraphDef* graph_def) {
   for (int i = 0; i < graph_def->node_size(); ++i) {
     auto node = graph_def->mutable_node(i);
     if (node->device().empty()) {
@@ -38,4 +38,4 @@ inline void SetDefaultDevice(const string& device, GraphDef* graph_def) {
 }  // namespace graph
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_GRAPH_DEFAULT_DEVICE_H_
+#endif  // TENSORFLOW_CORE_GRAPH_DEFAULT_DEVICE_H_

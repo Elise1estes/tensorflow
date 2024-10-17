@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for tensorflow.python.framework.random_seed."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.eager import context
 from tensorflow.python.framework import random_seed
 from tensorflow.python.framework import test_util
@@ -26,7 +22,7 @@ from tensorflow.python.platform import test
 
 class RandomSeedTest(test.TestCase):
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testRandomSeed(self):
     test_cases = [
         # Each test case is a tuple with input to get_seed:

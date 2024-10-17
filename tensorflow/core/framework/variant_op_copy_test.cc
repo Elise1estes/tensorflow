@@ -66,21 +66,21 @@ struct StoredTensorValue {
     stored = data.tensors_[0];
     return true;
   }
-  static Status CopyCPUToGPU(
+  static absl::Status CopyCPUToGPU(
       const StoredTensorValue& from, StoredTensorValue* to,
-      const std::function<Status(const Tensor&, Tensor*)>& copy) {
+      const std::function<absl::Status(const Tensor&, Tensor*)>& copy) {
     ++*GetCopyCPUToGPUCounter();
     return copy(from.stored, &(to->stored));
   }
-  static Status CopyGPUToCPU(
+  static absl::Status CopyGPUToCPU(
       const StoredTensorValue& from, StoredTensorValue* to,
-      const std::function<Status(const Tensor&, Tensor*)>& copy) {
+      const std::function<absl::Status(const Tensor&, Tensor*)>& copy) {
     ++*GetCopyGPUToCPUCounter();
     return copy(from.stored, &(to->stored));
   }
-  static Status CopyGPUToGPU(
+  static absl::Status CopyGPUToGPU(
       const StoredTensorValue& from, StoredTensorValue* to,
-      const std::function<Status(const Tensor&, Tensor*)>& copy) {
+      const std::function<absl::Status(const Tensor&, Tensor*)>& copy) {
     ++*GetCopyGPUToGPUCounter();
     return copy(from.stored, &(to->stored));
   }
@@ -90,15 +90,15 @@ REGISTER_UNARY_VARIANT_DECODE_FUNCTION(StoredTensorValue, "StoredTensorValue");
 
 INTERNAL_REGISTER_UNARY_VARIANT_DEVICE_COPY_FUNCTION(
     StoredTensorValue, VariantDeviceCopyDirection::HOST_TO_DEVICE,
-    "StoredTensorValue", StoredTensorValue::CopyCPUToGPU);
+    StoredTensorValue::CopyCPUToGPU);
 
 INTERNAL_REGISTER_UNARY_VARIANT_DEVICE_COPY_FUNCTION(
     StoredTensorValue, VariantDeviceCopyDirection::DEVICE_TO_HOST,
-    "StoredTensorValue", StoredTensorValue::CopyGPUToCPU);
+    StoredTensorValue::CopyGPUToCPU);
 
 INTERNAL_REGISTER_UNARY_VARIANT_DEVICE_COPY_FUNCTION(
     StoredTensorValue, VariantDeviceCopyDirection::DEVICE_TO_DEVICE,
-    "StoredTensorValue", StoredTensorValue::CopyGPUToGPU);
+    StoredTensorValue::CopyGPUToGPU);
 
 REGISTER_OP("CreateTestVariant")
     .Input("input: T")
@@ -167,7 +167,7 @@ TEST(VariantOpCopyTest, CreateConstOnCPU) {
   // Create the input StoredTensorValue and serialize it.
   StoredTensorValue from;
   from.stored = Tensor(DT_INT64, TensorShape({}));
-  from.stored.scalar<int64>()() = 0xdeadbeef;
+  from.stored.scalar<int64_t>()() = 0xdeadbeef;
   VariantTensorData data;
   data.set_type_name(from.TypeName());
   from.Encode(&data);
@@ -190,7 +190,7 @@ TEST(VariantOpCopyTest, CreateConstOnCPU) {
   EXPECT_EQ("StoredTensorValue", variant.TypeName());
   const StoredTensorValue* to = variant.get<StoredTensorValue>();
   EXPECT_EQ(to->stored.dtype(), DT_INT64);
-  EXPECT_EQ(0xdeadbeef, to->stored.scalar<int64>()());
+  EXPECT_EQ(0xdeadbeef, to->stored.scalar<int64_t>()());
 }
 
 TEST(VariantOpCopyTest, CreateConstOnGPU) {
@@ -201,7 +201,7 @@ TEST(VariantOpCopyTest, CreateConstOnGPU) {
   // Create the input StoredTensorValue and serialize it.
   StoredTensorValue from;
   from.stored = Tensor(DT_INT64, TensorShape({}));
-  from.stored.scalar<int64>()() = 0xdeadbeef;
+  from.stored.scalar<int64_t>()() = 0xdeadbeef;
   VariantTensorData data;
   data.set_type_name(from.TypeName());
   from.Encode(&data);
@@ -233,7 +233,7 @@ TEST(VariantOpCopyTest, CreateConstOnGPU) {
   EXPECT_EQ("StoredTensorValue", variant.TypeName());
   const StoredTensorValue* to = variant.get<StoredTensorValue>();
   EXPECT_EQ(to->stored.dtype(), DT_INT64);
-  EXPECT_EQ(0xdeadbeef, to->stored.scalar<int64>()());
+  EXPECT_EQ(0xdeadbeef, to->stored.scalar<int64_t>()());
 }
 
 TEST(VariantOpCopyTest, CreateConstOnGPUFailsGracefully) {
@@ -244,7 +244,7 @@ TEST(VariantOpCopyTest, CreateConstOnGPUFailsGracefully) {
   // Create the input StoredTensorValue and serialize it.
   StoredTensorValue from;
   from.stored = Tensor(DT_STRING, TensorShape({}));
-  from.stored.scalar<string>()() = "hi";
+  from.stored.scalar<tstring>()() = "hi";
   VariantTensorData data;
   data.set_type_name(from.TypeName());
   from.Encode(&data);
@@ -259,9 +259,9 @@ TEST(VariantOpCopyTest, CreateConstOnGPUFailsGracefully) {
   TF_ASSERT_OK(root.status());
   ClientSession session(root);
   std::vector<Tensor> outputs;
-  Status s = session.Run({create_const}, &outputs);
-  EXPECT_TRUE(str_util::StrContains(s.error_message(),
-                                    "GPU copy from non-DMA string tensor"))
+  absl::Status s = session.Run({create_const}, &outputs);
+  EXPECT_TRUE(
+      absl::StrContains(s.message(), "GPU copy from non-DMA string tensor"))
       << s.ToString();
 }
 
@@ -292,7 +292,7 @@ TEST(VariantOpCopyTest, CreateCopyCPUToCPU) {
 TEST(VariantOpCopyTest, CreateCopyCPUToCPUString) {
   Scope root = Scope::NewRootScope().WithDevice("/cpu:0");
   Tensor t_str(DT_STRING, TensorShape({}));
-  t_str.scalar<string>()() = "hi";
+  t_str.scalar<tstring>()() = "hi";
   Output create_op = CreateTestVariant(root, t_str);
   Output identity = ops::Identity(root, create_op);
 
@@ -309,7 +309,7 @@ TEST(VariantOpCopyTest, CreateCopyCPUToCPUString) {
     EXPECT_EQ("StoredTensorValue", r1.TypeName());
     const StoredTensorValue* v1 = r1.get<StoredTensorValue>();
     EXPECT_NE(v1, nullptr);
-    EXPECT_EQ("hi", v1->stored.scalar<string>()());
+    EXPECT_EQ("hi", v1->stored.scalar<tstring>()());
   }
 }
 
@@ -356,7 +356,7 @@ TEST(VariantOpCopyTest, CreateCopyCPUToGPUStringFailsSafely) {
   Scope root = Scope::NewRootScope().WithDevice("/cpu:0");
   Scope with_gpu = root.WithDevice("/gpu:0");
   Tensor t_str(DT_STRING, TensorShape({}));
-  t_str.scalar<string>()() = "hi";
+  t_str.scalar<tstring>()() = "hi";
   Output create_op = CreateTestVariant(root, t_str);
   Output identity = ops::Identity(with_gpu, create_op);
 
@@ -364,13 +364,13 @@ TEST(VariantOpCopyTest, CreateCopyCPUToGPUStringFailsSafely) {
 
   ClientSession session(root);
   std::vector<Tensor> outputs;
-  Status err = session.Run({create_op, identity}, &outputs);
-  EXPECT_EQ(err.code(), errors::Code::INVALID_ARGUMENT);
+  absl::Status err = session.Run({create_op, identity}, &outputs);
+  EXPECT_TRUE(errors::IsInvalidArgument(err));
   EXPECT_TRUE(
-      str_util::StrContains(err.error_message(),
-                            "During Variant Host->Device Copy: non-DMA-copy "
-                            "attempted of tensor type: string"))
-      << err.error_message();
+      absl::StrContains(err.message(),
+                        "During Variant Host->Device Copy: non-DMA-copy "
+                        "attempted of tensor type: string"))
+      << err.message();
 }
 
 // TODO(ebrevdo): Identify a way to create two virtual GPUs within a

@@ -62,12 +62,12 @@ op {
 )";
 
 void ExpectHasSubstr(StringPiece s, StringPiece expected) {
-  EXPECT_TRUE(str_util::StrContains(s, expected))
+  EXPECT_TRUE(absl::StrContains(s, expected))
       << "'" << s << "' does not contain '" << expected << "'";
 }
 
 void ExpectDoesNotHaveSubstr(StringPiece s, StringPiece expected) {
-  EXPECT_FALSE(str_util::StrContains(s, expected))
+  EXPECT_FALSE(absl::StrContains(s, expected))
       << "'" << s << "' contains '" << expected << "'";
 }
 
@@ -93,7 +93,7 @@ void GenerateCcOpFiles(Env* env, const OpList& ops,
   const auto internal_h_file_path = io::JoinPath(tmpdir, "test_internal.h");
   const auto internal_cc_file_path = io::JoinPath(tmpdir, "test_internal.cc");
 
-  WriteCCOps(ops, api_def_map, h_file_path, cc_file_path);
+  cc_op::WriteCCOps(ops, api_def_map, h_file_path, cc_file_path);
 
   TF_ASSERT_OK(ReadFileToString(env, h_file_path, h_file_text));
   TF_ASSERT_OK(

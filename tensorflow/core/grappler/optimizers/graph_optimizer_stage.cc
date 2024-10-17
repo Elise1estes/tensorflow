@@ -14,12 +14,13 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/grappler/optimizers/graph_optimizer_stage.h"
+#include "tensorflow/core/graph/tensor_id.h"
 
 namespace tensorflow {
 namespace grappler {
 
 const NodeScopeAndName ParseNodeScopeAndName(const string& node_name) {
-  auto pos = node_name.find_last_of("/");
+  auto pos = node_name.find_last_of('/');
   if (pos == string::npos) {
     return {"", node_name};
   } else {
@@ -36,36 +37,38 @@ Status GetInputNode(const GraphOptimizerContext& ctx, const string& input,
                                       " doesn't exists in a node map");
   }
   *node = node_by_name;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 Status GetTensorProperties(const GraphOptimizerContext& ctx,
                            const string& tensor,
-                           OpInfo::TensorProperties* properties) {
+                           const OpInfo::TensorProperties** properties) {
   if (ctx.graph_properties == nullptr) {
     return errors::InvalidArgument("Graph properties are unknown.");
   }
 
-  int port;
-  string tensor_node_name = ParseNodeName(tensor, &port);
-  if (port < 0) {
+  // TODO(ezhulenev): Make it TensorId when graph properties will support
+  // absl::string_view lookup.
+  SafeTensorId tensor_id = ParseTensorName(tensor);
+
+  if (tensor_id.index() < 0) {
     return errors::InvalidArgument(
         "Can't get tensor properties of control dependency ", tensor);
   }
 
   const auto& output_properties =
-      ctx.graph_properties->GetOutputProperties(tensor_node_name);
-  auto num_outputs = output_properties.size();
+      ctx.graph_properties->GetOutputProperties(tensor_id.node());
+  int num_outputs = output_properties.size();
 
-  if (num_outputs == 0 || port > num_outputs - 1) {
+  if (num_outputs == 0 || tensor_id.index() > num_outputs - 1) {
     return errors::InvalidArgument(
-        "Node ", tensor_node_name,
-        " is missing output properties at position :", port,
+        "Node ", tensor_id.node(),
+        " is missing output properties at position :", tensor_id.index(),
         " (num_outputs=", num_outputs, ")");
   }
 
-  properties->CopyFrom(output_properties[port]);
-  return Status::OK();
+  *properties = &output_properties[tensor_id.index()];
+  return absl::OkStatus();
 }
 
 NodeDef* AddCopyNode(const GraphOptimizerContext& ctx, const string& name,
@@ -81,11 +84,14 @@ NodeDef* AddCopyNode(const GraphOptimizerContext& ctx, const string& name,
 }
 
 NodeDef* AddEmptyNode(const GraphOptimizerContext& ctx, const string& name) {
-  CHECK(!ctx.node_map->NodeExists(name))
-      << "Node " << name << " already exists in a graph";
+  std::string new_name = name;
+  for (int count = 0; ctx.node_map->NodeExists(new_name); ++count) {
+    LOG(WARNING) << name << " already exists in the graph.";
+    new_name = absl::StrCat(name, "_", count);
+  }
   NodeDef* new_node = ctx.optimized_graph->add_node();
-  new_node->set_name(name);
-  ctx.node_map->AddNode(name, new_node);
+  new_node->set_name(new_name);
+  ctx.node_map->AddNode(new_name, new_node);
   return new_node;
 }
 

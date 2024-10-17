@@ -14,10 +14,6 @@
 # ==============================================================================
 """Formats and displays profiling information."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import argparse
 import os
 import re
@@ -568,8 +564,8 @@ class ProfileAnalyzer(object):
 
     # Add stat totals.
     row_str = ""
-    for col in range(len(device_total_row)):
-      row_str += ("{:<%d}" % column_widths[col]).format(device_total_row[col])
+    for width, row in zip(column_widths, device_total_row):
+      row_str += ("{:<%d}" % width).format(row)
     output.append(RL())
     output.append(RL(row_str))
     return debugger_cli_common.rich_text_lines_from_rich_line_list(output)
@@ -624,7 +620,7 @@ class ProfileAnalyzer(object):
       device_stats = self._run_metadata.step_stats.dev_stats[index]
       if device_name_regex and not device_name_regex.match(device_stats.device):
         continue
-      profile_data.extend([datum for datum in data_generator(device_stats)])
+      profile_data.extend(data_generator(device_stats))
 
     source_annotation = source_utils.annotate_source_against_profile(
         profile_data,
@@ -767,15 +763,15 @@ class ProfileAnalyzer(object):
 
 def create_profiler_ui(graph,
                        run_metadata,
-                       ui_type="curses",
+                       ui_type="readline",
                        on_ui_exit=None,
                        config=None):
-  """Create an instance of CursesUI based on a `tf.Graph` and `RunMetadata`.
+  """Create an instance of ReadlineUI based on a `tf.Graph` and `RunMetadata`.
 
   Args:
     graph: Python `Graph` object.
     run_metadata: A `RunMetadata` protobuf object.
-    ui_type: (str) requested UI type, e.g., "curses", "readline".
+    ui_type: (str) requested UI type, e.g., "readline".
     on_ui_exit: (`Callable`) the callback to be called when the UI exits.
     config: An instance of `cli_config.CLIConfig`.
 

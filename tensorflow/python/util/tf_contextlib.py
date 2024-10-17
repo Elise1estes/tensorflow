@@ -13,16 +13,19 @@
 # limitations under the License.
 # ==============================================================================
 """TFDecorator-aware replacements for the contextlib module."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+from collections.abc import Callable, Iterator
 import contextlib as _contextlib
+
+from typing import ContextManager, TypeVar
 
 from tensorflow.python.util import tf_decorator
 
+_T = TypeVar('_T')
 
-def contextmanager(target):
+
+def contextmanager(
+    target: Callable[..., Iterator[_T]],
+) -> Callable[..., ContextManager[_T]]:
   """A tf_decorator-aware wrapper for `contextlib.contextmanager`.
 
   Usage is identical to `contextlib.contextmanager`.

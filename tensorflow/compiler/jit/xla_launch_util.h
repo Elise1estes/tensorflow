@@ -18,54 +18,139 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_JIT_XLA_LAUNCH_UTIL_H_
 #define TENSORFLOW_COMPILER_JIT_XLA_LAUNCH_UTIL_H_
 
-#include "tensorflow/compiler/jit/xla_compilation_cache.h"
+#include <map>
+#include <memory>
+#include <set>
+#include <vector>
+
+#include "tensorflow/compiler/jit/variable_info.h"
 #include "tensorflow/compiler/jit/xla_tensor.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
-#include "tensorflow/compiler/xla/client/local_client.h"
+#include "xla/client/local_client.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/service/shaped_buffer.h"
+#include "xla/stream_executor/device_memory_allocator.h"
 #include "tensorflow/core/framework/allocation_description.pb.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/kernels/variable_ops.h"
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/platform/thread_annotations.h"
 
 namespace tensorflow {
-class XlaAllocator;
 
-// Takes a snapshot of the values of resource variable arguments, which are
-// the last `num_variables` arguments. We snapshot tensors that back
-// resource variables since concurrent updates may modify the shape, and it is
-// important that the shapes used for compilation match the true shapes of the
-// buffers.
+// Creates a list of updated resource variables.
+absl::StatusOr<std::vector<VariableInfo>> GatherVariableInfo(
+    OpKernelContext* ctx,
+    const XlaCompiler::CompilationResult& compilation_result,
+    int missing_ctx_input_prefix);
+
+// Returns pointers to inputs stored in `ctx`.
+std::vector<const Tensor*> InputsFromContext(OpKernelContext* ctx);
+
+absl::StatusOr<std::vector<int>> GetConstantInputIndicesFromContext(
+    OpKernelContext* ctx);
+
+absl::Status SetOutputForConstant(
+    OpKernelContext* ctx, bool requires_copy_to_device,
+    const XlaCompiler::CompilationResult* compilation_result, int output_num);
+
+// Converts input tensors and variables which are parameters of the
+// XlaComputation into PjRtBuffers to be fed as input to the
+// PjRtLoadedExecutable.
 //
-// Returns a map of TensorFlow argument index to resource variable.
-std::map<int, OptionalTensor> SnapshotResourceVariables(OpKernelContext* ctx,
-                                                        int num_variables);
+// Assumes that the first `num_missing_prefix_ctx_inputs` inputs to the
+// compilation_result are missing in `inputs` and adjusts indexing into `inputs`
+// accordingly.
+// `input_mapping` is a vector that maps from the parameters of the
+// XlaComputation to their original argument positions. This can be sourced from
+// `XlaCompiler::CompilationResult::input_mapping`.
+// `variable_snapshots` is a map of {index of the input to the
+// compilation_result -> underlying Tensor the variable is/was pointing to (i.e.
+// the value of the variable at the time of lowering/compilation)}.
+//
+// The obtained PjRtBuffers are populated to `args` vector.
+// `non_donatable_input_indices` will also be set, which contains the indices of
+// the input that should not be donated to output.
+//
+// There can be three types of input: 1. Tensor with PjRtTensorBuffer; 2.
+// Tensor with AsyncValueTensor; 3. Tensor with raw device mem pointer.
+// For case 3, we need to create a PjRtBuffer from the raw device mem pointer,
+// and we need to ensure the PjRtBuffer persists till XLA computation is
+// complete. Therefore we put the newly created PjRtBuffer into `owned_args`.
+// Caller is responsible to ensure `owned_args` lives till the end of XLA
+// computation.
+absl::Status PreparePjRtExecutableArguments(
+    int num_missing_prefix_ctx_inputs, const std::vector<int>& input_mapping,
+    const std::vector<const Tensor*>& inputs,
+    const absl::flat_hash_map<int, const Tensor*>& variable_snapshots,
+    xla::PjRtClient* pjrt_client, xla::PjRtDevice* pjrt_device,
+    bool use_pjrt_tensor_buffer, std::vector<xla::PjRtBuffer*>* args,
+    std::vector<std::unique_ptr<xla::PjRtBuffer>>* owned_args,
+    absl::flat_hash_set<int>* non_donatable_input_indices);
 
-// Adapter class that wraps a Tensorflow allocator as an XLA allocator.
-// Assumes that the Tensorflow allocator permits asynchronous deallocation:
-// see comment on `AllowsAsynchronousDeallocation()`.
-class XlaAllocator : public xla::DeviceMemoryAllocator {
- public:
-  XlaAllocator(const perftools::gputools::Platform* platform,
-               Allocator* wrapped);
-  ~XlaAllocator() override;
-  xla::StatusOr<perftools::gputools::DeviceMemoryBase> Allocate(
-      int device_ordinal, uint64 size, bool retry_on_failure) override;
-  Status Deallocate(int device_ordinal,
-                    perftools::gputools::DeviceMemoryBase* mem) override;
+// Populates the OpKernelContext outputs with the outputs of the
+// PjRtLoadedExecutable. Requires the `compilation_result` used to build the
+// PjRtLoadedExecutable.
+// This function only looks at variables that were updated, so `variables` can
+// either be all the variables or only the ones that were updated.
+// Assumes that the first `num_missing_prefix_ctx_inputs` inputs to the
+// compilation_result are missing in `inputs` and adjusts indexing into `inputs`
+// accordingly.
+absl::Status PopulateCtxOutputsFromPjRtExecutableOutputs(
+    int num_missing_prefix_ctx_inputs, const std::vector<const Tensor*>& inputs,
+    const std::vector<VariableInfo>& variables,
+    const XlaCompiler::CompilationResult& compilation_result,
+    bool use_pjrt_tensor_buffer,
+    std::vector<std::unique_ptr<xla::PjRtBuffer>>& executable_outputs,
+    OpKernelContext* ctx);
 
-  // The Tensorflow BFC allocator used on GPU allows host-side deallocation
-  // before GPU execution takes place. Tensorflow uses the ordering of the main
-  // compute stream to enforce a happens-before relationship between a memory
-  // allocation and code that reuses the same memory. If Tensorflow adds
-  // support for multiple GPU streams or allocators with different ordering
-  // requirements, this code may need to change.
-  // (This attribute has no effect on CPU.)
-  bool AllowsAsynchronousDeallocation() const override { return true; }
+// Returns the options used for executing a PjRtLoadedExecutable.
+xla::ExecuteOptions GetPjRtExecuteOptions(
+    const DeviceType& device_type,
+    absl::flat_hash_set<int> non_donatable_input_indices);
 
- private:
-  Allocator* wrapped_;
-};
+// Returns the device ordinal from the parsed name of the device.
+int GetDeviceOrdinal(const DeviceBase* device);
+
+// Returns the device type from the OpKernelContext.
+DeviceType GetDeviceType(OpKernelContext* ctx);
+
+// Runs `executable` and populates the outputs in `ctx`. `inputs` and
+// `variables` are the input arguments to the computation, usually read from the
+// OpKernelContext, `ctx`. Requires the device-appropriate `pjrt_client` and the
+// `compilation_result` used to build the `executable`.
+absl::Status RunPjRtExecutable(
+    const std::vector<const Tensor*>& inputs,
+    const std::vector<VariableInfo>& variables,
+    const XlaCompiler::CompilationResult& compilation_result,
+    xla::PjRtClient* pjrt_client, xla::PjRtLoadedExecutable* executable,
+    OpKernelContext* ctx);
+
+// Same as the above function but takes in `updated_variables` and
+// `variable_snapshots` which is a map of {index of the input to the
+// compilation_result -> underlying Tensor the variable is/was pointing to
+// (i.e. the value of the variable at the time of lowering/compilation)}.
+// Assumes that the first `num_missing_prefix_ctx_inputs` inputs to the
+// compilation_result are missing in `inputs` and adjusts indexing into `inputs`
+// accordingly.
+absl::Status RunPjRtExecutable(
+    int num_missing_prefix_ctx_inputs, const std::vector<const Tensor*>& inputs,
+    const absl::flat_hash_map<int, const Tensor*>& variable_snapshots,
+    const std::vector<VariableInfo>& updated_variables,
+    const XlaCompiler::CompilationResult& compilation_result,
+    xla::PjRtClient* pjrt_client, xla::PjRtLoadedExecutable* executable,
+    OpKernelContext* ctx);
+
+// Similar to the above function but it does not take an OpKernelContext, and
+// it returns the output in PjRtBuffers, instead of populating results into
+// OpKernelContext.
+absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>> RunPjRtExecutable(
+    int num_missing_prefix_ctx_inputs, const std::vector<const Tensor*>& inputs,
+    const absl::flat_hash_map<int, const Tensor*>& variable_snapshots,
+    const std::vector<VariableInfo>& updated_variables,
+    const DeviceType& device_type, bool use_pjrt_tensor_buffer,
+    const XlaCompiler::CompilationResult& compilation_result,
+    xla::PjRtDevice* device, xla::PjRtClient* pjrt_client,
+    xla::PjRtLoadedExecutable* executable);
 
 // Helper class to perform the marshalling of TensorFlow inputs and outputs to
 // ShapedBuffers suitable for passing to an XLA computation.
@@ -74,32 +159,63 @@ class XlaComputationLaunchContext {
   // Create a new launch context. 'allocate_xla_tensors' is true if allocated
   // output tensors and variables are always XlaTensors. If false they are
   // assumed to be "normal" device pointers.
-  XlaComputationLaunchContext(int64 num_resource_args, xla::LocalClient* client,
-                              xla::DeviceMemoryAllocator* xla_allocator,
-                              bool allocate_xla_tensors);
+  // If 'use_multiple_streams' is true, tensors may be defined and used on
+  // multiple streams and so se::Events must be defined and waited for. If
+  // 'use_multiple_streams' is true, 'allocate_xla_tensors' must also be true
+  // because we track inter-stream dependencies through events inside XlaTensor
+  // objects.
+  XlaComputationLaunchContext(xla::LocalClient* client,
+                              se::DeviceMemoryAllocator* xla_allocator,
+                              int device_ordinal, bool allocate_xla_tensors,
+                              bool use_multiple_streams);
+
+  // Builds a XlaCompiler::Argument vector from the arguments to an XlaLaunch
+  // op.
+  // Precondition: variables in `variable_args` are locked.
+  static absl::StatusOr<std::vector<XlaCompiler::Argument>>
+  BuildXlaCompilerArguments(absl::Span<int const> must_be_constant_idxs,
+                            absl::Span<const Tensor* const> inputs,
+                            absl::Span<VariableInfo const> variable_args,
+                            Device* device);
 
   // Add all inputs within `ctx` as XLA arguments (returned by arguments()).
   // `variables` is a map from TensorFlow argument number to resource variable.
-  void PopulateInputs(OpKernelContext* ctx,
-                      const XlaCompiler::CompilationResult* kernel,
-                      const std::map<int, OptionalTensor>& variables);
+  //
+  // Assumes that the first `missing_ctx_input_prefix` inputs to the kernel are
+  // missing and adjusts input indices accordingly.  All elements in kernel's
+  // input_mapping must be greater than or equal to `missing_ctx_input_prefix`
+  // (in other words, no inputs actually required by the kernel can be missing).
+  absl::StatusOr<std::vector<xla::ExecutionInput>> PopulateInputs(
+      OpKernelContext* ctx,
+      const XlaCompiler::CompilationResult* compilation_result,
+      const std::map<int, const Tensor*>& resource_vars,
+      int missing_ctx_input_prefix,
+      const xla::HloInputOutputAliasConfig& input_output_alias);
 
-  // Given the XLA output in `output`, populate all outputs of `ctx`.
-  void PopulateOutputs(OpKernelContext* ctx,
-                       const XlaCompiler::CompilationResult* kernel,
-                       xla::ScopedShapedBuffer output);
-
-  // Return the argument list. Only valid after PopulateInputs() has been
-  // called.
-  const std::vector<xla::ShapedBuffer*>& arguments() const { return arg_ptrs_; }
+  // Given the XLA output in `output`, populate all outputs of `ctx`.  Also
+  // writes out the resource variable updates.
+  //
+  // Updates to all resource variables are written in a single atomic operation.
+  // This models *->Write dependencies between resource variable operations.
+  // See jit/resource_operation_safety_analysis for details.
+  //
+  //
+  // Assumes that the first `missing_ctx_input_prefix` inputs to the
+  // compilation_result are missing and adjusts input indices accordingly.
+  absl::Status PopulateOutputs(
+      OpKernelContext* ctx,
+      const XlaCompiler::CompilationResult* compilation_result,
+      xla::ScopedShapedBuffer output, int missing_ctx_input_prefix,
+      absl::Span<VariableInfo> variable_infos,
+      const xla::HloInputOutputAliasConfig& input_output_alias,
+      const std::map<int, const Tensor*>& resource_vars);
 
  private:
-  int64 num_resource_args_;
   xla::LocalClient* client_;
-  xla::DeviceMemoryAllocator* xla_allocator_;
+  se::DeviceMemoryAllocator* xla_allocator_;
   bool allocate_xla_tensors_;
-  std::vector<std::unique_ptr<xla::ShapedBuffer>> arg_buffers_;
-  std::vector<xla::ShapedBuffer*> arg_ptrs_;
+  bool use_multiple_streams_;
+  int device_ordinal_;
 };
 
 // A simple TensorBuffer implementation that allows us to create Tensors that
@@ -108,36 +224,39 @@ class XlaTensorBuffer : public TensorBuffer {
  public:
   XlaTensorBuffer(const void* ptr, size_t expected_size, size_t actual_size,
                   Allocator* allocator)
-      : expected_size_(expected_size),
+      : TensorBuffer(const_cast<void*>(ptr)),
+        expected_size_(expected_size),
         actual_size_(actual_size),
-        allocator_(allocator) {
-    data_ = const_cast<void*>(ptr);
+        allocator_(allocator) {}
+
+  ~XlaTensorBuffer() override {
+    if (data()) {
+      allocator_->DeallocateRaw(data());
+    }
   }
 
-  ~XlaTensorBuffer() override { allocator_->DeallocateRaw(data_); }
-
-  void* data() const override { return data_; }
   size_t size() const override { return expected_size_; }
 
   TensorBuffer* root_buffer() override { return this; }
 
   void FillAllocationDescription(AllocationDescription* proto) const override {
-    proto->set_allocated_bytes(actual_size_);
-  }
-
-  static Tensor MakeTensor(DataType dtype, const TensorShape& shape,
-                           perftools::gputools::DeviceMemoryBase buffer,
-                           Allocator* allocator) {
-    size_t expected_size = shape.num_elements() * DataTypeSize(dtype);
-    auto* tensor_buffer = new XlaTensorBuffer(buffer.opaque(), expected_size,
-                                              buffer.size(), allocator);
-    Tensor t(dtype, shape, tensor_buffer);
-    tensor_buffer->Unref();
-    return t;
+    proto->set_requested_bytes(static_cast<int64_t>(expected_size_));
+    proto->set_allocator_name(allocator_->Name());
+    proto->set_ptr(reinterpret_cast<uintptr_t>(data()));
+    if (allocator_->TracksAllocationSizes()) {
+      auto ab = static_cast<int64_t>(allocator_->AllocatedSize(data()));
+      proto->set_allocated_bytes(ab);
+      int64_t id = allocator_->AllocationId(data());
+      if (id > 0) {
+        proto->set_allocation_id(id);
+      }
+      if (RefCountIsOne()) {
+        proto->set_has_single_reference(true);
+      }
+    }
   }
 
  private:
-  void* data_;
   size_t expected_size_;
   size_t actual_size_;
   Allocator* allocator_;
@@ -145,4 +264,4 @@ class XlaTensorBuffer : public TensorBuffer {
 
 }  // namespace tensorflow
 
-#endif
+#endif  // TENSORFLOW_COMPILER_JIT_XLA_LAUNCH_UTIL_H_

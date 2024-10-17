@@ -14,10 +14,6 @@
 # ==============================================================================
 """Classes and functions to handle debug-dump data of TensorFlow Debugger."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import glob
 import json
@@ -26,7 +22,6 @@ import platform
 import re
 
 import numpy as np
-import six
 
 from tensorflow.core.framework import graph_pb2
 from tensorflow.core.framework import types_pb2
@@ -56,7 +51,7 @@ def _glob(glob_pattern):
     return gfile.Glob(glob_pattern)
 
 
-class InconvertibleTensorProto(object):
+class InconvertibleTensorProto:
   """Represents a TensorProto that cannot be converted to np.ndarray."""
 
   def __init__(self, tensor_proto, initialized=True):
@@ -224,7 +219,7 @@ def has_inf_or_nan(datum, tensor):
     # arrays.
     return False
   elif (np.issubdtype(tensor.dtype, np.floating) or
-        np.issubdtype(tensor.dtype, np.complex) or
+        np.issubdtype(tensor.dtype, np.complexfloating) or
         np.issubdtype(tensor.dtype, np.integer)):
     return np.any(np.isnan(tensor)) or np.any(np.isinf(tensor))
   else:
@@ -270,7 +265,7 @@ def device_path_to_device_name(device_dir):
       for path_item in path_items])
 
 
-class DebugTensorDatum(object):
+class DebugTensorDatum:
   """A single tensor dumped by TensorFlow Debugger (tfdbg).
 
   Contains metadata about the dumped tensor, including `timestamp`,
@@ -296,7 +291,7 @@ class DebugTensorDatum(object):
         directory is `/tmp/tfdbg_1` and the dump file is at
         `/tmp/tfdbg_1/<device_path>/>ns_1/node_a_0_DebugIdentity_123456789`,
         then the value of the debug_dump_rel_path should be
-        `<device_path>/ns_1/node_a_0_DebugIdenity_1234456789`.
+        `<device_path>/ns_1/node_a_0_DebugIdentity_1234456789`.
 
     Raises:
       ValueError: If the base file name of the dump file does not conform to
@@ -459,7 +454,7 @@ class WatchKeyDoesNotExistInDebugDumpDirError(ValueError):
   pass
 
 
-class DebugDumpDir(object):
+class DebugDumpDir:
   """Data set from a debug-dump directory on filesystem.
 
   An instance of `DebugDumpDir` contains all `DebugTensorDatum` instances
@@ -577,7 +572,7 @@ class DebugDumpDir(object):
 
   def _calculate_t0(self):
     """Calculate the first timestamp across all devices."""
-    t0s = [t0 for t0 in six.itervalues(self._t0s) if t0 is not None]
+    t0s = [t0 for t0 in self._t0s.values() if t0 is not None]
     self._t0 = min(t0s) if t0s else None
 
   def _load_core_metadata(self):
@@ -670,7 +665,7 @@ class DebugDumpDir(object):
     self._node_traceback = {}
     if self._python_graph:
       for op in self._python_graph.get_operations():
-        self._node_traceback[op.name] = op.traceback
+        self._node_traceback[op.name] = tuple(map(tuple, op.traceback))
 
   @property
   def python_graph(self):
@@ -723,7 +718,7 @@ class DebugDumpDir(object):
     if len(self.devices()) == 1:
       return self._dump_tensor_data[self.devices()[0]]
     else:
-      all_devices_data = six.itervalues(self._dump_tensor_data)
+      all_devices_data = self._dump_tensor_data.values()
       data = []
       for device_data in all_devices_data:
         data.extend(device_data)
@@ -748,7 +743,7 @@ class DebugDumpDir(object):
     return sum(len(self._dump_tensor_data[device_name])
                for device_name in self._dump_tensor_data)
 
-  def _load_partition_graphs(self, partition_graphs, validate):
+  def _load_partition_graphs(self, client_partition_graphs, validate):
     """Load and process partition graphs.
 
     Load the graphs; parse the input and control input structure; obtain the
@@ -757,8 +752,10 @@ class DebugDumpDir(object):
     tensor dumps.
 
     Args:
-      partition_graphs: A repeated field of GraphDefs representing the
-          partition graphs executed by the TensorFlow runtime.
+      client_partition_graphs: A repeated field of GraphDefs representing the
+        partition graphs executed by the TensorFlow runtime, from the Python
+        client. These partition graphs are used only if partition graphs
+        cannot be loaded from the dump directory on the file system.
       validate: (`bool`) Whether the dump files are to be validated against the
         partition graphs.
 
@@ -769,24 +766,23 @@ class DebugDumpDir(object):
     self._debug_graphs = {}
     self._node_devices = {}
 
-    if partition_graphs:
-      partition_graphs_and_device_names = [
-          (partition_graph, None) for partition_graph in partition_graphs]
-    else:
-      partition_graphs_and_device_names = []
-      for device_name in self._device_names:
-        partition_graph = None
-        if device_name in self._dump_graph_file_paths:
-          partition_graph = _load_graph_def_from_event_file(
-              self._dump_graph_file_paths[device_name])
-        else:
-          partition_graph = self._find_partition_graph(partition_graphs,
-                                                       device_name)
-        if partition_graph:
-          partition_graphs_and_device_names.append((partition_graph,
-                                                    device_name))
-        else:
-          logging.warn("Failed to load partition graphs from disk.")
+    partition_graphs_and_device_names = []
+    for device_name in self._device_names:
+      partition_graph = None
+      if device_name in self._dump_graph_file_paths:
+        partition_graph = _load_graph_def_from_event_file(
+            self._dump_graph_file_paths[device_name])
+      else:
+        logging.warn(
+            "Failed to load partition graphs for device %s from disk. "
+            "As a fallback, the client graphs will be used. This "
+            "may cause mismatches in device names." % device_name)
+        partition_graph = self._find_partition_graph(client_partition_graphs,
+                                                     device_name)
+
+      if partition_graph:
+        partition_graphs_and_device_names.append((partition_graph,
+                                                  device_name))
 
     for partition_graph, maybe_device_name in partition_graphs_and_device_names:
       debug_graph = debug_graphs.DebugGraph(partition_graph,
@@ -946,9 +942,10 @@ class DebugDumpDir(object):
       3) The parallel_iteration attribute of while-loop Enter ops are set to 1.
 
     Returns:
-      A dict mapping device names (`str`s) to reconstructed `tf.GraphDef`s.
+      A dict mapping device names (`str`s) to reconstructed
+      `tf.compat.v1.GraphDef`s.
     """
-    non_debug_graphs = dict()
+    non_debug_graphs = {}
     for key in self._debug_graphs:
       non_debug_graphs[key] = self._debug_graphs[key].non_debug_graph_def
     return non_debug_graphs

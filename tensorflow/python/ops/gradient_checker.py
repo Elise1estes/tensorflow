@@ -18,19 +18,19 @@
 The gradient checker verifies numerically that an op/graph properly
 computes the gradients
 """
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gradients
 from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import tf_logging as logging
+from tensorflow.python.util import deprecation
+from tensorflow.python.util import numpy_compat
 from tensorflow.python.util.tf_export import tf_export
 
 
@@ -101,7 +101,7 @@ def _compute_theoretical_jacobian(x, x_shape, x_data, dy, dy_shape, dx,
   sess = ops.get_default_session()
   for col in range(dy_size):
     dy_data_flat[col] = 1
-    if isinstance(dx, ops.IndexedSlices):
+    if isinstance(dx, indexed_slices.IndexedSlices):
       backprop_indices, backprop_values = sess.run(
           [dx.indices, dx.values],
           feed_dict=_extra_feeds(extra_feed_dict, {x: x_data, dy: dy_data}))
@@ -110,7 +110,7 @@ def _compute_theoretical_jacobian(x, x_shape, x_data, dy, dy_shape, dx,
         r_end = r_begin + x_val_size
         jacobian[r_begin:r_end, col] += v.flat
     else:
-      assert isinstance(dx, ops.Tensor), "dx = " + str(dx)
+      assert isinstance(dx, tensor.Tensor), "dx = " + str(dx)
       backprop = sess.run(
           dx, feed_dict=_extra_feeds(extra_feed_dict, {x: x_data, dy: dy_data}))
       jacobian[:, col] = backprop.ravel().view(jacobian.dtype)
@@ -157,7 +157,8 @@ def _compute_numeric_jacobian(x, x_shape, x_data, y, y_shape, delta,
   # as delta. Convert to float32 here. Since numeric_jacobian is expected to
   # be the groundtruth to compare against, it shouldn't lose any information.
   if x.dtype == dtypes.bfloat16:
-    x = math_ops.cast(x, dtypes.float32)
+    x = math_ops.cast(x, dtypes.float32)  # TODO(wangpeng): Now that the new x
+            # is an output of the old x, isn't feeding to the new x a mistake?
   if y.dtype == dtypes.bfloat16:
     y = math_ops.cast(y, dtypes.float32)
   if x_data.dtype == dtypes.bfloat16.as_numpy_dtype:
@@ -170,8 +171,8 @@ def _compute_numeric_jacobian(x, x_shape, x_data, y, y_shape, delta,
   y_dtype = y.dtype.real_dtype.as_numpy_dtype
 
   # Make sure we have the right types
-  x_data = np.asarray(x_data, dtype=x.dtype.as_numpy_dtype)
-  scale = np.asarray(2 * delta, dtype=y_dtype)[()]
+  x_data = numpy_compat.np_asarray(x_data, dtype=x.dtype.as_numpy_dtype)
+  scale = numpy_compat.np_asarray(2 * delta, dtype=y_dtype)[()]
 
   jacobian = np.zeros((x_size, y_size), dtype=x_dtype)
   # For each of the entry of x, we slightly perturbs this by adding and
@@ -258,6 +259,7 @@ def _compute_gradient_list(x,
       init.run()
   if x_init_value is None:
     x_init_value = [None] * len(x)
+  # pylint: disable=g-complex-comprehension
   ret = [_compute_gradient(xi, x_shapei, dxi, y, y_shape, dyi, x_init_valuei,
                            delta, extra_feed_dict=extra_feed_dict)
          for xi, x_shapei, dxi, dyi, x_init_valuei in zip(x, x_shape, dx, dy,
@@ -265,7 +267,12 @@ def _compute_gradient_list(x,
   return ret
 
 
-@tf_export("test.compute_gradient")
+@tf_export(v1=["test.compute_gradient"])
+@deprecation.deprecated(
+    date=None,
+    instructions="Use tf.test.compute_gradient in 2.0, which has better "
+    "support for functions. Note that the two versions have different usage, "
+    "so code change is needed.")
 def compute_gradient(x,
                      x_shape,
                      y,
@@ -300,7 +307,6 @@ def compute_gradient(x,
       as the initial value.
     delta: (optional) the amount of perturbation.
     init_targets: list of targets to run to initialize model params.
-      TODO(mrry): remove this argument.
     extra_feed_dict: dict that allows fixing specified tensor values
       during the Jacobian calculation.
 
@@ -310,6 +316,7 @@ def compute_gradient(x,
     where "x_size" is the number of elements in x and "y_size" is the
     number of elements in y. If x is a list, returns a list of two numpy arrays.
   """
+  # TODO(mrry): remove argument `init_targets`
   if extra_feed_dict is None:
     extra_feed_dict = {}
 
@@ -327,7 +334,22 @@ def compute_gradient(x,
     return ret
 
 
-@tf_export("test.compute_gradient_error")
+def _compute_error(grad):
+  if isinstance(grad, tuple):
+    grad = [grad]
+  error = 0
+  for j_t, j_n in grad:
+    if j_t.size or j_n.size:  # Handle zero size tensors correctly
+      error = np.maximum(error, np.fabs(j_t - j_n).max())
+  return error
+
+
+@tf_export(v1=["test.compute_gradient_error"])
+@deprecation.deprecated(
+    date=None,
+    instructions="Use tf.test.compute_gradient in 2.0, which has better "
+    "support for functions. Note that the two versions have different usage, "
+    "so code change is needed.")
 def compute_gradient_error(x,
                            x_shape,
                            y,
@@ -369,10 +391,4 @@ def compute_gradient_error(x,
   """
   grad = compute_gradient(x, x_shape, y, y_shape, x_init_value, delta,
                           init_targets, extra_feed_dict=extra_feed_dict)
-  if isinstance(grad, tuple):
-    grad = [grad]
-  error = 0
-  for j_t, j_n in grad:
-    if j_t.size or j_n.size:  # Handle zero size tensors correctly
-      error = np.maximum(error, np.fabs(j_t - j_n).max())
-  return error
+  return _compute_error(grad)

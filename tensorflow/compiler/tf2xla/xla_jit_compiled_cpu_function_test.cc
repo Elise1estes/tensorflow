@@ -15,21 +15,42 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/xla_jit_compiled_cpu_function.h"
 
+#include <memory>
+#include <string>
+
+#include "absl/log/check.h"
+#include "absl/memory/memory.h"
+#include "absl/status/statusor.h"
 #include "tensorflow/compiler/tf2xla/tf2xla.pb.h"
-#include "tensorflow/compiler/xla/client/local_client.h"
-#include "tensorflow/compiler/xla/shape_util.h"
-#include "tensorflow/compiler/xla/status_macros.h"
-#include "tensorflow/compiler/xla/statusor.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "tensorflow/compiler/tf2xla/xla_compiled_cpu_function.h"
+#include "xla/client/executable_build_options.h"
+#include "xla/client/local_client.h"
+#include "xla/service/compiler.h"
+#include "xla/service/platform_util.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/status_macros.h"
+#include "xla/stream_executor/platform.h"
+#include "xla/stream_executor/platform_manager.h"
+#include "xla/test.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/platform/types.h"
+#include "tsl/platform/statusor.h"
 
 namespace tensorflow {
 namespace {
+
+using ::testing::HasSubstr;
+
+PLATFORM_DEFINE_ID(kFakePlatformId);
 
 AttrValue TypeAttrValue(DataType type) {
   AttrValue attr_value;
@@ -70,6 +91,105 @@ tf2xla::Config SumConfig() {
   return config;
 }
 
+GraphDef SumGraphVariable() {
+  constexpr char text_proto[] = R"pb(
+    node {
+      name: "x"
+      op: "VarHandleOp"
+      attr {
+        key: "dtype"
+        value { type: DT_INT32 }
+      }
+      attr {
+        key: "shared_name"
+        value { s: "myvar" }
+      }
+      attr {
+        key: "shape"
+        value { shape { dim { size: 1 } } }
+      }
+    }
+    node {
+      name: "read"
+      op: "ReadVariableOp"
+      input: "x"
+      attr {
+        key: "dtype"
+        value { type: DT_INT32 }
+      }
+    }
+    node {
+      name: "y"
+      op: "Placeholder"
+      attr {
+        key: "dtype"
+        value { type: DT_INT32 }
+      }
+    }
+    node {
+      name: "sum"
+      op: "Add"
+      input: "read"
+      input: "y"
+      attr {
+        key: "T"
+        value { type: DT_INT32 }
+      }
+    }
+    node {
+      name: "assign"
+      op: "AssignVariableOp"
+      input: "x"
+      input: "sum"
+      attr {
+        key: "dtype"
+        value { type: DT_INT32 }
+      }
+    }
+    # We use this identity op to make sure assign doesn't get pruned away.
+    node {
+      name: "out"
+      op: "Identity"
+      input: "y"
+      input: "^assign"
+      attr {
+        key: "T"
+        value { type: DT_INT32 }
+      }
+    })pb";
+  GraphDef graph;
+  CHECK(protobuf::TextFormat::ParseFromString(text_proto, &graph));
+  return graph;
+}
+
+tf2xla::Config SumConfigVariable() {
+  constexpr char text_proto[] = R"pb(feed { id { node_name: "y" } }
+                                     variable {
+                                       node_name: "myvar"
+                                       shape { dim { size: 1 } }
+                                       type: DT_INT32
+                                     }
+                                     fetch { id { node_name: "out" } })pb";
+  tf2xla::Config config;
+  CHECK(protobuf::TextFormat::ParseFromString(text_proto, &config));
+  return config;
+}
+
+TEST(XlaJitCompiledCpuFunction, CheckThunkDisabled) {
+  GraphDef graph_def = SumGraph();
+  tf2xla::Config config = SumConfig();
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<XlaJitCompiledCpuFunction> jit,
+      XlaJitCompiledCpuFunction::Compile(graph_def, config,
+                                         xla::ExecutableBuildOptions()));
+  ASSERT_TRUE(jit->LocalExecutable().build_options().has_debug_options());
+  ASSERT_FALSE(jit->LocalExecutable()
+                   .build_options()
+                   .debug_options()
+                   .xla_cpu_use_thunk_runtime());
+}
+
 TEST(XlaJitCompiledCpuFunction, Sum) {
   GraphDef graph_def = SumGraph();
   tf2xla::Config config = SumConfig();
@@ -79,6 +199,8 @@ TEST(XlaJitCompiledCpuFunction, Sum) {
       XlaJitCompiledCpuFunction::Compile(graph_def, config,
                                          xla::ExecutableBuildOptions()));
   XlaCompiledCpuFunction function(jit->StaticData());
+  ASSERT_EQ(function.num_args(), 2);
+  ASSERT_EQ(function.num_results(), 1);
 
   // Run the function and check results.
   *static_cast<int32*>(function.arg_data(0)) = 10;
@@ -113,34 +235,144 @@ TEST(XlaJitCompiledCpuFunction, Sum) {
   EXPECT_EQ(function.LookupResultIndex("x_name"), -1);
   EXPECT_EQ(function.LookupResultIndex("y_name"), -1);
 
+  EXPECT_EQ(0, function.num_variables());
+  EXPECT_EQ(function.LookupVariableIndex("x"), -1);
+
+  // Expect that name and index lookups match.
+  for (int i = 0; i < function.num_args(); ++i) {
+    const char* name = function.GetArgName(i);
+    ASSERT_NE(name, nullptr);
+    const int roundtrip_i = function.LookupArgIndex(name);
+    EXPECT_EQ(roundtrip_i, i) << " name= " << name;
+  }
+  for (int i = 0; i < function.num_results(); ++i) {
+    const char* name = function.GetResultName(i);
+    ASSERT_NE(name, nullptr);
+    const int roundtrip_i = function.LookupResultIndex(name);
+    EXPECT_EQ(roundtrip_i, i) << " name= " << name;
+  }
+  // Expect correct handling of invalid indices.
+  EXPECT_EQ(function.GetArgName(-1), nullptr);
+  EXPECT_EQ(function.GetArgName(function.num_args()), nullptr);
+  EXPECT_EQ(function.GetResultName(-1), nullptr);
+  EXPECT_EQ(function.GetResultName(function.num_results()), nullptr);
+  EXPECT_EQ(function.GetVariableName(0), nullptr);
+
   // Check program shape.
   using xla::ShapeUtil;
   const xla::Shape s32 = ShapeUtil::MakeShape(xla::S32, {});
-  const xla::ProgramShape* program_shape = function.ProgramShape();
-  ASSERT_TRUE(program_shape != nullptr);
-  ASSERT_EQ(program_shape->parameters_size(), 2);
-  EXPECT_TRUE(ShapeUtil::Compatible(program_shape->parameters(0), s32));
-  EXPECT_TRUE(ShapeUtil::Compatible(program_shape->parameters(1), s32));
+  ASSERT_TRUE(function.ProgramShape() != nullptr);
+  const xla::ProgramShape program_shape(*function.ProgramShape());
+  ASSERT_EQ(program_shape.parameters_size(), 2);
+  EXPECT_TRUE(ShapeUtil::Compatible(program_shape.parameters(0), s32));
+  EXPECT_TRUE(ShapeUtil::Compatible(program_shape.parameters(1), s32));
 
-  const xla::Shape& result = program_shape->result();
+  const xla::Shape& result = program_shape.result();
   ASSERT_EQ(result.element_type(), xla::TUPLE);
   ASSERT_EQ(ShapeUtil::TupleElementCount(result), 1);
   const xla::Shape& result0 = ShapeUtil::GetTupleElementShape(result, 0);
   EXPECT_TRUE(ShapeUtil::Compatible(result0, s32));
 }
 
-// Test when a graph compilation terminates early, resources are properly
-// reclaimed.
-TEST(XlaJitCompiledCpuFunction, SumWithJunkAttr) {
+TEST(XlaJitCompiledCpuFunction, SumVariable) {
+  GraphDef graph_def = SumGraphVariable();
+  tf2xla::Config config = SumConfigVariable();
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<XlaJitCompiledCpuFunction> jit,
+      XlaJitCompiledCpuFunction::Compile(graph_def, config,
+                                         xla::ExecutableBuildOptions()));
+  XlaCompiledCpuFunction function(jit->StaticData());
+  ASSERT_EQ(function.num_args(), 2);
+  ASSERT_EQ(function.num_results(), 2);
+
+  // Run the function and check results.
+  *static_cast<int32*>(function.arg_data(0)) = 10;
+  *static_cast<int32*>(function.arg_data(1)) = 32;
+  EXPECT_TRUE(function.Run());
+  EXPECT_EQ(function.error_msg(), "");
+  EXPECT_EQ(*static_cast<int32*>(function.result_data(0)), 10);
+  EXPECT_EQ(*static_cast<int32*>(function.result_data(1)), 42);
+
+  // Run the function again.
+  *static_cast<int32*>(function.arg_data(0)) = 100;
+  *static_cast<int32*>(function.arg_data(1)) = 320;
+  EXPECT_TRUE(function.Run());
+  EXPECT_EQ(function.error_msg(), "");
+  EXPECT_EQ(*static_cast<int32*>(function.result_data(0)), 100);
+  EXPECT_EQ(*static_cast<int32*>(function.result_data(1)), 420);
+
+  // Check name to index lookups.
+  EXPECT_TRUE(function.HasNameIndices());
+
+  EXPECT_EQ(2, function.num_args());
+
+  EXPECT_EQ(1, function.num_variables());
+  EXPECT_EQ(function.LookupVariableIndex("myvar"), 1);
+
+  const char* name = function.GetVariableName(0);
+  EXPECT_EQ(std::string(name), "myvar");
+  EXPECT_EQ(function.GetVariableName(1), nullptr);
+  EXPECT_EQ(function.GetVariableName(-1), nullptr);
+
+  // Check program shape.
+  using xla::ShapeUtil;
+  const xla::Shape s32 = ShapeUtil::MakeShape(xla::S32, {});
+  const xla::Shape s32_1 = ShapeUtil::MakeShape(xla::S32, {1});
+  ASSERT_TRUE(function.ProgramShape() != nullptr);
+  const xla::ProgramShape program_shape(*function.ProgramShape());
+  ASSERT_EQ(program_shape.parameters_size(), 2);
+  EXPECT_TRUE(ShapeUtil::Compatible(program_shape.parameters(0), s32));
+  EXPECT_TRUE(ShapeUtil::Compatible(program_shape.parameters(1), s32_1));
+
+  const xla::Shape& result = program_shape.result();
+  ASSERT_EQ(result.element_type(), xla::TUPLE);
+  ASSERT_EQ(ShapeUtil::TupleElementCount(result), 2);
+  const xla::Shape& result0 = ShapeUtil::GetTupleElementShape(result, 0);
+  EXPECT_TRUE(ShapeUtil::Compatible(result0, s32));
+}
+
+TEST(XlaJitCompiledCpuFunction, CanCompileWithAdditionalPlatform) {
+  class FakePlatform : public se::Platform {
+   public:
+    FakePlatform() : name_("FakePlatform") {}
+    ~FakePlatform() override {}
+
+    se::Platform::Id id() const override { return kFakePlatformId; }
+
+    int VisibleDeviceCount() const override { return 0; }
+
+    const string& Name() const override { return name_; }
+
+    absl::StatusOr<std::unique_ptr<se::DeviceDescription>> DescriptionForDevice(
+        int ordinal) const override {
+      return std::unique_ptr<se::DeviceDescription>(nullptr);
+    }
+
+    absl::StatusOr<se::StreamExecutor*> ExecutorForDevice(
+        int ordinal) override {
+      return nullptr;
+    }
+
+   private:
+    string name_;
+  };
+
+  TF_EXPECT_OK(
+      se::PlatformManager::RegisterPlatform(std::make_unique<FakePlatform>()));
+  xla::Compiler::RegisterCompilerFactory(kFakePlatformId, []() {
+    return std::unique_ptr<xla::Compiler>(nullptr);
+  });
+
+  EXPECT_THAT(xla::PlatformUtil::GetDefaultPlatform().status().message(),
+              HasSubstr("FakePlatform"));
+
   GraphDef graph_def = SumGraph();
-
-  (*graph_def.mutable_node(2)->mutable_attr())["junk"] =
-      TypeAttrValue(DT_INT32);
-
   tf2xla::Config config = SumConfig();
-  EXPECT_FALSE(XlaJitCompiledCpuFunction::Compile(graph_def, config,
-                                                  xla::ExecutableBuildOptions())
-                   .ok());
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<XlaJitCompiledCpuFunction> jit,
+      XlaJitCompiledCpuFunction::Compile(graph_def, config,
+                                         xla::ExecutableBuildOptions()));
 }
 
 }  // namespace

@@ -14,10 +14,6 @@
 # ==============================================================================
 
 """Create threads to run multiple enqueue ops."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import threading
 import weakref
 
@@ -27,11 +23,15 @@ from tensorflow.python.eager import context
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.platform import tf_logging as logging
+from tensorflow.python.util import deprecation
 from tensorflow.python.util.tf_export import tf_export
 
+_DEPRECATION_INSTRUCTION = (
+    "To construct input pipelines, use the `tf.data` module.")
 
-@tf_export("train.queue_runner.QueueRunner", "train.QueueRunner")
-class QueueRunner(object):
+
+@tf_export(v1=["train.queue_runner.QueueRunner", "train.QueueRunner"])
+class QueueRunner:
   """Holds a list of enqueue operations for a queue, each to be run in a thread.
 
   Queues are a convenient TensorFlow mechanism to compute tensors
@@ -47,12 +47,14 @@ class QueueRunner(object):
 
   The `QueueRunner`, combined with the `Coordinator`, helps handle these issues.
 
-  @compatibility(eager)
+  @compatibility(TF2)
   QueueRunners are not compatible with eager execution. Instead, please
-  use `tf.data` to get data into your model.
+  use [tf.data](https://www.tensorflow.org/guide/data) to get data into your
+  model.
   @end_compatibility
   """
 
+  @deprecation.deprecated(None, _DEPRECATION_INSTRUCTION)
   def __init__(self, queue=None, enqueue_ops=None, close_op=None,
                cancel_op=None, queue_closed_exception_types=None,
                queue_runner_def=None, import_scope=None):
@@ -386,7 +388,8 @@ class QueueRunner(object):
                        import_scope=import_scope)
 
 
-@tf_export("train.queue_runner.add_queue_runner", "train.add_queue_runner")
+@tf_export(v1=["train.queue_runner.add_queue_runner", "train.add_queue_runner"])
+@deprecation.deprecated(None, _DEPRECATION_INSTRUCTION)
 def add_queue_runner(qr, collection=ops.GraphKeys.QUEUE_RUNNERS):
   """Adds a `QueueRunner` to a collection in the graph.
 
@@ -397,6 +400,12 @@ def add_queue_runner(qr, collection=ops.GraphKeys.QUEUE_RUNNERS):
   The companion method `start_queue_runners()` can be used to start threads for
   all the collected queue runners.
 
+  @compatibility(TF2)
+  QueueRunners are not compatible with eager execution. Instead, please
+  use [tf.data](https://www.tensorflow.org/guide/data) to get data into your
+  model.
+  @end_compatibility
+
   Args:
     qr: A `QueueRunner`.
     collection: A `GraphKey` specifying the graph collection to add
@@ -405,8 +414,9 @@ def add_queue_runner(qr, collection=ops.GraphKeys.QUEUE_RUNNERS):
   ops.add_to_collection(collection, qr)
 
 
-@tf_export("train.queue_runner.start_queue_runners",
-           "train.start_queue_runners")
+@tf_export(v1=["train.queue_runner.start_queue_runners",
+               "train.start_queue_runners"])
+@deprecation.deprecated(None, _DEPRECATION_INSTRUCTION)
 def start_queue_runners(sess=None, coord=None, daemon=True, start=True,
                         collection=ops.GraphKeys.QUEUE_RUNNERS):
   """Starts all queue runners collected in the graph.
@@ -414,6 +424,12 @@ def start_queue_runners(sess=None, coord=None, daemon=True, start=True,
   This is a companion method to `add_queue_runner()`.  It just starts
   threads for all queue runners collected in the graph.  It returns
   the list of all threads.
+
+  @compatibility(TF2)
+  QueueRunners are not compatible with eager execution. Instead, please
+  use [tf.data](https://www.tensorflow.org/guide/data) to get data into your
+  model.
+  @end_compatibility
 
   Args:
     sess: `Session` used to run the queue ops.  Defaults to the
@@ -427,19 +443,14 @@ def start_queue_runners(sess=None, coord=None, daemon=True, start=True,
 
   Raises:
     ValueError: if `sess` is None and there isn't any default session.
-    TypeError: if `sess` is not a `tf.Session` object.
+    TypeError: if `sess` is not a `tf.compat.v1.Session` object.
 
   Returns:
     A list of threads.
 
   Raises:
     RuntimeError: If called with eager execution enabled.
-    ValueError: If called without a default `tf.Session` registered.
-
-  @compatibility(eager)
-  Not compatible with eager execution. To ingest data under eager execution,
-  use the `tf.data` API instead.
-  @end_compatibility
+    ValueError: If called without a default `tf.compat.v1.Session` registered.
   """
   if context.executing_eagerly():
     raise RuntimeError("Queues are not compatible with eager execution.")
@@ -457,6 +468,13 @@ def start_queue_runners(sess=None, coord=None, daemon=True, start=True,
       return []
     raise TypeError("sess must be a `tf.Session` object. "
                     "Given class: {}".format(sess.__class__))
+
+  queue_runners = ops.get_collection(collection)
+  if not queue_runners:
+    logging.warning(
+        "`tf.train.start_queue_runners()` was called when no queue runners "
+        "were defined. You can safely remove the call to this deprecated "
+        "function.")
 
   with sess.graph.as_default():
     threads = []

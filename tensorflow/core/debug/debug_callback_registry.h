@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_DEBUG_CALLBACK_REGISTRY_H_
-#define TENSORFLOW_DEBUG_CALLBACK_REGISTRY_H_
+#ifndef TENSORFLOW_CORE_DEBUG_DEBUG_CALLBACK_REGISTRY_H_
+#define TENSORFLOW_CORE_DEBUG_DEBUG_CALLBACK_REGISTRY_H_
 
 #include <functional>
 #include <map>
@@ -61,11 +61,11 @@ class DebugCallbackRegistry {
   mutex mu_;
 
   // Maps debug_url keys to callbacks for routing observed tensors.
-  std::map<string, EventCallback> keyed_callback_ GUARDED_BY(mu_);
+  std::map<string, EventCallback> keyed_callback_ TF_GUARDED_BY(mu_);
 
   static DebugCallbackRegistry* instance_;
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_DEBUG_CALLBACK_REGISTRY_H_
+#endif  // TENSORFLOW_CORE_DEBUG_DEBUG_CALLBACK_REGISTRY_H_

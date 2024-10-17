@@ -16,71 +16,24 @@
 # pylint: disable=line-too-long
 """Inputs and Readers.
 
-See the @{$python/io_ops} guide.
-
-@@placeholder
-@@placeholder_with_default
-@@sparse_placeholder
-@@ReaderBase
-@@TextLineReader
-@@WholeFileReader
-@@IdentityReader
-@@TFRecordReader
-@@LMDBReader
-@@FixedLengthRecordReader
-@@decode_csv
-@@decode_raw
-@@VarLenFeature
-@@FixedLenFeature
-@@FixedLenSequenceFeature
-@@SparseFeature
-@@parse_example
-@@parse_single_example
-@@parse_tensor
-@@serialize_tensor
-@@decode_json_example
-@@QueueBase
-@@FIFOQueue
-@@PaddingFIFOQueue
-@@RandomShuffleQueue
-@@PriorityQueue
-@@ConditionalAccumulatorBase
-@@ConditionalAccumulator
-@@SparseConditionalAccumulator
-@@matching_files
-@@read_file
-@@write_file
-@@match_filenames_once
-@@limit_epochs
-@@input_producer
-@@range_input_producer
-@@slice_input_producer
-@@string_input_producer
-@@batch
-@@maybe_batch
-@@batch_join
-@@maybe_batch_join
-@@shuffle_batch
-@@maybe_shuffle_batch
-@@shuffle_batch_join
-@@maybe_shuffle_batch_join
+See the [Inputs and
+Readers](https://tensorflow.org/api_guides/python/io_ops) guide.
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.lib.io import python_io
 from tensorflow.python.ops import gen_data_flow_ops
 from tensorflow.python.ops import gen_io_ops
+from tensorflow.python.ops import gen_parsing_ops
 # go/tf-wildcard-import
 # pylint: disable=wildcard-import
 from tensorflow.python.ops.gen_io_ops import *
-from tensorflow.python.util.tf_export import tf_export
 # pylint: enable=wildcard-import
+from tensorflow.python.util import deprecation
+from tensorflow.python.util.tf_export import tf_export
 
 
 # pylint: disable=protected-access
@@ -141,8 +94,128 @@ def _restore_slice(file_pattern, tensor_name, shape_and_slice, tensor_type,
       preferred_shard, name=name)
 
 
-@tf_export("ReaderBase")
-class ReaderBase(object):
+@tf_export("io.read_file", v1=["io.read_file", "read_file"])
+def read_file(filename, name=None):
+  """Reads the contents of file.
+
+  This operation returns a tensor with the entire contents of the input
+  filename. It does not do any parsing, it just returns the contents as
+  they are. Usually, this is the first step in the input pipeline.
+
+  Example:
+
+  >>> with open("/tmp/file.txt", "w") as f:
+  ...   f.write("asdf")
+  ...
+  4
+  >>> tf.io.read_file("/tmp/file.txt")
+  <tf.Tensor: shape=(), dtype=string, numpy=b'asdf'>
+
+  Example of using the op in a function to read an image, decode it and reshape
+  the tensor containing the pixel data:
+
+  >>> @tf.function
+  ... def load_image(filename):
+  ...   raw = tf.io.read_file(filename)
+  ...   image = tf.image.decode_png(raw, channels=3)
+  ...   # the `print` executes during tracing.
+  ...   print("Initial shape: ", image.shape)
+  ...   image.set_shape([28, 28, 3])
+  ...   print("Final shape: ", image.shape)
+  ...   return image
+
+  Args:
+    filename: string. filename to read from.
+    name: string.  Optional name for the op.
+
+  Returns:
+    A tensor of dtype "string", with the file contents.
+  """
+  return gen_io_ops.read_file(filename, name)
+
+
+@tf_export(
+    "io.serialize_tensor", v1=["io.serialize_tensor", "serialize_tensor"])
+def serialize_tensor(tensor, name=None):
+  r"""Transforms a Tensor into a serialized TensorProto proto.
+
+  This operation transforms data in a `tf.Tensor` into a `tf.Tensor` of type
+  `tf.string` containing the data in a binary string in little-endian format.
+  This operation can transform scalar data and linear arrays, but it is most
+  useful in converting multidimensional arrays into a format accepted by binary
+  storage formats such as a `TFRecord` or `tf.train.Example`.
+
+  See also:
+  - `tf.io.parse_tensor`: inverse operation of `tf.io.serialize_tensor` that
+  transforms a scalar string containing a serialized Tensor in little-endian
+  format into a Tensor of a specified type.
+  - `tf.ensure_shape`: `parse_tensor` cannot statically determine the shape of
+  the parsed tensor. Use `tf.ensure_shape` to set the static shape when running
+  under a `tf.function`
+  - `.SerializeToString`, serializes a proto to a binary-string
+
+  Example of serializing scalar data:
+
+  >>> t = tf.constant(1)
+  >>> tf.io.serialize_tensor(t)
+  <tf.Tensor: shape=(), dtype=string, numpy=b'\x08...\x00'>
+
+  Example of storing non-scalar data into a `tf.train.Example`:
+
+  >>> t1 = [[1, 2]]
+  >>> t2 = [[7, 8]]
+  >>> nonscalar = tf.concat([t1, t2], 0)
+  >>> nonscalar
+  <tf.Tensor: shape=(2, 2), dtype=int32, numpy=
+  array([[1, 2],
+         [7, 8]], dtype=int32)>
+
+  Serialize the data using `tf.io.serialize_tensor`.
+
+  >>> serialized_nonscalar = tf.io.serialize_tensor(nonscalar)
+  >>> serialized_nonscalar
+  <tf.Tensor: shape=(), dtype=string, numpy=b'\x08...\x00'>
+
+  Store the data in a `tf.train.Feature`.
+
+  >>> feature_of_bytes = tf.train.Feature(
+  ...   bytes_list=tf.train.BytesList(value=[serialized_nonscalar.numpy()]))
+  >>> feature_of_bytes
+  bytes_list {
+    value: "\010...\000"
+  }
+
+  Put the `tf.train.Feature` message into a `tf.train.Example`.
+
+  >>> features_for_example = {
+  ...   'feature0': feature_of_bytes
+  ... }
+  >>> example_proto = tf.train.Example(
+  ...   features=tf.train.Features(feature=features_for_example))
+  >>> example_proto
+  features {
+    feature {
+      key: "feature0"
+      value {
+        bytes_list {
+          value: "\010...\000"
+        }
+      }
+    }
+  }
+
+  Args:
+    tensor: A `tf.Tensor`.
+    name: string.  Optional name for the op.
+
+  Returns:
+    A Tensor of dtype string.
+  """
+  return gen_parsing_ops.serialize_tensor(tensor, name)
+
+
+@tf_export(v1=["ReaderBase"])
+class ReaderBase:
   """Base class for different Reader types, that produce a record every step.
 
   Conceptually, Readers convert string 'work units' into records (key,
@@ -203,7 +276,7 @@ class ReaderBase(object):
       key: A string scalar Tensor.
       value: A string scalar Tensor.
     """
-    if isinstance(queue, ops.Tensor):
+    if isinstance(queue, tensor_lib.Tensor):
       queue_ref = queue
     else:
       queue_ref = queue.queue_ref
@@ -235,7 +308,7 @@ class ReaderBase(object):
       keys: A 1-D string Tensor.
       values: A 1-D string Tensor.
     """
-    if isinstance(queue, ops.Tensor):
+    if isinstance(queue, tensor_lib.Tensor):
       queue_ref = queue
     else:
       queue_ref = queue.queue_ref
@@ -355,7 +428,7 @@ ops.NotDifferentiable("ReaderRestoreState")
 ops.NotDifferentiable("ReaderReset")
 
 
-@tf_export("WholeFileReader")
+@tf_export(v1=["WholeFileReader"])
 class WholeFileReader(ReaderBase):
   """A Reader that outputs the entire contents of a file as a value.
 
@@ -370,6 +443,9 @@ class WholeFileReader(ReaderBase):
   @end_compatibility
   """
 
+  @deprecation.deprecated(
+      None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+      "`tf.data.Dataset.map(tf.read_file)`.")
   def __init__(self, name=None):
     """Create a WholeFileReader.
 
@@ -383,7 +459,7 @@ class WholeFileReader(ReaderBase):
 ops.NotDifferentiable("WholeFileReader")
 
 
-@tf_export("TextLineReader")
+@tf_export(v1=["TextLineReader"])
 class TextLineReader(ReaderBase):
   """A Reader that outputs the lines of a file delimited by newlines.
 
@@ -397,6 +473,9 @@ class TextLineReader(ReaderBase):
   """
   # TODO(josh11b): Support serializing and restoring state.
 
+  @deprecation.deprecated(
+      None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+      "`tf.data.TextLineDataset`.")
   def __init__(self, skip_header_lines=None, name=None):
     """Create a TextLineReader.
 
@@ -413,7 +492,7 @@ class TextLineReader(ReaderBase):
 ops.NotDifferentiable("TextLineReader")
 
 
-@tf_export("FixedLengthRecordReader")
+@tf_export(v1=["FixedLengthRecordReader"])
 class FixedLengthRecordReader(ReaderBase):
   """A Reader that outputs fixed-length records from a file.
 
@@ -426,6 +505,9 @@ class FixedLengthRecordReader(ReaderBase):
   """
   # TODO(josh11b): Support serializing and restoring state.
 
+  @deprecation.deprecated(
+      None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+      "`tf.data.FixedLengthRecordDataset`.")
   def __init__(self,
                record_bytes,
                header_bytes=None,
@@ -456,7 +538,7 @@ class FixedLengthRecordReader(ReaderBase):
 ops.NotDifferentiable("FixedLengthRecordReader")
 
 
-@tf_export("TFRecordReader")
+@tf_export(v1=["TFRecordReader"])
 class TFRecordReader(ReaderBase):
   """A Reader that outputs the records from a TFRecords file.
 
@@ -469,6 +551,9 @@ class TFRecordReader(ReaderBase):
   """
   # TODO(josh11b): Support serializing and restoring state.
 
+  @deprecation.deprecated(
+      None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+      "`tf.data.TFRecordDataset`.")
   def __init__(self, name=None, options=None):
     """Create a TFRecordReader.
 
@@ -487,7 +572,7 @@ class TFRecordReader(ReaderBase):
 ops.NotDifferentiable("TFRecordReader")
 
 
-@tf_export("LMDBReader")
+@tf_export(v1=["LMDBReader"])
 class LMDBReader(ReaderBase):
   """A Reader that outputs the records from a LMDB file.
 
@@ -498,6 +583,10 @@ class LMDBReader(ReaderBase):
   use `tf.data` to get data into your model.
   @end_compatibility
   """
+
+  @deprecation.deprecated(
+      None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+      "`tf.contrib.data.LMDBDataset`.")
   def __init__(self, name=None, options=None):
     """Create a LMDBReader.
 
@@ -505,6 +594,7 @@ class LMDBReader(ReaderBase):
       name: A name for the operation (optional).
       options: A LMDBRecordOptions object (optional).
     """
+    del options
     rr = gen_io_ops.lmdb_reader(name=name)
     super(LMDBReader, self).__init__(rr)
 
@@ -512,7 +602,7 @@ class LMDBReader(ReaderBase):
 ops.NotDifferentiable("LMDBReader")
 
 
-@tf_export("IdentityReader")
+@tf_export(v1=["IdentityReader"])
 class IdentityReader(ReaderBase):
   """A Reader that outputs the queued work as both the key and value.
 
@@ -527,6 +617,9 @@ class IdentityReader(ReaderBase):
   @end_compatibility
   """
 
+  @deprecation.deprecated(
+      None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+      "`tf.data.Dataset.map(...)`.")
   def __init__(self, name=None):
     """Create a IdentityReader.
 

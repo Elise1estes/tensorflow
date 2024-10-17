@@ -16,6 +16,7 @@ limitations under the License.
 #include <chrono>
 #include <thread>
 
+#include "xla/tsl/util/determinism_test_util.h"
 #include "tensorflow/core/framework/fake_input.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -23,10 +24,40 @@ limitations under the License.
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
 #include "tensorflow/core/kernels/ops_util.h"
+#include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/platform/status_matchers.h"
 
 namespace tensorflow {
 namespace {
+
+class PrintingV2GraphTest : public OpsTestBase {
+ protected:
+  Status Init(const string& output_stream = "log(warning)") {
+    TF_CHECK_OK(NodeDefBuilder("op", "PrintV2")
+                    .Input(FakeInput(DT_STRING))
+                    .Attr("output_stream", output_stream)
+                    .Finalize(node_def()));
+    return InitOp();
+  }
+};
+
+TEST_F(PrintingV2GraphTest, StringSuccess) {
+  TF_ASSERT_OK(Init());
+  AddInputFromArray<tstring>(TensorShape({}), {"bar"});
+  TF_ASSERT_OK(RunOpKernel());
+}
+
+TEST_F(PrintingV2GraphTest, InvalidOutputStream) {
+  ASSERT_NE(absl::OkStatus(), (Init("invalid_output_stream")));
+}
+
+TEST_F(PrintingV2GraphTest, InvalidInputRank) {
+  TF_ASSERT_OK(Init());
+  AddInputFromArray<tstring>(TensorShape({2}), {"bar", "foo"});
+  ASSERT_NE(absl::OkStatus(), RunOpKernel());
+}
 
 class PrintingGraphTest : public OpsTestBase {
  protected:
@@ -68,8 +99,8 @@ TEST_F(PrintingGraphTest, Int32Success_Summarize6) {
 TEST_F(PrintingGraphTest, StringSuccess) {
   TF_ASSERT_OK(Init(DT_INT32, DT_STRING));
   AddInputFromArray<int32>(TensorShape({6}), {1, 2, 3, 4, 5, 6});
-  AddInputFromArray<string>(TensorShape({}), {"foo"});
-  AddInputFromArray<string>(TensorShape({}), {"bar"});
+  AddInputFromArray<tstring>(TensorShape({}), {"foo"});
+  AddInputFromArray<tstring>(TensorShape({}), {"bar"});
   TF_ASSERT_OK(RunOpKernel());
   Tensor expected(allocator(), DT_INT32, TensorShape({6}));
   test::FillValues<int32>(&expected, {1, 2, 3, 4, 5, 6});
@@ -79,8 +110,8 @@ TEST_F(PrintingGraphTest, StringSuccess) {
 TEST_F(PrintingGraphTest, MsgSuccess) {
   TF_ASSERT_OK(Init(DT_INT32, DT_STRING, "Message: "));
   AddInputFromArray<int32>(TensorShape({6}), {1, 2, 3, 4, 5, 6});
-  AddInputFromArray<string>(TensorShape({}), {"foo"});
-  AddInputFromArray<string>(TensorShape({}), {"bar"});
+  AddInputFromArray<tstring>(TensorShape({}), {"foo"});
+  AddInputFromArray<tstring>(TensorShape({}), {"bar"});
   TF_ASSERT_OK(RunOpKernel());
   Tensor expected(allocator(), DT_INT32, TensorShape({6}));
   test::FillValues<int32>(&expected, {1, 2, 3, 4, 5, 6});
@@ -90,8 +121,8 @@ TEST_F(PrintingGraphTest, MsgSuccess) {
 TEST_F(PrintingGraphTest, FirstNSuccess) {
   TF_ASSERT_OK(Init(DT_INT32, DT_STRING, "", 3));
   AddInputFromArray<int32>(TensorShape({6}), {1, 2, 3, 4, 5, 6});
-  AddInputFromArray<string>(TensorShape({}), {"foo"});
-  AddInputFromArray<string>(TensorShape({}), {"bar"});
+  AddInputFromArray<tstring>(TensorShape({}), {"foo"});
+  AddInputFromArray<tstring>(TensorShape({}), {"bar"});
   // run 4 times but we only print 3 as intended
   for (int i = 0; i < 4; i++) TF_ASSERT_OK(RunOpKernel());
   Tensor expected(allocator(), DT_INT32, TensorShape({6}));
@@ -119,6 +150,15 @@ TEST_F(TimestampTest, WaitAtLeast) {
   double ts2 = *((*GetOutput(0)).flat<double>().data());
 
   EXPECT_LE(1.0, ts2 - ts1);
+}
+
+TEST_F(TimestampTest, DeterminismError) {
+  tsl::test::DeterministicOpsScope det_scope;
+  TF_ASSERT_OK(Init());
+  EXPECT_THAT(RunOpKernel(),
+              testing::StatusIs(
+                  error::FAILED_PRECONDITION,
+                  "Timestamp cannot be called when determinism is enabled"));
 }
 
 }  // end namespace

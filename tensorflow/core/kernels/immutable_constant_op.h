@@ -12,12 +12,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef TENSORFLOW_KERNELS_IMMUTABLE_CONSTANT_OP_H_
-#define TENSORFLOW_KERNELS_IMMUTABLE_CONSTANT_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_IMMUTABLE_CONSTANT_OP_H_
+#define TENSORFLOW_CORE_KERNELS_IMMUTABLE_CONSTANT_OP_H_
 
 #include <memory>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/platform/env.h"
@@ -41,9 +41,10 @@ class ImmutableConstantOp : public OpKernel {
   string region_name_;
   DataType dtype_;
   TensorShape shape_;
-  TF_DISALLOW_COPY_AND_ASSIGN(ImmutableConstantOp);
+  ImmutableConstantOp(const ImmutableConstantOp&) = delete;
+  void operator=(const ImmutableConstantOp&) = delete;
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_IMMUTABLE_CONSTANT_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_IMMUTABLE_CONSTANT_OP_H_

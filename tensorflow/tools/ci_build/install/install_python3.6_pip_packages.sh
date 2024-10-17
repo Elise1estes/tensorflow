@@ -18,8 +18,6 @@
 # TODO(amitpatankar): Remove this file once we upgrade to ubuntu:16.04
 # docker images for Python 3.6 builds.
 
-# LINT.IfChange
-
 # fkrull/deadsnakes is for Python3.6
 add-apt-repository -y ppa:fkrull/deadsnakes
 
@@ -49,15 +47,22 @@ cd Python-3.6.1
 make altinstall
 ln -s /usr/local/bin/pip3.6 /usr/local/bin/pip3
 
+pip3 install --upgrade pip
+
+# Install last working version of setuptools. This must happen before we install
+# absl-py, which uses install_requires notation introduced in setuptools 20.5.
+pip3 install --upgrade setuptools==39.1.0
+
 pip3 install --upgrade virtualenv
 
 set -e
+
 # Install six.
 pip3 install --upgrade absl-py
 pip3 install --upgrade six==1.10.0
 
 # Install protobuf.
-pip3 install --upgrade protobuf==3.3.0
+pip3 install --upgrade protobuf==3.16.0
 
 # Remove obsolete version of six, which can sometimes confuse virtualenv.
 rm -rf /usr/lib/python3/dist-packages/six*
@@ -67,9 +72,9 @@ rm -rf /usr/lib/python3/dist-packages/six*
 # numpy needs to be installed from source to fix segfaults. See:
 # https://github.com/tensorflow/tensorflow/issues/6968
 # This workaround isn't needed for Ubuntu 16.04 or later.
-pip3 install --no-binary=:all: --upgrade numpy==1.12.0
+pip3 install --upgrade numpy~=1.19.2
 
-pip3 install scipy==0.18.1
+pip3 install scipy==1.4.1
 
 pip3 install scikit-learn==0.19.1
 
@@ -94,4 +99,10 @@ pip3 install --upgrade astor
 pip3 install --upgrade gast
 pip3 install --upgrade termcolor
 
-# LINT.ThenChange(//tensorflow/tools/ci_build/install/install_python3.5_pip_packages.sh)
+pip3 install --upgrade h5py==3.1.0
+
+# Keras
+pip3 install keras-nightly --no-deps
+
+# Estimator
+pip3 install tf-estimator-nightly==1.12.0.dev20181203 --no-deps

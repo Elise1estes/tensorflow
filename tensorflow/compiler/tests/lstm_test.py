@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for the LSTM cell and layer."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import argparse
 import os
 import sys
@@ -29,6 +25,7 @@ from tensorflow.compiler.tests import xla_test
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import init_ops
@@ -73,7 +70,7 @@ class LSTMTest(test.TestCase):
 
   def _RunLSTMCell(self, basename, init_weights, m_prev_scalar, c_prev_scalar,
                    pad_scalar):
-    with self.test_session() as sess:
+    with self.session() as sess:
       num_inputs = 1
       num_nodes = 1
 
@@ -88,9 +85,11 @@ class LSTMTest(test.TestCase):
                  (basename, m_prev_scalar, c_prev_scalar, pad_scalar))
 
       # Initialize variables and run the unrolled LSTM step.
-      sess.run(variables.global_variables_initializer())
-      return sess.run([m, c])
+      self.evaluate(variables.global_variables_initializer())
+      return self.evaluate([m, c])
 
+  @test_util.run_without_tensor_float_32('TF32 capable devices fail the test'
+                                         ' due to reduced matmul precision')
   def testLSTMCell(self):
     # Run with all-0 weights, no padding.
     m, c = self._RunLSTMCell('zeros', init_ops.zeros_initializer(), 0., 0., 0.)
@@ -156,7 +155,7 @@ class LSTMTest(test.TestCase):
 
   def _RunLSTMLayer(self, basename, init_weights, m_init_scalar, c_init_scalar,
                     pad_scalar):
-    with self.test_session() as sess:
+    with self.session() as sess:
       num_inputs = 1
       num_nodes = 1
       seq_length = 3
@@ -173,9 +172,11 @@ class LSTMTest(test.TestCase):
                  (basename, m_init_scalar, c_init_scalar, pad_scalar))
 
       # Initialize variables and run the unrolled LSTM layer.
-      sess.run(variables.global_variables_initializer())
-      return sess.run(out_seq)
+      self.evaluate(variables.global_variables_initializer())
+      return self.evaluate(out_seq)
 
+  @test_util.run_without_tensor_float_32('TF32 capable devices fail the test'
+                                         ' due to reduced matmul precision')
   def testLSTMLayer(self):
     # Run with all-0 weights, no padding.
     o = self._RunLSTMLayer('zeros', init_ops.zeros_initializer(), 0., 0., 0.)
@@ -321,4 +322,7 @@ if __name__ == '__main__':
   )
   global FLAGS  # pylint:disable=global-at-module-level
   FLAGS, unparsed = parser.parse_known_args()
+  # This test is using Tensorflow sessions which are not compatible with eager
+  # mode.
+  ops.disable_eager_execution()
   test.main(argv=[sys.argv[0]] + unparsed)

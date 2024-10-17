@@ -22,10 +22,8 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-#ifndef INTEL_MKL_ML
-
 TEST(MklUtilTest, MklDnnTfShape) {
-  auto cpu_engine = engine(engine::cpu, 0);
+  auto cpu_engine = engine(engine::kind::cpu, 0);
   MklDnnData<float> a(&cpu_engine);
 
   const int N = 1, C = 2, H = 3, W = 4;
@@ -33,7 +31,8 @@ TEST(MklUtilTest, MklDnnTfShape) {
   MklDnnShape a_mkldnn_shape;
   a_mkldnn_shape.SetMklTensor(true);
   // Create TF layout in NCHW.
-  a_mkldnn_shape.SetTfLayout(a_dims.size(), a_dims, memory::format::nchw);
+  a_mkldnn_shape.SetTfLayout(a_dims.size(), a_dims,
+                             MklTensorFormat::FORMAT_NCHW);
   TensorShape a_tf_shape_nchw({N, C, H, W});
   TensorShape a_tf_shape_nhwc({N, H, W, C});
   TensorShape a_mkldnn_tf_shape = a_mkldnn_shape.GetTfShape();
@@ -45,7 +44,8 @@ TEST(MklUtilTest, MklDnnTfShape) {
   MklDnnShape b_mkldnn_shape;
   b_mkldnn_shape.SetMklTensor(true);
   // Create TF layout in NHWC.
-  b_mkldnn_shape.SetTfLayout(b_dims.size(), b_dims, memory::format::nhwc);
+  b_mkldnn_shape.SetTfLayout(b_dims.size(), b_dims,
+                             MklTensorFormat::FORMAT_NHWC);
   TensorShape b_tf_shape_nhwc({N, H, W, C});
   TensorShape b_tf_shape_nchw({N, C, H, W});
   TensorShape b_mkldnn_tf_shape = b_mkldnn_shape.GetTfShape();
@@ -54,37 +54,40 @@ TEST(MklUtilTest, MklDnnTfShape) {
   EXPECT_NE(b_tf_shape_nchw, b_mkldnn_tf_shape);
 }
 
-TEST(MklUtilTest, MklDnnBlockedFormatTest) {
-  // Let's create 2D tensor of shape {3, 4} with 3 being innermost dimension
-  // first (case 1) and then it being outermost dimension (case 2).
-  auto cpu_engine = engine(engine::cpu, 0);
+TEST(MklUtilTest, LRUCacheTest) {
+  // The cached objects are of type int*
+  size_t capacity = 100;
+  size_t num_objects = capacity + 10;
+  LRUCache<int> lru_cache(capacity);
 
-  // Setting for case 1
-  MklDnnData<float> a(&cpu_engine);
-  memory::dims dim1 = {3, 4};
-  memory::dims strides1 = {1, 3};
-  a.SetUsrMem(dim1, strides1);
+  // Test SetOp: be able to set more ops than the capacity
+  for (int k = 0; k < num_objects; k++) {
+    lru_cache.SetOp(std::to_string(k), new int(k));
+  }
 
-  memory::desc a_md1 = a.GetUsrMemDesc();
-  EXPECT_EQ(a_md1.data.ndims, 2);
-  EXPECT_EQ(a_md1.data.dims[0], 3);
-  EXPECT_EQ(a_md1.data.dims[1], 4);
-  EXPECT_EQ(a_md1.data.format, mkldnn_blocked);
+  // Test GetOp and capacity:
+  // Least recently accessed objects should not be in cache any more.
+  for (int k = 0; k < num_objects - capacity; ++k) {
+    EXPECT_EQ(nullptr, lru_cache.GetOp(std::to_string(k)));
+  }
 
-  // Setting for case 2
-  MklDnnData<float> b(&cpu_engine);
-  memory::dims dim2 = {3, 4};
-  memory::dims strides2 = {4, 1};
-  b.SetUsrMem(dim2, strides2);
+  // Test GetOp and capacity:
+  // Most recently accessed objects should still be in cache.
+  for (int k = num_objects - capacity; k < num_objects; ++k) {
+    int* int_ptr = lru_cache.GetOp(std::to_string(k));
+    EXPECT_NE(nullptr, int_ptr);
+    EXPECT_EQ(*int_ptr, k);
+  }
 
-  memory::desc b_md2 = b.GetUsrMemDesc();
-  EXPECT_EQ(b_md2.data.ndims, 2);
-  EXPECT_EQ(b_md2.data.dims[0], 3);
-  EXPECT_EQ(b_md2.data.dims[1], 4);
-  EXPECT_EQ(b_md2.data.format, mkldnn_blocked);
+  // Clean up the cache
+  lru_cache.Clear();
+
+  // After clean up, there should be no cached object.
+  for (int k = 0; k < num_objects; ++k) {
+    EXPECT_EQ(nullptr, lru_cache.GetOp(std::to_string(k)));
+  }
 }
 
-#endif  // INTEL_MKL_ML
 }  // namespace
 }  // namespace tensorflow
 

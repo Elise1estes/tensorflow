@@ -16,20 +16,32 @@ limitations under the License.
 #include <fstream>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "xla/tsl/util/command_line_flags.h"
+#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/lib/io/path.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/tensor_types.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/platform/tstring.h"
 #include "tensorflow/core/public/session.h"
+#include "tensorflow/core/public/session_options.h"
 #include "tensorflow/core/util/command_line_flags.h"
+#include "tsl/platform/env.h"
+#include "tsl/platform/status.h"
+#include "tsl/platform/types.h"
 
 // These are all common classes it's handy to reference with no namespace.
 using tensorflow::Flag;
-using tensorflow::Status;
-using tensorflow::Tensor;
 using tensorflow::int32;
+using tensorflow::Status;
 using tensorflow::string;
+using tensorflow::Tensor;
+using tensorflow::tstring;
 
 namespace {
 
@@ -49,7 +61,7 @@ Status LoadGraph(const string& graph_file_name,
   if (!session_create_status.ok()) {
     return session_create_status;
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Takes a file name, and loads a list of labels from it, one per line, and
@@ -65,7 +77,7 @@ Status ReadLabelsFile(const string& file_name, std::vector<string>* result) {
   while (std::getline(file, line)) {
     result->push_back(line);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Analyzes the output of the graph to retrieve the highest scores and
@@ -103,7 +115,7 @@ int main(int argc, char* argv[]) {
   string labels = "";
   string input_name = "wav_data";
   string output_name = "labels_softmax";
-  int32 how_many_labels = 3;
+  int32_t how_many_labels = 3;
   std::vector<Flag> flag_list = {
       Flag("wav", &wav, "audio file to be identified"),
       Flag("graph", &graph, "model to be executed"),
@@ -149,7 +161,7 @@ int main(int argc, char* argv[]) {
     return -1;
   }
   Tensor wav_tensor(tensorflow::DT_STRING, tensorflow::TensorShape({}));
-  wav_tensor.scalar<string>()() = wav_string;
+  wav_tensor.scalar<tstring>()() = wav_string;
 
   // Actually run the audio through the model.
   std::vector<Tensor> outputs;

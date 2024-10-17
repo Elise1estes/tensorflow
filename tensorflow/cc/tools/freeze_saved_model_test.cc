@@ -15,16 +15,28 @@ limitations under the License.
 
 #include "tensorflow/cc/tools/freeze_saved_model.h"
 
+#include "tensorflow/cc/framework/ops.h"
+#include "tensorflow/cc/framework/scope.h"
+#include "tensorflow/cc/ops/array_ops.h"
+#include "tensorflow/cc/ops/const_op.h"
+#include "tensorflow/cc/ops/math_ops.h"
 #include "tensorflow/cc/ops/resource_variable_ops.h"
-#include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/cc/ops/state_ops.h"
+#include "tensorflow/cc/saved_model/loader.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/framework/function_testlib.h"
 #include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/framework/versions.pb.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/protobuf/meta_graph.pb.h"
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/public/session_options.h"
+#include "tsl/platform/errors.h"
 
 namespace tensorflow {
 namespace {
@@ -69,7 +81,7 @@ class FreezeTest : public ::testing::Test {
       return saved_model_bundle->session->Run(
           /* inputs */ {}, /* output_tensors */ {}, {init_node}, &outputs);
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Adds `graph_def` to `saved_model_bundle` and initializes a session with
@@ -138,7 +150,7 @@ class FreezeTest : public ::testing::Test {
     }
 
     TF_ASSERT_OK(scope.ToGraphDef(&graph_def));
-    // "c" isnt dependent on the variable, so nothing should be frozen.
+    // "c" isn't dependent on the variable, so nothing should be frozen.
     TF_ASSERT_OK(AddGraphDefWithOutputsToSavedModelBundle(
         graph_def, {"c:0"}, "assign", &saved_model_bundle));
 
@@ -162,7 +174,8 @@ class FreezeTest : public ::testing::Test {
                                          frozen_graph_def, "c:0");
   }
 
-  void TestFreezeGraphWithDependentVariables(bool use_resource) {
+  void TestFreezeGraphWithDependentVariables(bool use_resource,
+                                             bool use_identity = false) {
     // Test freezing a graph with variables that are needed by outputs in the
     // SignatureDef. The variables should be frozen.
     SavedModelBundle saved_model_bundle;
@@ -173,8 +186,16 @@ class FreezeTest : public ::testing::Test {
     if (use_resource) {
       Output var =
           ops::VarHandleOp(scope.WithOpName("var"), DataType::DT_FLOAT, {});
-      read_var = ops::ReadVariableOp(
-          scope.WithOpName("var/Read/ReadVariableOp"), var, DataType::DT_FLOAT);
+      if (use_identity) {
+        Output identity = ops::Identity(scope.WithOpName("identity"), var);
+        read_var =
+            ops::ReadVariableOp(scope.WithOpName("var/Read/ReadVariableOp"),
+                                identity, DataType::DT_FLOAT);
+      } else {
+        read_var =
+            ops::ReadVariableOp(scope.WithOpName("var/Read/ReadVariableOp"),
+                                var, DataType::DT_FLOAT);
+      }
       auto assign = ops::AssignVariableOp(scope.WithOpName("assign"), var, a);
     } else {
       Output read_var =
@@ -183,7 +204,7 @@ class FreezeTest : public ::testing::Test {
     }
     Output c = ops::Mul(scope.WithOpName("c"), a, read_var);
     TF_ASSERT_OK(scope.ToGraphDef(&graph_def));
-    // "c" isnt dependent on the variable, so nothing should be frozen.
+    // "c" isn't dependent on the variable, so nothing should be frozen.
     TF_ASSERT_OK(AddGraphDefWithOutputsToSavedModelBundle(
         graph_def, {"c:0"}, "assign", &saved_model_bundle));
 
@@ -195,9 +216,10 @@ class FreezeTest : public ::testing::Test {
 
     // If using normal variables there should be 3 nodes in the resulting
     // graph_def. If using resource variables there should be 4 nodes in the
-    // resulting graph_def.
+    // resulting graph_def if use_identity == false, otherwise 5 variables.
     // In both cases, none should be variables.
-    size_t expected_nodes = use_resource ? 4 : 3;
+    size_t expected_nodes = use_resource ? (use_identity ? 5 : 4) : 3;
+
     EXPECT_EQ(frozen_graph_def.node_size(), expected_nodes);
     for (const NodeDef& node : frozen_graph_def.node()) {
       EXPECT_NE(node.op(), "Variable") << node.name();
@@ -244,7 +266,7 @@ class FreezeTest : public ::testing::Test {
 
     Output c = ops::Mul(scope.WithOpName("c"), a, read_var);
     TF_ASSERT_OK(scope.ToGraphDef(&graph_def));
-    // "c" isnt dependent on the variable, so nothing should be frozen.
+    // "c" isn't dependent on the variable, so nothing should be frozen.
     TF_ASSERT_OK(AddGraphDefWithOutputsToSavedModelBundle(
         graph_def, {"c:0"}, "assign", &saved_model_bundle));
 
@@ -351,6 +373,56 @@ TEST_F(FreezeTest, GraphDefWithNoVariables) {
   GraphDefEqual(frozen_graph_def, graph_def);
 }
 
+TEST_F(FreezeTest, GraphDefWithMultiOutputOperation) {
+  // Tensors from operations with multiple outputs get tensor suffixes when used
+  // in input fields of following nodes, i.e. split:0, split:1.
+  // Test that we traverse those correctly.
+  SavedModelBundle saved_model_bundle;
+  GraphDef graph_def;
+  Scope scope = Scope::NewRootScope();
+  Output a = ops::Const(scope.WithOpName("a"), {10.0f, 10.0f}, {2});
+  Output axis = ops::Const(scope.WithOpName("axis"), 0, {});
+  OutputList split = ops::Split(scope.WithOpName("split"), axis, a, 2).output;
+  Output b = ops::Const(scope.WithOpName("b"), 10.0f, {});
+  Output c = ops::Mul(scope.WithOpName("c"), split[1], b);
+  TF_ASSERT_OK(scope.ToGraphDef(&graph_def));
+  TF_ASSERT_OK(AddGraphDefWithOutputsToSavedModelBundle(graph_def, {"c:0"}, "",
+                                                        &saved_model_bundle));
+
+  GraphDef frozen_graph_def;
+  std::unordered_set<string> inputs;
+  std::unordered_set<string> outputs;
+  TF_ASSERT_OK(FreezeSavedModel(saved_model_bundle, &frozen_graph_def, &inputs,
+                                &outputs));
+
+  GraphDefEqual(frozen_graph_def, graph_def);
+}
+
+TEST_F(FreezeTest, GraphDefWithControlDependency) {
+  // Inputs that are control dependencies get tensor prefixes,
+  // i.e. ^control_dependency.
+  // Test that we traverse those correctly.
+  SavedModelBundle saved_model_bundle;
+  GraphDef graph_def;
+  Scope scope = Scope::NewRootScope();
+  Output source = ops::Const(scope.WithOpName("source"), 10.0f, {});
+  Output a = ops::Const(scope.WithOpName("a").WithControlDependencies(source),
+                        {10.0f, 10.0f}, {2});
+  Output b = ops::Const(scope.WithOpName("b"), 10.0f, {});
+  Output c = ops::Mul(scope.WithOpName("c"), a, b);
+  TF_ASSERT_OK(scope.ToGraphDef(&graph_def));
+  TF_ASSERT_OK(AddGraphDefWithOutputsToSavedModelBundle(graph_def, {"c:0"}, "",
+                                                        &saved_model_bundle));
+
+  GraphDef frozen_graph_def;
+  std::unordered_set<string> inputs;
+  std::unordered_set<string> outputs;
+  TF_ASSERT_OK(FreezeSavedModel(saved_model_bundle, &frozen_graph_def, &inputs,
+                                &outputs));
+
+  GraphDefEqual(frozen_graph_def, graph_def);
+}
+
 TEST_F(FreezeTest, GraphDefWithoutDependentVariables) {
   TestFreezeGraphWithoutDependentVariables(false);
 }
@@ -367,12 +439,74 @@ TEST_F(FreezeTest, GraphDefWithDependentResourceVariables) {
   TestFreezeGraphWithDependentVariables(true);
 }
 
+TEST_F(FreezeTest, GraphDefWithDependentResourceVariablesAndIdentity) {
+  TestFreezeGraphWithDependentVariables(true, true);
+}
+
 TEST_F(FreezeTest, GraphDefWithAndWithoutDependentVariables) {
   TestFreezeGraphWithAndWithoutDependentVariables(false);
 }
 
 TEST_F(FreezeTest, GraphDefWithAndWithoutDependentResourceVariables) {
   TestFreezeGraphWithAndWithoutDependentVariables(true);
+}
+
+TEST_F(FreezeTest, InputsAndOutputsCompositeTensorSignatureDef) {
+  // Test that inputs and outputs get correctly populated for a
+  // SignatureDef containing composite tensor inputs and outputs.
+  SavedModelBundle saved_model_bundle;
+  SignatureDef signature_def;
+
+  TensorInfo& in = (*signature_def.mutable_inputs())["input_arg"];
+  in.mutable_composite_tensor()->add_components()->set_name("input1:0");
+  in.mutable_composite_tensor()->add_components()->set_name("input2:0");
+
+  TensorInfo& out = (*signature_def.mutable_outputs())["output_arg"];
+  out.mutable_composite_tensor()->add_components()->set_name("output2:0");
+  out.mutable_composite_tensor()->add_components()->set_name("output1:0");
+
+  AddSignatureDefToSavedModelBundle(signature_def, "signature_def",
+                                    &saved_model_bundle);
+  GraphDef frozen_graph_def;
+  std::unordered_set<string> inputs;
+  std::unordered_set<string> outputs;
+  TF_ASSERT_OK(FreezeSavedModel(saved_model_bundle, &frozen_graph_def, &inputs,
+                                &outputs));
+  std::unordered_set<string> expected_inputs = {"input1:0", "input2:0"};
+  std::unordered_set<string> expected_outputs = {"output1:0", "output2:0"};
+  EXPECT_EQ(expected_inputs, inputs);
+  EXPECT_EQ(expected_outputs, outputs);
+}
+
+TEST_F(FreezeTest, InputsAndOutputsSparseCooSignatureDef) {
+  // Test that inputs and outputs get correctly populated for a
+  // SignatureDef containing composite tensor inputs and outputs.
+  SavedModelBundle saved_model_bundle;
+  SignatureDef signature_def;
+
+  TensorInfo& in = (*signature_def.mutable_inputs())["input_arg"];
+  in.mutable_coo_sparse()->set_values_tensor_name("input1:0");
+  in.mutable_coo_sparse()->set_indices_tensor_name("input2:0");
+  in.mutable_coo_sparse()->set_dense_shape_tensor_name("input3:0");
+
+  TensorInfo& out = (*signature_def.mutable_outputs())["output_arg"];
+  out.mutable_coo_sparse()->set_values_tensor_name("output1:0");
+  out.mutable_coo_sparse()->set_indices_tensor_name("output2:0");
+  out.mutable_coo_sparse()->set_dense_shape_tensor_name("output3:0");
+
+  AddSignatureDefToSavedModelBundle(signature_def, "signature_def",
+                                    &saved_model_bundle);
+  GraphDef frozen_graph_def;
+  std::unordered_set<string> inputs;
+  std::unordered_set<string> outputs;
+  TF_ASSERT_OK(FreezeSavedModel(saved_model_bundle, &frozen_graph_def, &inputs,
+                                &outputs));
+  std::unordered_set<string> expected_inputs = {"input1:0", "input2:0",
+                                                "input3:0"};
+  std::unordered_set<string> expected_outputs = {"output1:0", "output2:0",
+                                                 "output3:0"};
+  EXPECT_EQ(expected_inputs, inputs);
+  EXPECT_EQ(expected_outputs, outputs);
 }
 
 }  // namespace

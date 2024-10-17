@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_DEBUG_NODE_KEY_H_
-#define TENSORFLOW_DEBUG_NODE_KEY_H_
+#ifndef TENSORFLOW_CORE_DEBUG_DEBUG_NODE_KEY_H_
+#define TENSORFLOW_CORE_DEBUG_DEBUG_NODE_KEY_H_
 
 #include <string>
 
@@ -28,7 +28,9 @@ struct DebugNodeKey {
   static const char* const kDeviceTag;
 
   DebugNodeKey(const string& device_name, const string& node_name,
-               const int32 output_slot, const string& debug_op);
+               int32_t output_slot, const string& debug_op,
+               const string& io_of_node = "", bool is_input = false,
+               int32_t io_index = -1);
 
   // Converts a device name string to a device path string.
   // E.g., /job:localhost/replica:0/task:0/cpu:0 will be converted to
@@ -44,8 +46,11 @@ struct DebugNodeKey {
   const string debug_op;
   const string debug_node_name;
   const string device_path;
+  const string io_of_node;
+  const bool is_input;
+  const int32 io_index;
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_DEBUG_NODE_KEY_H_
+#endif  // TENSORFLOW_CORE_DEBUG_DEBUG_NODE_KEY_H_

@@ -38,7 +38,7 @@ class Master;
 // for cancellation.
 class LocalMaster : public MasterInterface {
  public:
-  ~LocalMaster() {}
+  ~LocalMaster() override {}
 
   Status CreateSession(CallOptions* call_options,
                        const CreateSessionRequest* request,
@@ -79,7 +79,7 @@ class LocalMaster : public MasterInterface {
                      RunCallableResponse* response) override;
   Status ReleaseCallable(CallOptions* call_options,
                          const ReleaseCallableRequest* request,
-                         ReleaseCallableResponse* response);
+                         ReleaseCallableResponse* response) override;
 
   // Registers the mapping from the given `target` to the given `master`.
   //
@@ -89,7 +89,7 @@ class LocalMaster : public MasterInterface {
   // corresponding deregister method, since clean server shutdown is
   // not currently implemented for any server type.
   static void Register(const string& target, Master* master,
-                       int64 default_timeout_in_ms);
+                       int64_t default_timeout_in_ms);
 
   // Returns a pointer to the local master associated with the given
   // `target`, or nullptr if none exists.
@@ -97,13 +97,14 @@ class LocalMaster : public MasterInterface {
 
  private:
   Master* master_impl_;  // Not owned.
-  const int64 default_timeout_in_ms_;
+  const int64_t default_timeout_in_ms_;
 
   // See `LocalMaster::Lookup` for the factory function that creates
   // objects of this type.
-  LocalMaster(Master* master_impl, const int64 default_timeout_in_ms);
+  LocalMaster(Master* master_impl, const int64_t default_timeout_in_ms);
 
-  TF_DISALLOW_COPY_AND_ASSIGN(LocalMaster);
+  LocalMaster(const LocalMaster&) = delete;
+  void operator=(const LocalMaster&) = delete;
 };
 
 }  // namespace tensorflow

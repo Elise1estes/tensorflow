@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <mutex>
 
+#include "absl/log/check.h"
 #include "sqlite3.h"
 #include "tensorflow/core/lib/core/refcount.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -24,6 +25,7 @@ limitations under the License.
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/platform/types.h"
+#include "tsl/platform/status.h"
 
 /// TensorFlow SQLite Veneer
 ///
@@ -57,10 +59,10 @@ class SqliteTransaction;
 /// This veneer uses auto-commit mode by default, which means a 4ms
 /// fsync() happens after every write unless a SqliteTransaction is
 /// used or WAL mode is enabled beforehand.
-class LOCKABLE Sqlite : public core::RefCounted {
+class TF_LOCKABLE Sqlite : public core::RefCounted {
  public:
   /// \brief Closes SQLite connection, which can take milliseconds.
-  virtual ~Sqlite();
+  ~Sqlite() override;
 
   /// \brief Opens SQLite database file.
   ///
@@ -77,7 +79,7 @@ class LOCKABLE Sqlite : public core::RefCounted {
   ///
   /// This function sets PRAGMA values from TF_SQLITE_* environment
   /// variables. See sqlite.cc to learn more.
-  static Status Open(const string& path, int flags, Sqlite** db);
+  static absl::Status Open(const string& path, int flags, Sqlite** db);
 
   /// \brief Creates SQLite statement.
   ///
@@ -87,7 +89,7 @@ class LOCKABLE Sqlite : public core::RefCounted {
   /// routine will retry automatically and then possibly fail.
   ///
   /// The returned statement holds a reference to this object.
-  Status Prepare(const StringPiece& sql, SqliteStatement* stmt);
+  absl::Status Prepare(const StringPiece& sql, SqliteStatement* stmt);
   SqliteStatement PrepareOrDie(const StringPiece& sql);
 
   /// \brief Returns extended result code of last error.
@@ -95,22 +97,22 @@ class LOCKABLE Sqlite : public core::RefCounted {
   /// If the most recent API call was successful, the result is
   /// undefined. The legacy result code can be obtained by saying
   /// errcode() & 0xff.
-  int errcode() const EXCLUSIVE_LOCKS_REQUIRED(this) {
+  int errcode() const TF_EXCLUSIVE_LOCKS_REQUIRED(this) {
     return sqlite3_extended_errcode(db_);
   }
 
   /// \brief Returns pointer to current error message state.
-  const char* errmsg() const EXCLUSIVE_LOCKS_REQUIRED(this) {
+  const char* errmsg() const TF_EXCLUSIVE_LOCKS_REQUIRED(this) {
     return sqlite3_errmsg(db_);
   }
 
   /// \brief Returns rowid assigned to last successful insert.
-  int64 last_insert_rowid() const EXCLUSIVE_LOCKS_REQUIRED(this) {
+  int64_t last_insert_rowid() const TF_EXCLUSIVE_LOCKS_REQUIRED(this) {
     return sqlite3_last_insert_rowid(db_);
   }
 
   /// \brief Returns number of rows directly changed by last write.
-  int64 changes() const EXCLUSIVE_LOCKS_REQUIRED(this) {
+  int64_t changes() const TF_EXCLUSIVE_LOCKS_REQUIRED(this) {
     return sqlite3_changes(db_);
   }
 
@@ -129,7 +131,8 @@ class LOCKABLE Sqlite : public core::RefCounted {
   sqlite3_stmt* const rollback_;
   bool is_in_transaction_ = false;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(Sqlite);
+  Sqlite(const Sqlite&) = delete;
+  void operator=(const Sqlite&) = delete;
 };
 
 /// \brief SQLite prepared statement.
@@ -172,9 +175,9 @@ class SqliteStatement {
   /// The OrDie version returns `!is_done` which, if true, indicates a
   /// row is available.
   ///
-  /// This statement should be Reset() or destructed when when finished
-  /// with the result.
-  Status Step(bool* is_done);
+  /// This statement should be Reset() or destructed when finished with
+  /// the result.
+  absl::Status Step(bool* is_done);
   bool StepOrDie() TF_MUST_USE_RESULT;
 
   /// \brief Executes query when only one row is desired.
@@ -182,16 +185,16 @@ class SqliteStatement {
   /// If a row isn't returned, an internal error Status is returned
   /// that won't be reflected in the connection error state.
   ///
-  /// This statement should be Reset() or destructed when when finished
-  /// with the result.
-  Status StepOnce();
+  /// This statement should be Reset() or destructed when finished with
+  /// the result.
+  absl::Status StepOnce();
   const SqliteStatement& StepOnceOrDie();
 
   /// \brief Executes query, ensures zero rows returned, then Reset().
   ///
   /// If a row is returned, an internal error Status is returned that
   /// won't be reflected in the connection error state.
-  Status StepAndReset();
+  absl::Status StepAndReset();
   void StepAndResetOrDie();
 
   /// \brief Resets statement so it can be executed again.
@@ -203,11 +206,11 @@ class SqliteStatement {
   void Reset();
 
   /// \brief Binds signed 64-bit integer to 1-indexed query parameter.
-  void BindInt(int parameter, int64 value) {
+  void BindInt(int parameter, int64_t value) {
     Update(sqlite3_bind_int64(stmt_, parameter, value), parameter);
-    size_ += sizeof(int64);
+    size_ += sizeof(int64_t);
   }
-  void BindInt(const char* parameter, int64 value) {
+  void BindInt(const char* parameter, int64_t value) {
     BindInt(GetParameterIndex(parameter), value);
   }
 
@@ -284,7 +287,7 @@ class SqliteStatement {
   }
 
   /// \brief Returns 0-indexed column from row result coerced as an integer.
-  int64 ColumnInt(int column) const TF_MUST_USE_RESULT {
+  int64_t ColumnInt(int column) const TF_MUST_USE_RESULT {
     return sqlite3_column_int64(stmt_, column);
   }
 
@@ -374,25 +377,26 @@ class SqliteStatement {
   int bind_error_parameter_ = 0;
   uint64 size_ = 0;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(SqliteStatement);
+  SqliteStatement(const SqliteStatement&) = delete;
+  void operator=(const SqliteStatement&) = delete;
 };
 
 /// \brief Reentrant SQLite connection object lock
 ///
 /// This is a no-op if SQLITE_OPEN_NOMUTEX was used.
-class SCOPED_LOCKABLE SqliteLock {
+class TF_SCOPED_LOCKABLE SqliteLock {
  public:
-  explicit SqliteLock(Sqlite& db) EXCLUSIVE_LOCK_FUNCTION(db)
+  explicit SqliteLock(Sqlite& db) TF_EXCLUSIVE_LOCK_FUNCTION(db)
       : mutex_(sqlite3_db_mutex(db.db_)) {
     sqlite3_mutex_enter(mutex_);
   }
-  SqliteLock(Sqlite& db, std::try_to_lock_t) EXCLUSIVE_LOCK_FUNCTION(db)
+  SqliteLock(Sqlite& db, std::try_to_lock_t) TF_EXCLUSIVE_LOCK_FUNCTION(db)
       : mutex_(sqlite3_db_mutex(db.db_)) {
     if (TF_PREDICT_FALSE(sqlite3_mutex_try(mutex_) != SQLITE_OK)) {
       is_locked_ = false;
     }
   }
-  ~SqliteLock() UNLOCK_FUNCTION() {
+  ~SqliteLock() TF_UNLOCK_FUNCTION() {
     if (is_locked_) sqlite3_mutex_leave(mutex_);
   }
   explicit operator bool() const { return is_locked_; }
@@ -400,7 +404,8 @@ class SCOPED_LOCKABLE SqliteLock {
  private:
   sqlite3_mutex* const mutex_;
   bool is_locked_ = true;
-  TF_DISALLOW_COPY_AND_ASSIGN(SqliteLock);
+  SqliteLock(const SqliteLock&) = delete;
+  void operator=(const SqliteLock&) = delete;
 };
 #define SqliteLock(x) static_assert(0, "sqlite_lock_decl_missing_name");
 
@@ -409,34 +414,35 @@ class SCOPED_LOCKABLE SqliteLock {
 /// This class acquires an exclusive lock on the connection object (if
 /// mutexes weren't disabled) and runs BEGIN / ROLLBACK automatically.
 /// Unlike SqliteLock this scope is non-reentrant. To avoid program
-/// crashes, business logic should use the EXCLUSIVE_LOCK_FUNCTION and
-/// LOCKS_EXCLUDED annotations as much as possible.
-class SCOPED_LOCKABLE SqliteTransaction {
+/// crashes, business logic should use the TF_EXCLUSIVE_LOCK_FUNCTION and
+/// TF_LOCKS_EXCLUDED annotations as much as possible.
+class TF_SCOPED_LOCKABLE SqliteTransaction {
  public:
   /// \brief Locks db and begins deferred transaction.
   ///
   /// This will crash if a transaction is already active.
-  explicit SqliteTransaction(Sqlite& db) EXCLUSIVE_LOCK_FUNCTION(db);
+  explicit SqliteTransaction(Sqlite& db) TF_EXCLUSIVE_LOCK_FUNCTION(db);
 
   /// \brief Runs ROLLBACK and unlocks.
-  ~SqliteTransaction() UNLOCK_FUNCTION();
+  ~SqliteTransaction() TF_UNLOCK_FUNCTION();
 
   /// \brief Commits transaction.
   ///
   /// If this is successful, a new transaction will be started, which
   /// is rolled back when exiting the scope.
-  Status Commit();
+  absl::Status Commit();
 
  private:
   void Begin();
   Sqlite* const db_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(SqliteTransaction);
+  SqliteTransaction(const SqliteTransaction&) = delete;
+  void operator=(const SqliteTransaction&) = delete;
 };
 
 #define SQLITE_EXCLUSIVE_TRANSACTIONS_REQUIRED(...) \
-  EXCLUSIVE_LOCKS_REQUIRED(__VA_ARGS__)
-#define SQLITE_TRANSACTIONS_EXCLUDED(...) LOCKS_EXCLUDED(__VA_ARGS__)
+  TF_EXCLUSIVE_LOCKS_REQUIRED(__VA_ARGS__)
+#define SQLITE_TRANSACTIONS_EXCLUDED(...) TF_LOCKS_EXCLUDED(__VA_ARGS__)
 
 inline SqliteStatement Sqlite::PrepareOrDie(const StringPiece& sql) {
   SqliteStatement stmt;

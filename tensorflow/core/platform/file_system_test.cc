@@ -18,10 +18,10 @@ limitations under the License.
 #include <sys/stat.h>
 
 #include "tensorflow/core/lib/core/status_test_util.h"
-#include "tensorflow/core/lib/io/path.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/null_file_system.h"
+#include "tensorflow/core/platform/path.h"
+#include "tensorflow/core/platform/str_util.h"
+#include "tensorflow/core/platform/strcat.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -32,63 +32,69 @@ static const char* const kPrefix = "ipfs://solarsystem";
 // cannot have children further.
 class InterPlanetaryFileSystem : public NullFileSystem {
  public:
-  Status FileExists(const string& fname) override {
+  TF_USE_FILESYSTEM_METHODS_WITH_NO_TRANSACTION_SUPPORT;
+
+  absl::Status FileExists(const string& fname,
+                          TransactionToken* token) override {
     string parsed_path;
     ParsePath(fname, &parsed_path);
     if (BodyExists(parsed_path)) {
-      return Status::OK();
+      return absl::OkStatus();
     }
-    return Status(tensorflow::error::NOT_FOUND, "File does not exist");
+    return absl::Status(absl::StatusCode::kNotFound, "File does not exist");
   }
 
   // Adds the dir to the parent's children list and creates an entry for itself.
-  Status CreateDir(const string& dirname) override {
+  absl::Status CreateDir(const string& dirname,
+                         TransactionToken* token) override {
     string parsed_path;
     ParsePath(dirname, &parsed_path);
     // If the directory already exists, throw an error.
     if (celestial_bodies_.find(parsed_path) != celestial_bodies_.end()) {
-      return Status(tensorflow::error::ALREADY_EXISTS,
-                    "dirname already exists.");
+      return absl::Status(absl::StatusCode::kAlreadyExists,
+                          "dirname already exists.");
     }
     std::vector<string> split_path = str_util::Split(parsed_path, '/');
     // If the path is too long then we don't support it.
     if (split_path.size() > 3) {
-      return Status(tensorflow::error::INVALID_ARGUMENT, "Bad dirname");
+      return absl::Status(absl::StatusCode::kInvalidArgument, "Bad dirname");
     }
     if (split_path.empty()) {
-      return Status::OK();
+      return absl::OkStatus();
     }
     if (split_path.size() == 1) {
       celestial_bodies_[""].insert(parsed_path);
       celestial_bodies_.insert(
           std::pair<string, std::set<string>>(parsed_path, {}));
-      return Status::OK();
+      return absl::OkStatus();
     }
     if (split_path.size() == 2) {
       if (!BodyExists(split_path[0])) {
-        return Status(tensorflow::error::FAILED_PRECONDITION,
-                      "Base dir not created");
+        return absl::Status(absl::StatusCode::kFailedPrecondition,
+                            "Base dir not created");
       }
       celestial_bodies_[split_path[0]].insert(split_path[1]);
       celestial_bodies_.insert(
           std::pair<string, std::set<string>>(parsed_path, {}));
-      return Status::OK();
+      return absl::OkStatus();
     }
     if (split_path.size() == 3) {
-      const string& parent_path = io::JoinPath(split_path[0], split_path[1]);
+      const string& parent_path = this->JoinPath(split_path[0], split_path[1]);
       if (!BodyExists(parent_path)) {
-        return Status(tensorflow::error::FAILED_PRECONDITION,
-                      "Base dir not created");
+        return absl::Status(absl::StatusCode::kFailedPrecondition,
+                            "Base dir not created");
       }
       celestial_bodies_[parent_path].insert(split_path[2]);
       celestial_bodies_.insert(
           std::pair<string, std::set<string>>(parsed_path, {}));
-      return Status::OK();
+      return absl::OkStatus();
     }
-    return Status(tensorflow::error::FAILED_PRECONDITION, "Failed to create");
+    return absl::Status(absl::StatusCode::kFailedPrecondition,
+                        "Failed to create");
   }
 
-  Status IsDirectory(const string& dirname) override {
+  absl::Status IsDirectory(const string& dirname,
+                           TransactionToken* token) override {
     string parsed_path;
     ParsePath(dirname, &parsed_path);
     // Simulate evil_directory has bad permissions by throwing a LOG(FATAL)
@@ -97,21 +103,22 @@ class InterPlanetaryFileSystem : public NullFileSystem {
     }
     std::vector<string> split_path = str_util::Split(parsed_path, '/');
     if (split_path.size() > 2) {
-      return Status(tensorflow::error::FAILED_PRECONDITION, "Not a dir");
+      return absl::Status(absl::StatusCode::kFailedPrecondition, "Not a dir");
     }
     if (celestial_bodies_.find(parsed_path) != celestial_bodies_.end()) {
-      return Status::OK();
+      return absl::OkStatus();
     }
-    return Status(tensorflow::error::FAILED_PRECONDITION, "Not a dir");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, "Not a dir");
   }
 
-  Status GetChildren(const string& dir, std::vector<string>* result) override {
-    TF_RETURN_IF_ERROR(IsDirectory(dir));
+  absl::Status GetChildren(const string& dir, TransactionToken* token,
+                           std::vector<string>* result) override {
+    TF_RETURN_IF_ERROR(IsDirectory(dir, nullptr));
     string parsed_path;
     ParsePath(dir, &parsed_path);
     result->insert(result->begin(), celestial_bodies_[parsed_path].begin(),
                    celestial_bodies_[parsed_path].end());
-    return Status::OK();
+    return absl::OkStatus();
   }
 
  private:
@@ -121,11 +128,11 @@ class InterPlanetaryFileSystem : public NullFileSystem {
 
   void ParsePath(const string& name, string* parsed_path) {
     StringPiece scheme, host, path;
-    io::ParseURI(name, &scheme, &host, &path);
+    this->ParseURI(name, &scheme, &host, &path);
     ASSERT_EQ(scheme, "ipfs");
     ASSERT_EQ(host, "solarsystem");
-    str_util::ConsumePrefix(&path, "/");
-    *parsed_path = path.ToString();
+    absl::ConsumePrefix(&path, "/");
+    *parsed_path = string(path);
   }
 
   std::map<string, std::set<string>> celestial_bodies_ = {
@@ -151,8 +158,8 @@ class InterPlanetaryFileSystem : public NullFileSystem {
 // common prefix of BaseDir().
 string Match(InterPlanetaryFileSystem* ipfs, const string& suffix_pattern) {
   std::vector<string> results;
-  Status s =
-      ipfs->GetMatchingPaths(io::JoinPath(kPrefix, suffix_pattern), &results);
+  absl::Status s = ipfs->GetMatchingPaths(
+      ipfs->JoinPath(kPrefix, suffix_pattern), nullptr, &results);
   if (!s.ok()) {
     return s.ToString();
   } else {
@@ -160,11 +167,11 @@ string Match(InterPlanetaryFileSystem* ipfs, const string& suffix_pattern) {
     std::sort(results.begin(), results.end());
     for (const string& result : results) {
       StringPiece trimmed_result(result);
-      EXPECT_TRUE(str_util::ConsumePrefix(&trimmed_result,
-                                          strings::StrCat(kPrefix, "/")));
+      EXPECT_TRUE(
+          absl::ConsumePrefix(&trimmed_result, strings::StrCat(kPrefix, "/")));
       trimmed_results.push_back(trimmed_result);
     }
-    return str_util::Join(trimmed_results, ",");
+    return absl::StrJoin(trimmed_results, ",");
   }
 }
 
@@ -179,18 +186,18 @@ TEST(InterPlanetaryFileSystemTest, IPFSMatch) {
   // Returns Jupiter's and Earth's moons.
   EXPECT_EQ(Match(&ipfs, "*/*"),
             "Earth/Moon,Jupiter/Europa,Jupiter/Ganymede,Jupiter/Io");
-  TF_EXPECT_OK(ipfs.CreateDir(io::JoinPath(kPrefix, "Planet0")));
-  TF_EXPECT_OK(ipfs.CreateDir(io::JoinPath(kPrefix, "Planet1")));
+  TF_EXPECT_OK(ipfs.CreateDir(ipfs.JoinPath(kPrefix, "Planet0"), nullptr));
+  TF_EXPECT_OK(ipfs.CreateDir(ipfs.JoinPath(kPrefix, "Planet1"), nullptr));
   EXPECT_EQ(Match(&ipfs, "Planet[0-1]"), "Planet0,Planet1");
   EXPECT_EQ(Match(&ipfs, "Planet?"), "Planet0,Planet1");
 }
 
 TEST(InterPlanetaryFileSystemTest, MatchSimple) {
   InterPlanetaryFileSystem ipfs;
-  TF_EXPECT_OK(ipfs.CreateDir(io::JoinPath(kPrefix, "match-00")));
-  TF_EXPECT_OK(ipfs.CreateDir(io::JoinPath(kPrefix, "match-0a")));
-  TF_EXPECT_OK(ipfs.CreateDir(io::JoinPath(kPrefix, "match-01")));
-  TF_EXPECT_OK(ipfs.CreateDir(io::JoinPath(kPrefix, "match-aaa")));
+  TF_EXPECT_OK(ipfs.CreateDir(ipfs.JoinPath(kPrefix, "match-00"), nullptr));
+  TF_EXPECT_OK(ipfs.CreateDir(ipfs.JoinPath(kPrefix, "match-0a"), nullptr));
+  TF_EXPECT_OK(ipfs.CreateDir(ipfs.JoinPath(kPrefix, "match-01"), nullptr));
+  TF_EXPECT_OK(ipfs.CreateDir(ipfs.JoinPath(kPrefix, "match-aaa"), nullptr));
 
   EXPECT_EQ(Match(&ipfs, "match-*"), "match-00,match-01,match-0a,match-aaa");
   EXPECT_EQ(Match(&ipfs, "match-0[0-9]"), "match-00,match-01");
@@ -203,22 +210,23 @@ TEST(InterPlanetaryFileSystemTest, MatchSimple) {
 // that evil_directory isn't accessed.
 TEST(InterPlanetaryFileSystemTest, MatchOnlyNeeded) {
   InterPlanetaryFileSystem ipfs;
-  TF_EXPECT_OK(ipfs.CreateDir(io::JoinPath(kPrefix, "abcd")));
-  TF_EXPECT_OK(ipfs.CreateDir(io::JoinPath(kPrefix, "evil_directory")));
+  TF_EXPECT_OK(ipfs.CreateDir(ipfs.JoinPath(kPrefix, "abcd"), nullptr));
+  TF_EXPECT_OK(
+      ipfs.CreateDir(ipfs.JoinPath(kPrefix, "evil_directory"), nullptr));
 
   EXPECT_EQ(Match(&ipfs, "abcd"), "abcd");
 }
 
 TEST(InterPlanetaryFileSystemTest, MatchDirectory) {
   InterPlanetaryFileSystem ipfs;
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-00/abc/x")));
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-0a/abc/x")));
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-01/abc/x")));
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-aaa/abc/x")));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-00/abc/x"), nullptr));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-0a/abc/x"), nullptr));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-01/abc/x"), nullptr));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-aaa/abc/x"), nullptr));
 
   EXPECT_EQ(Match(&ipfs, "match-*/abc/x"),
             "match-00/abc/x,match-01/abc/x,match-0a/abc/x,match-aaa/abc/x");
@@ -232,20 +240,20 @@ TEST(InterPlanetaryFileSystemTest, MatchDirectory) {
 
 TEST(InterPlanetaryFileSystemTest, MatchMultipleWildcards) {
   InterPlanetaryFileSystem ipfs;
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-00/abc/00")));
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-00/abc/01")));
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-00/abc/09")));
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-01/abc/00")));
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-01/abc/04")));
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-01/abc/10")));
-  TF_EXPECT_OK(
-      ipfs.RecursivelyCreateDir(io::JoinPath(kPrefix, "match-02/abc/00")));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-00/abc/00"), nullptr));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-00/abc/01"), nullptr));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-00/abc/09"), nullptr));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-01/abc/00"), nullptr));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-01/abc/04"), nullptr));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-01/abc/10"), nullptr));
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(
+      ipfs.JoinPath(kPrefix, "match-02/abc/00"), nullptr));
 
   EXPECT_EQ(Match(&ipfs, "match-0[0-1]/abc/0[0-8]"),
             "match-00/abc/00,match-00/abc/01,match-01/abc/00,match-01/abc/04");
@@ -253,31 +261,49 @@ TEST(InterPlanetaryFileSystemTest, MatchMultipleWildcards) {
 
 TEST(InterPlanetaryFileSystemTest, RecursivelyCreateAlreadyExistingDir) {
   InterPlanetaryFileSystem ipfs;
+  const string dirname = ipfs.JoinPath(kPrefix, "match-00/abc/00");
+  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(dirname));
+  // We no longer check for recursively creating the directory again because
+  // `ipfs.IsDirectory` is badly implemented, fixing it will break other tests
+  // in this suite and we already test creating the directory again in
+  // env_test.cc as well as in the modular filesystem tests.
+}
+
+TEST(InterPlanetaryFileSystemTest, HasAtomicMove) {
+  InterPlanetaryFileSystem ipfs;
   const string dirname = io::JoinPath(kPrefix, "match-00/abc/00");
-  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(dirname));
-  // Ensure that CreateDir throws an error, to sanity check that this test
-  // actually tests the behavior of RecursivelyCreateDir.
-  EXPECT_EQ(ipfs.CreateDir(dirname).code(), tensorflow::error::ALREADY_EXISTS);
-  TF_EXPECT_OK(ipfs.RecursivelyCreateDir(dirname));
+  bool has_atomic_move;
+  TF_EXPECT_OK(ipfs.HasAtomicMove(dirname, &has_atomic_move));
+  EXPECT_EQ(has_atomic_move, true);
+}
+
+TEST(InterPlanetaryFileSystemTest, CanCreateTempFile) {
+  InterPlanetaryFileSystem ipfs;
+  const string dirname = io::JoinPath(kPrefix, "match-00/abc/00");
+  bool can_create_temp_file;
+  TF_EXPECT_OK(ipfs.CanCreateTempFile(dirname, &can_create_temp_file));
+  EXPECT_EQ(can_create_temp_file, true);
 }
 
 // A simple file system with a root directory and a single file underneath it.
 class TestFileSystem : public NullFileSystem {
  public:
   // Only allow for a single root directory.
-  Status IsDirectory(const string& dirname) override {
+  absl::Status IsDirectory(const string& dirname,
+                           TransactionToken* token) override {
     if (dirname == "." || dirname.empty()) {
-      return Status::OK();
+      return absl::OkStatus();
     }
-    return Status(tensorflow::error::FAILED_PRECONDITION, "Not a dir");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, "Not a dir");
   }
 
   // Simulating a FS with a root dir and a single file underneath it.
-  Status GetChildren(const string& dir, std::vector<string>* result) override {
+  absl::Status GetChildren(const string& dir, TransactionToken* token,
+                           std::vector<string>* result) override {
     if (dir == "." || dir.empty()) {
       result->push_back("test");
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 
@@ -285,10 +311,10 @@ class TestFileSystem : public NullFileSystem {
 TEST(TestFileSystemTest, RootDirectory) {
   TestFileSystem fs;
   std::vector<string> results;
-  auto ret = fs.GetMatchingPaths("./te*", &results);
+  auto ret = fs.GetMatchingPaths("./te*", nullptr, &results);
   EXPECT_EQ(1, results.size());
   EXPECT_EQ("./test", results[0]);
-  ret = fs.GetMatchingPaths("te*", &results);
+  ret = fs.GetMatchingPaths("te*", nullptr, &results);
   EXPECT_EQ(1, results.size());
   EXPECT_EQ("./test", results[0]);
 }

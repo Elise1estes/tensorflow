@@ -20,11 +20,11 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "absl/strings/str_join.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "tensorflow/core/framework/kernel_def.pb.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/util/command_line_flags.h"
 
@@ -47,17 +47,20 @@ void PrintSupportedOps(const string& device, const string& regen_run) {
             << "-------- | ---------------" << std::endl;
   for (const KernelDef* kdef : kdefs) {
     std::vector<string> constraints;
+    constraints.reserve(kdef->constraint().size());
     for (const KernelDef::AttrConstraint& constraint : kdef->constraint()) {
       std::vector<string> types;
-      for (int type : constraint.allowed_values().list().type()) {
+      const auto& allowed_values = constraint.allowed_values().list().type();
+      types.reserve(allowed_values.size());
+      for (int type : allowed_values) {
         types.push_back(DataTypeString(static_cast<DataType>(type)));
       }
       std::sort(types.begin(), types.end());
       constraints.push_back("`" + constraint.name() + "={" +
-                            str_util::Join(types, ",") + "}`");
+                            absl::StrJoin(types, ",") + "}`");
     }
     std::cout << "`" << kdef->op() << "` | "
-              << str_util::Join(constraints, "<br>") << std::endl;
+              << absl::StrJoin(constraints, "<br>") << std::endl;
   }
 
   std::cout << "\nTo regenerate this table, run:\n\n```shell\n"
@@ -76,7 +79,7 @@ void SupportedOpsMain(int argc, char** argv, const char* regen_run) {
       {"device", &device,
        "Name of the compilation device for which to print supported ops, "
        "one of: " +
-           str_util::Join(device_names, ",")},
+           absl::StrJoin(device_names, ",")},
   };
   string usage = Flags::Usage(argv[0], flag_list);
   bool parsed_flags_ok = Flags::Parse(&argc, argv, flag_list);

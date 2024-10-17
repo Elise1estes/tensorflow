@@ -85,7 +85,7 @@ class FactOpKernel : public OpKernel {
     Tensor* output_tensor = nullptr;
     OP_REQUIRES_OK(
         context, context->allocate_output(0, TensorShape({}), &output_tensor));
-    auto output = output_tensor->template scalar<string>();
+    auto output = output_tensor->template scalar<tstring>();
 
     string coded = facts[context->env()->NowMicros() % count];
     E(&coded);
@@ -114,6 +114,8 @@ class FactOpKernel2 : public FactOpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("Fact").Device(DEVICE_GPU).HostMemory("fact"),
+                        FactOpKernel1);
+REGISTER_KERNEL_BUILDER(Name("Fact").Device(DEVICE_DEFAULT).HostMemory("fact"),
                         FactOpKernel1);
 
 static string D(const char* s) {

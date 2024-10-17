@@ -14,16 +14,18 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/c/c_api.h"
-
+#include "tensorflow/c/c_api_internal.h"
 #include "tensorflow/c/c_test_util.h"
+#include "tensorflow/core/framework/common_shape_fns.h"
+#include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/op_def.pb.h"
-#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/hash/hash.h"
 #include "tensorflow/core/lib/strings/proto_serialization.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/str_util.h"
+#include "tensorflow/core/platform/strcat.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -33,6 +35,9 @@ namespace {
 // DataType value of DT_INVALID signifies that we don't want to
 // check the data type.
 typedef std::pair<string, DataType> IOSpec;
+
+const char* kFeedStackToString = "File \"feed.cc\", line 10, in alpha";
+const char* kNegStackToString = "File \"neg.cc\", line 15, in beta";
 
 std::vector<IOSpec> M(const std::initializer_list<string>& names) {
   std::vector<IOSpec> v;
@@ -193,6 +198,7 @@ class CApiFunctionTest : public ::testing::Test {
 
     ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
     ASSERT_NE(func_, nullptr);
+    ASSERT_EQ(std::string(func_name_), std::string(TF_FunctionName(func_)));
     TF_GraphCopyFunction(host_graph_, func_, nullptr, s_);
     ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
   }
@@ -251,7 +257,7 @@ class CApiFunctionTest : public ::testing::Test {
                        const std::unordered_set<string>& nodes) {
     ASSERT_EQ(nodes.size(), fdef.node_def_size())
         << "Got unexpected number of nodes. Expected: ["
-        << str_util::Join(nodes, ", ")
+        << absl::StrJoin(nodes, ", ")
         << "] Actual nodes in fdef: " << fdef.DebugString();
     for (const NodeDef& node_def : fdef.node_def()) {
       ASSERT_TRUE(nodes.find(node_def.name()) != nodes.end())
@@ -1219,6 +1225,11 @@ void DefineFunction(const char* name, TF_Function** func,
   TF_Operation* feed = Placeholder(func_graph.get(), s.get());
   TF_Operation* neg = Neg(feed, func_graph.get(), s.get());
 
+  std::vector<StackFrame> feed_frames = {{"feed.cc", 10, "alpha"}};
+  std::vector<StackFrame> neg_frames = {{"neg.cc", 15, "beta"}};
+  feed->node.SetStackTrace(std::make_shared<FrozenStackTrace>(feed_frames));
+  neg->node.SetStackTrace(std::make_shared<FrozenStackTrace>(neg_frames));
+
   TF_Output inputs[] = {{feed, 0}};
   TF_Output outputs[] = {{neg, 0}};
   *func = TF_GraphToFunction(func_graph.get(), name, append_hash, -1,
@@ -1227,6 +1238,136 @@ void DefineFunction(const char* name, TF_Function** func,
                              /*opts=*/nullptr, description, s.get());
   ASSERT_EQ(TF_OK, TF_GetCode(s.get())) << TF_Message(s.get());
   ASSERT_NE(*func, nullptr);
+}
+
+REGISTER_OP("CustomOp")
+    .Output("output: float32")
+    .Attr("index: int")
+    .SetShapeFn(tensorflow::shape_inference::UnknownShape);
+
+void NodeWithPlaceholderAttrHelper(TF_Graph* graph, TF_Status* s,
+                                   const char* name, const char* placeholder,
+                                   TF_Operation** op) {
+  TF_OperationDescription* desc = TF_NewOperation(graph, "CustomOp", name);
+  TF_SetAttrPlaceholder(desc, "index", placeholder);
+  *op = TF_FinishOperation(desc, s);
+  ASSERT_EQ(TF_OK, TF_GetCode(s)) << TF_Message(s);
+  ASSERT_NE(*op, nullptr);
+}
+
+TEST_F(CApiFunctionTest, GraphToFunctionDefWithPlaceholderAttr) {
+  std::unique_ptr<TF_Graph, decltype(&TF_DeleteGraph)> func_graph(
+      TF_NewGraph(), TF_DeleteGraph);
+  std::unique_ptr<TF_Status, decltype(&TF_DeleteStatus)> s(TF_NewStatus(),
+                                                           TF_DeleteStatus);
+
+  TF_Operation *node1, *node2, *node3;
+  NodeWithPlaceholderAttrHelper(func_graph.get(), s.get(), "node1", "v1",
+                                &node1);
+  NodeWithPlaceholderAttrHelper(func_graph.get(), s.get(), "node2", "v1",
+                                &node2);
+  NodeWithPlaceholderAttrHelper(func_graph.get(), s.get(), "node3", "v2",
+                                &node3);
+
+  TF_Output outputs[] = {{node1, 0}, {node2, 0}, {node3, 0}};
+  func_ = TF_GraphToFunction(
+      func_graph.get(), "func", /*append_hash_to_fn_name=*/false, -1,
+      /*opers=*/nullptr, 0, nullptr, 3, outputs,
+      /*output_names=*/nullptr,
+      /*opts=*/nullptr, /*description=*/nullptr, s.get());
+  ASSERT_EQ(TF_OK, TF_GetCode(s.get())) << TF_Message(s.get());
+  ASSERT_NE(func_, nullptr);
+
+  // Verify that FunctionDef has 2 attributes, "v1" and "v2".
+  ASSERT_EQ(func_->record->fdef().signature().attr().size(), 2);
+  EXPECT_EQ(func_->record->fdef().signature().attr(0).name(), "v1");
+  EXPECT_EQ(func_->record->fdef().signature().attr(0).type(), "int");
+  EXPECT_EQ(func_->record->fdef().signature().attr(1).name(), "v2");
+  EXPECT_EQ(func_->record->fdef().signature().attr(1).type(), "int");
+}
+
+void NodeWithAttrHelper(TF_Graph* graph, TF_Status* s, const char* name,
+                        const char* attr_name, const char* attr_value,
+                        TF_Operation** op) {
+  TF_OperationDescription* desc = TF_NewOperation(graph, "Placeholder", name);
+  TF_SetAttrType(desc, "dtype", TF_INT32);
+  TF_SetAttrString(desc, attr_name, attr_value, strlen(attr_value));
+  *op = TF_FinishOperation(desc, s);
+  ASSERT_EQ(TF_OK, TF_GetCode(s)) << TF_Message(s);
+  ASSERT_NE(*op, nullptr);
+}
+
+TEST_F(CApiFunctionTest, GraphToFunctionDefWithArgAttr) {
+  std::unique_ptr<TF_Graph, decltype(&TF_DeleteGraph)> func_graph(
+      TF_NewGraph(), TF_DeleteGraph);
+  std::unique_ptr<TF_Status, decltype(&TF_DeleteStatus)> s(TF_NewStatus(),
+                                                           TF_DeleteStatus);
+
+  TF_Operation* node;
+  NodeWithAttrHelper(func_graph.get(), s.get(), "node", "_test_attr", "value",
+                     &node);
+
+  TF_Output inputs[] = {{node, 0}};
+  func_ = TF_GraphToFunction(
+      func_graph.get(), "func", /*append_hash_to_fn_name=*/false, -1,
+      /*opers=*/nullptr, 1, inputs, 0, nullptr,
+      /*output_names=*/nullptr,
+      /*opts=*/nullptr, /*description=*/nullptr, s.get());
+  ASSERT_EQ(TF_OK, TF_GetCode(s.get())) << TF_Message(s.get());
+  ASSERT_NE(func_, nullptr);
+
+  // Verify that FunctionDef ArgDef has attributes.
+  ASSERT_EQ(func_->record->fdef().arg_attr_size(), 1);
+  auto arg_attrs = func_->record->fdef().arg_attr().find(0);
+  ASSERT_NE(arg_attrs, func_->record->fdef().arg_attr().end());
+  auto iter = arg_attrs->second.attr().find("_test_attr");
+  ASSERT_NE(iter, arg_attrs->second.attr().end());
+  EXPECT_EQ(iter->second.s(), "value");
+}
+
+TEST_F(CApiFunctionTest, TFGraphToFunctionWithStackTraces) {
+  DefineFunction(func_name_, &func_);
+  auto stack_traces = func_->record->stack_traces();
+
+  EXPECT_EQ(stack_traces.size(), 4);
+  EXPECT_EQ(stack_traces["neg"]->ToString({}), kNegStackToString);
+  EXPECT_EQ(stack_traces["feed"]->ToString({}), kFeedStackToString);
+}
+
+TEST_F(CApiFunctionTest, TFGraphCopyFunctionWithStackTraces) {
+  // Define the function and its grad
+  DefineFunction(func_name_, &func_);
+  TF_Function* grad_func;
+  DefineFunction("MyGrad", &grad_func);
+
+  // Add func and its gradient to host graph
+  TF_GraphCopyFunction(host_graph_, func_, grad_func, s_);
+
+  ASSERT_EQ(TF_OK, TF_GetCode(s_)) << TF_Message(s_);
+
+  TF_DeleteFunction(grad_func);
+
+  const StackTracesMap* func_stack_traces;
+  const StackTracesMap* grad_stack_traces;
+
+  {
+    mutex_lock l(host_graph_->mu);
+    auto flib_def = host_graph_->graph.flib_def();
+    func_stack_traces = flib_def.GetStackTraces(func_name_);
+    grad_stack_traces = flib_def.GetStackTraces("MyGrad");
+  }
+
+  // Verify that stack traces of func is copied to graph function library.
+  ASSERT_NE(func_stack_traces, nullptr);
+  EXPECT_EQ(func_stack_traces->size(), 4);
+  EXPECT_EQ(func_stack_traces->at("neg")->ToString({}), kNegStackToString);
+  EXPECT_EQ(func_stack_traces->at("feed")->ToString({}), kFeedStackToString);
+
+  // Verify that stack traces of grad_func is copied to graph function library.
+  ASSERT_NE(grad_stack_traces, nullptr);
+  EXPECT_EQ(grad_stack_traces->size(), 4);
+  EXPECT_EQ(grad_stack_traces->at("neg")->ToString({}), kNegStackToString);
+  EXPECT_EQ(grad_stack_traces->at("feed")->ToString({}), kFeedStackToString);
 }
 
 TEST_F(CApiFunctionTest, SetGradientAndRun) {
@@ -1514,10 +1655,10 @@ void DefineStatefulFunction(const char* name, TF_Function** func) {
   TF_Operation* random =
       RandomUniform(shape, TF_FLOAT, func_graph.get(), s.get());
 
-  TF_Output inputs[] = {};
   TF_Output outputs[] = {{random, 0}};
-  *func = TF_GraphToFunction(func_graph.get(), name, /*append_hash=*/false, -1,
-                             /*opers=*/nullptr, 0, inputs, 1, outputs,
+  *func = TF_GraphToFunction(func_graph.get(), name,
+                             /*append_hash_to_fn_name=*/false, -1,
+                             /*opers=*/nullptr, 0, nullptr, 1, outputs,
                              /*output_names=*/nullptr,
                              /*opts=*/nullptr, "", s.get());
   ASSERT_EQ(TF_OK, TF_GetCode(s.get())) << TF_Message(s.get());

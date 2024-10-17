@@ -14,10 +14,6 @@
 # =============================================================================
 """Tests for tensorflow.python.framework.meta_graph.py."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import math
 import os.path
 import random
@@ -33,7 +29,7 @@ from tensorflow.python.framework import meta_graph
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import data_flow_ops
 from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import math_ops
@@ -44,6 +40,7 @@ from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables
+from tensorflow.python.ops import while_loop
 from tensorflow.python.platform import gfile
 from tensorflow.python.platform import test
 from tensorflow.python.training import queue_runner_impl
@@ -61,9 +58,9 @@ def _TestDir(test_name):
 # pylint: enable=invalid-name
 
 
-@test_util.with_c_api
 class SimpleMetaGraphTest(test.TestCase):
 
+  @test_util.run_deprecated_v1
   def testNoVariables(self):
     test_dir = _TestDir("no_variables")
     filename = os.path.join(test_dir, "metafile")
@@ -71,7 +68,7 @@ class SimpleMetaGraphTest(test.TestCase):
     input_feed_value = -10  # Arbitrary input value for feed_dict.
 
     orig_graph = ops.Graph()
-    with self.test_session(graph=orig_graph) as sess:
+    with self.session(graph=orig_graph) as sess:
       # Create a minimal graph with zero variables.
       input_tensor = array_ops.placeholder(
           dtypes.float32, shape=[], name="input")
@@ -99,7 +96,7 @@ class SimpleMetaGraphTest(test.TestCase):
 
     # Create a clean graph and import the MetaGraphDef nodes.
     new_graph = ops.Graph()
-    with self.test_session(graph=new_graph) as sess:
+    with self.session(graph=new_graph) as sess:
       # Import the previously export meta graph.
       meta_graph.import_scoped_meta_graph(filename)
 
@@ -117,8 +114,9 @@ class SimpleMetaGraphTest(test.TestCase):
                                   {new_input_tensor: input_feed_value})
       self.assertEqual(new_output_value, output_value)
 
+  @test_util.run_deprecated_v1
   def testStrippedOpListNestedFunctions(self):
-    with self.test_session():
+    with self.cached_session():
       # Square two levels deep
       @function.Defun(dtypes.int32)
       def f0(x):
@@ -159,6 +157,30 @@ class SimpleMetaGraphTest(test.TestCase):
     op_list = meta_graph.stripped_op_list_for_graph(graph)
     self.assertEqual(["Const"], [op.name for op in op_list.op])
 
+  def testStrippedOpListPartitionedCalls(self):
+    # Function A calls B via StatefulPartitionedCall.
+    graph = graph_pb2.GraphDef()
+    a = graph.library.function.add()
+    b = graph.library.function.add()
+    a.signature.name = "A"
+    b.signature.name = "B"
+    node_in_a = a.node_def.add()
+    node_in_a.op = "StatefulPartitionedCall"
+    node_in_a.attr["f"].func.name = "B"
+    b.node_def.add().op = "Const"
+    b.node_def.add().op = "A"
+
+    # Use A in the graph via PartitionedCall.
+    node = graph.node.add()
+    node.op = "PartitionedCall"
+    node.attr["f"].func.name = "A"
+
+    op_list = meta_graph.stripped_op_list_for_graph(graph)
+    self.assertSameElements(
+        ["Const", "PartitionedCall", "StatefulPartitionedCall"],
+        [op.name for op in op_list.op])
+
+  @test_util.run_deprecated_v1
   def testDefaultAttrStripping(self):
     """Verifies that default attributes are stripped from a graph def."""
 
@@ -170,7 +192,7 @@ class SimpleMetaGraphTest(test.TestCase):
     # and "Tout" maps to complex64. Since these attr values map to their
     # defaults, they must be stripped unless stripping of default attrs is
     # disabled.
-    with self.test_session():
+    with self.cached_session():
       real_num = constant_op.constant(1.0, dtype=dtypes.float32, name="real")
       imag_num = constant_op.constant(2.0, dtype=dtypes.float32, name="imag")
       math_ops.complex(real_num, imag_num, name="complex")
@@ -198,7 +220,7 @@ class SimpleMetaGraphTest(test.TestCase):
     # When inputs to the Complex Op are float64 instances, "T" maps to float64
     # and "Tout" maps to complex128. Since these attr values don't map to their
     # defaults, they must not be stripped.
-    with self.test_session(graph=ops.Graph()):
+    with self.session(graph=ops.Graph()):
       real_num = constant_op.constant(1.0, dtype=dtypes.float64, name="real")
       imag_num = constant_op.constant(2.0, dtype=dtypes.float64, name="imag")
       math_ops.complex(real_num, imag_num, name="complex")
@@ -211,9 +233,11 @@ class SimpleMetaGraphTest(test.TestCase):
       self.assertEqual(node_def.attr["Tout"].type, dtypes.complex128)
       self.assertTrue(meta_graph_def.meta_info_def.stripped_default_attrs)
 
+  @test_util.run_deprecated_v1
   def testDefaultAttrStrippingNestedFunctions(self):
     """Verifies that default attributes are stripped from function node defs."""
-    with self.test_session():
+    with self.cached_session():
+
       @function.Defun(dtypes.float32, dtypes.float32)
       def f0(i, j):
         return math_ops.complex(i, j, name="double_nested_complex")
@@ -252,7 +276,7 @@ class SimpleMetaGraphTest(test.TestCase):
     meta_info_def = meta_graph_pb2.MetaGraphDef.MetaInfoDef()
     meta_info_def.stripped_op_list.op.add()
 
-    with self.test_session():
+    with self.cached_session():
       meta_graph_def = meta_graph.create_meta_graph_def(
           meta_info_def=meta_info_def, graph_def=graph_def,
           strip_default_attrs=True)
@@ -261,6 +285,7 @@ class SimpleMetaGraphTest(test.TestCase):
       self.assertEqual(node_def.attr["attr_1"].i, 1)
       self.assertTrue(meta_graph_def.meta_info_def.stripped_default_attrs)
 
+  @test_util.run_deprecated_v1
   def testVariableObjectsAreSharedAmongCollections(self):
     with ops.Graph().as_default() as graph1:
       v = variables.Variable(3.0)
@@ -284,8 +309,29 @@ class SimpleMetaGraphTest(test.TestCase):
       # A single instance of Variable is shared among the collections:
       self.assertIs(global_vars[0], trainable_vars[0])
 
+  @test_util.run_deprecated_v1
+  def testMetricVariablesCollectionLoadsBytesList(self):
+    with ops.Graph().as_default() as graph1:
+      v1 = variables.Variable(
+          [1, 2, 3], shape=[3], dtype=dtypes.float64, name="v")
 
-@test_util.with_c_api
+    orig_meta_graph, _ = meta_graph.export_scoped_meta_graph(graph=graph1)
+
+    # Copy bytes list from global variables collection to metric variables.
+    orig_meta_graph.collection_def[ops.GraphKeys.METRIC_VARIABLES].CopyFrom(
+        orig_meta_graph.collection_def["variables"])
+
+    with ops.Graph().as_default() as graph2:
+      meta_graph.import_scoped_meta_graph(orig_meta_graph)
+      var_list = graph2.get_collection(ops.GraphKeys.METRIC_VARIABLES)
+      self.assertEqual(len(var_list), 1)
+      v2 = var_list[0]
+      self.assertIsInstance(v2, variables.Variable)
+      self.assertEqual(v1.name, v2.name)
+      self.assertEqual(v1.dtype, v2.dtype)
+      self.assertEqual(v1.shape, v2.shape)
+
+
 class ScopedMetaGraphTest(test.TestCase):
 
   def _testScopedExport(self, test_dir, exported_filenames):
@@ -302,12 +348,12 @@ class ScopedMetaGraphTest(test.TestCase):
               random_ops.truncated_normal(
                   [28, 128], stddev=1.0 / math.sqrt(float(28))),
               name="weights")
-        # The use of control_flow_ops.cond here is purely for adding test
+        # The use of cond.cond here is purely for adding test
         # coverage the save and restore of control flow context (which doesn't
         # make any sense here from a machine learning perspective).  The typical
         # biases is a simple Variable without the conditions.
         biases1 = variables.Variable(
-            control_flow_ops.cond(
+            cond.cond(
                 math_ops.less(random.random(), 0.5),
                 lambda: array_ops.ones([128]), lambda: array_ops.zeros([128])),
             name="biases")
@@ -320,7 +366,7 @@ class ScopedMetaGraphTest(test.TestCase):
                 [128, 32], stddev=1.0 / math.sqrt(float(128))),
             name="weights")
 
-        # The use of control_flow_ops.while_loop here is purely for adding test
+        # The use of while_loop.while_loop here is purely for adding test
         # coverage the save and restore of control flow context (which doesn't
         # make any sense here from a machine learning perspective).  The typical
         # biases is a simple Variable without the conditions.
@@ -331,12 +377,10 @@ class ScopedMetaGraphTest(test.TestCase):
           biases2 += constant_op.constant(0.1, shape=[32])
           return it + 1, biases2
 
-        _, biases2 = control_flow_ops.while_loop(
-            loop_cond,
-            loop_body, [
-                constant_op.constant(0), variables.Variable(
-                    array_ops.zeros([32]), name="biases")
-            ])
+        _, biases2 = while_loop.while_loop(loop_cond, loop_body, [
+            constant_op.constant(0),
+            variables.Variable(array_ops.zeros([32]), name="biases")
+        ])
         hidden2 = nn_ops.relu(math_ops.matmul(hidden1, weights2) + biases2)
       # Linear
       with ops.name_scope("softmax_linear"):
@@ -380,13 +424,13 @@ class ScopedMetaGraphTest(test.TestCase):
       new_image = constant_op.constant(
           1.2, dtypes.float32, shape=[100, 28], name="images")
 
-    with self.assertRaisesRegexp(ValueError, "Graph contains unbound inputs"):
+    with self.assertRaisesRegex(ValueError, "Graph contains unbound inputs"):
       meta_graph.import_scoped_meta_graph(
           os.path.join(test_dir, exported_filenames[0]),
           graph=graph,
           import_scope="new_hidden1")
 
-    with self.assertRaisesRegexp(ValueError, "Graph contains unbound inputs"):
+    with self.assertRaisesRegex(ValueError, "Graph contains unbound inputs"):
       meta_graph.import_scoped_meta_graph(
           os.path.join(test_dir, exported_filenames[0]),
           graph=graph,
@@ -455,6 +499,7 @@ class ScopedMetaGraphTest(test.TestCase):
 
   # Verifies that we can export the subgraph under each layer and import
   # them into new layers in a new graph.
+  @test_util.run_deprecated_v1
   def testScopedExportAndImport(self):
     test_dir = _TestDir("scoped_export_import")
     filenames = [
@@ -476,11 +521,12 @@ class ScopedMetaGraphTest(test.TestCase):
     # Create a simple while loop.
     with ops.Graph().as_default():
       with ops.name_scope("export"):
-        var = variables.Variable(0)
+        var = variables.Variable(0.)
         var_name = var.name
-        _, output = control_flow_ops.while_loop(lambda i, x: i < 5,
-                                                lambda i, x: (i + 1, x + i),
-                                                [0, var])
+        _, output = while_loop.while_loop(
+            lambda i, x: i < 5,
+            lambda i, x: (i + 1, x + math_ops.cast(i, dtypes.float32)),
+            [0, var])
         output_name = output.name
 
       # Generate a MetaGraphDef containing the while loop with an export scope.
@@ -492,8 +538,8 @@ class ScopedMetaGraphTest(test.TestCase):
       init_op = variables.global_variables_initializer()
       grad = gradients_impl.gradients([output], [var])
       with session.Session() as sess:
-        sess.run(init_op)
-        expected_grad_value = sess.run(grad)
+        self.evaluate(init_op)
+        expected_grad_value = self.evaluate(grad)
 
     # Restore the MetaGraphDef into a new Graph with an import scope.
     with ops.Graph().as_default():
@@ -518,15 +564,16 @@ class ScopedMetaGraphTest(test.TestCase):
       init_op = variables.global_variables_initializer()
 
       with session.Session() as sess:
-        sess.run(init_op)
-        actual_grad_value = sess.run(grad)
+        self.evaluate(init_op)
+        actual_grad_value = self.evaluate(grad)
         self.assertEqual(expected_grad_value, actual_grad_value)
 
+  @test_util.run_v1_only("b/120545219")
   def testImportWhileLoopInWhileLoop(self):
     # Create a simple while loop.
     with ops.Graph().as_default():
       var = variables.Variable(0.0)
-      _, output = control_flow_ops.while_loop(lambda i, x: i < 5,
+      _, output = while_loop.while_loop(lambda i, x: i < 5,
                                               lambda i, x: (i + 1, x * 2.0),
                                               [0, var])
       output_name = output.name
@@ -541,12 +588,12 @@ class ScopedMetaGraphTest(test.TestCase):
         meta_graph.import_scoped_meta_graph(meta_graph_def)
         return i + 1, ops.get_default_graph().get_tensor_by_name(output_name)
 
-      _, x = control_flow_ops.while_loop(lambda i, x: i < 2, body, [0, 0.0],
-                                         name="")
+      _, x = while_loop.while_loop(lambda i, x: i < 2, body, [0, 0.0], name="")
       with session.Session() as sess:
-        sess.run(variables.global_variables_initializer())
-        sess.run(x)
+        self.evaluate(variables.global_variables_initializer())
+        self.evaluate(x)
 
+  @test_util.run_deprecated_v1
   def testScopedImportUnderNameScope(self):
     graph = ops.Graph()
     with graph.as_default():
@@ -562,6 +609,7 @@ class ScopedMetaGraphTest(test.TestCase):
         self.assertEqual(list(imported_variables.values())[0].name,
                          "foo/bar/myvar:0")
 
+  @test_util.run_deprecated_v1
   def testScopedImportUnderNameScopeNoVarScope(self):
     graph = ops.Graph()
     with graph.as_default():
@@ -590,6 +638,7 @@ class ScopedMetaGraphTest(test.TestCase):
         self.assertEqual(list(imported_variables.values())[0].name,
                          "s" + suffix + "/v:0")
 
+  @test_util.run_deprecated_v1
   def testScopedImportWithSelectedCollections(self):
     meta_graph_filename = os.path.join(
         _TestDir("selected_collections_import"), "meta_graph.pb")
@@ -600,11 +649,11 @@ class ScopedMetaGraphTest(test.TestCase):
     with graph.as_default():
       variables.Variable(initial_value=1.0, trainable=True)
     self.assertTrue(
-        all([
+        all(
             graph.get_collection(key)
             for key in
             [ops.GraphKeys.GLOBAL_VARIABLES, ops.GraphKeys.TRAINABLE_VARIABLES]
-        ]))
+        ))
     meta_graph.export_scoped_meta_graph(
         filename=meta_graph_filename, graph=graph)
 
@@ -687,6 +736,7 @@ class ScopedMetaGraphTest(test.TestCase):
 
   # Verifies that we can export the subgraph containing a FIFOQueue under
   # "queue1" and import it into "new_queue1" in a new graph.
+  @test_util.run_deprecated_v1
   def testScopedWithQueue(self):
     test_dir = _TestDir("scoped_with_queue")
     orig_meta_graph = self._testScopedExportWithQueue(test_dir,
@@ -746,15 +796,16 @@ class ScopedMetaGraphTest(test.TestCase):
         b"loc:@new_hidden1/new_hidden2/hidden3/biases",
         b"loc:@new_hidden1/new_hidden2/hidden3/weights"
     ]
-    for n, e in zip(nodes, expected):
-      self.assertEqual([e], graph2.get_operation_by_name(n).get_attr("_class"))
 
+  @test_util.run_deprecated_v1
   def testExportNestedNames(self):
     self.doTestExportNestedNames(use_resource=False)
 
+  @test_util.run_deprecated_v1
   def testExportNestedNamesResource(self):
     self.doTestExportNestedNames(use_resource=True)
 
+  @test_util.run_deprecated_v1
   def testPotentialCycle(self):
     graph1 = ops.Graph()
     with graph1.as_default():
@@ -771,7 +822,7 @@ class ScopedMetaGraphTest(test.TestCase):
 
     graph2 = ops.Graph()
     with graph2.as_default():
-      with self.assertRaisesRegexp(ValueError, "Graph contains unbound inputs"):
+      with self.assertRaisesRegex(ValueError, "Graph contains unbound inputs"):
         meta_graph.import_scoped_meta_graph(
             orig_meta_graph, import_scope="new_hidden1")
 
@@ -783,6 +834,7 @@ class ScopedMetaGraphTest(test.TestCase):
                   4.0, shape=[2, 2])
           })
 
+  @test_util.run_deprecated_v1
   def testClearDevices(self):
     graph1 = ops.Graph()
     with graph1.as_default():
@@ -840,9 +892,9 @@ class ScopedMetaGraphTest(test.TestCase):
     self.assertEqual("", str(graph2.as_graph_element("matmul").device))
 
 
-@test_util.with_c_api
 class MetaGraphWithVariableScopeTest(test.TestCase):
 
+  @test_util.run_deprecated_v1
   def testMetricsCollection(self):
 
     def _enqueue_vector(sess, queue, values, shape=None):
@@ -857,7 +909,7 @@ class MetaGraphWithVariableScopeTest(test.TestCase):
         _TestDir("metrics_export"), "meta_graph.pb")
 
     graph = ops.Graph()
-    with self.test_session(graph=graph) as sess:
+    with self.session(graph=graph) as sess:
       values_queue = data_flow_ops.FIFOQueue(
           4, dtypes.float32, shapes=(1, 2))
       _enqueue_vector(sess, values_queue, [0, 1])
@@ -869,8 +921,8 @@ class MetaGraphWithVariableScopeTest(test.TestCase):
       _, update_op = metrics.mean(values)
 
       initializer = variables.local_variables_initializer()
-      sess.run(initializer)
-      sess.run(update_op)
+      self.evaluate(initializer)
+      self.evaluate(update_op)
 
     meta_graph.export_scoped_meta_graph(
         filename=meta_graph_filename, graph=graph)
@@ -878,30 +930,31 @@ class MetaGraphWithVariableScopeTest(test.TestCase):
     # Verifies that importing a meta_graph with LOCAL_VARIABLES collection
     # works correctly.
     graph = ops.Graph()
-    with self.test_session(graph=graph) as sess:
+    with self.session(graph=graph) as sess:
       meta_graph.import_scoped_meta_graph(meta_graph_filename)
       initializer = variables.local_variables_initializer()
-      sess.run(initializer)
+      self.evaluate(initializer)
 
     # Verifies that importing an old meta_graph where "local_variables"
     # collection is of node_list type works, but cannot build initializer
     # with the collection.
     graph = ops.Graph()
-    with self.test_session(graph=graph) as sess:
+    with self.session(graph=graph) as sess:
       meta_graph.import_scoped_meta_graph(
           test.test_src_dir_path(
               "python/framework/testdata/metrics_export_meta_graph.pb"))
       self.assertEqual(len(ops.get_collection(ops.GraphKeys.LOCAL_VARIABLES)),
                        2)
-      with self.assertRaisesRegexp(
-          AttributeError, "'Tensor' object has no attribute 'initializer'"):
+      with self.assertRaisesRegex(
+          AttributeError, "has no attribute 'initializer'"
+      ):
         initializer = variables.local_variables_initializer()
 
 
-@test_util.with_c_api
 class ExportImportAcrossScopesTest(test.TestCase):
 
-  def testPartionedVariables(self):
+  @test_util.run_deprecated_v1
+  def testPartitionedVariables(self):
 
     def make_graph_with_partitioned_variables(use_resource):
       variable_scope.get_variable(
@@ -949,15 +1002,15 @@ class ExportImportAcrossScopesTest(test.TestCase):
     expected = meta_graph.export_scoped_meta_graph(graph=expected_graph)[0]
 
     if use_resource:
-      # Clear all shared_name attributes before comparing, since they are
-      # orthogonal to scopes and are not updated on export/import.
+      # Clear all shared_name and debug_name attributes before comparing, since
+      # they are orthogonal to scopes and are not updated on export/import.
       for meta_graph_def in [result, expected]:
         for node in meta_graph_def.graph_def.node:
-          shared_name_attr = "shared_name"
-          shared_name_value = node.attr.get(shared_name_attr, None)
-          if shared_name_value and shared_name_value.HasField("s"):
-            if shared_name_value.s:
-              node.attr[shared_name_attr].s = b""
+          for attr_to_remove in ["shared_name", "debug_name"]:
+            attr_value = node.attr.get(attr_to_remove, None)
+            if attr_value and attr_value.HasField("s"):
+              if attr_value.s:
+                node.attr[attr_to_remove].s = b""
 
     test_util.assert_meta_graph_protos_equal(self, expected, result)
 

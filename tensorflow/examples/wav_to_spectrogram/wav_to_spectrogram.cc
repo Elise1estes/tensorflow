@@ -33,7 +33,6 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/session.h"
-#include "tensorflow/core/util/command_line_flags.h"
 
 using tensorflow::DT_FLOAT;
 using tensorflow::DT_UINT8;
@@ -42,8 +41,8 @@ using tensorflow::TensorShape;
 
 // Runs a TensorFlow graph to convert an audio file into a visualization.
 tensorflow::Status WavToSpectrogram(const tensorflow::string& input_wav,
-                                    tensorflow::int32 window_size,
-                                    tensorflow::int32 stride, float brightness,
+                                    int32_t window_size, int32_t stride,
+                                    float brightness,
                                     const tensorflow::string& output_image) {
   auto root = tensorflow::Scope::NewRootScope();
   using namespace tensorflow::ops;  // NOLINT(build/namespaces)
@@ -94,5 +93,5 @@ tensorflow::Status WavToSpectrogram(const tensorflow::string& input_wav,
   TF_RETURN_IF_ERROR(
       session->Run({{"brightness_placeholder", brightness_tensor}}, {},
                    {"output_image"}, nullptr));
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }

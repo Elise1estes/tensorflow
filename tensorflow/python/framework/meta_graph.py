@@ -14,15 +14,12 @@
 # ==============================================================================
 
 """MetaGraph and related functions."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import copy
+from packaging import version as packaging_version  # pylint: disable=g-bad-import-order
 import os.path
 import re
+import sys
 
-import six
 from google.protobuf.any_pb2 import Any
 from google.protobuf import text_format
 
@@ -31,12 +28,15 @@ from tensorflow.core.framework import graph_pb2
 from tensorflow.core.framework import op_def_pb2
 from tensorflow.core.protobuf import meta_graph_pb2
 from tensorflow.core.protobuf import saver_pb2
-from tensorflow.python import pywrap_tensorflow
+from tensorflow.python.client import pywrap_tf_session as c_api
 from tensorflow.python.eager import context
+from tensorflow.python.framework import byte_swap_tensor as bst
+from tensorflow.python.framework import error_interpolation
 from tensorflow.python.framework import graph_io
 from tensorflow.python.framework import importer
 from tensorflow.python.framework import op_def_registry
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor
 from tensorflow.python.framework import versions
 from tensorflow.python.lib.io import file_io
 from tensorflow.python.platform import tf_logging as logging
@@ -49,7 +49,8 @@ _UNBOUND_INPUT_PREFIX = "$unbound_inputs_"
 # List of collections that didn't register proto functions, as a result in
 # a previously exported meta_graph the items are of a different data type.
 _COMPAT_COLLECTION_LIST = [ops.GraphKeys.LOCAL_VARIABLES,
-                           ops.GraphKeys.MODEL_VARIABLES]
+                           ops.GraphKeys.MODEL_VARIABLES,
+                           ops.GraphKeys.METRIC_VARIABLES]
 
 
 def _node_def(from_node_def, export_scope, unbound_inputs, clear_devices=False):
@@ -79,7 +80,7 @@ def _node_def(from_node_def, export_scope, unbound_inputs, clear_devices=False):
       node_def.input[i] = ops.strip_name_scope(v, export_scope)
   node_def.name = compat.as_bytes(
       ops.strip_name_scope(from_node_def.name, export_scope))
-  for k, v in six.iteritems(from_node_def.attr):
+  for k, v in from_node_def.attr.items():
     if k == "_class":
       new_s = [compat.as_bytes(
           ops.strip_name_scope(s, export_scope)) for s in v.list.s
@@ -114,9 +115,10 @@ def _read_file(filename):
   """
   graph_def = graph_pb2.GraphDef()
   if not file_io.file_exists(filename):
-    raise IOError("File %s does not exist." % filename)
+    raise IOError(f"File {filename} does not exist.")
   # First try to read it as a binary file.
-  file_content = file_io.FileIO(filename, "rb").read()
+  with file_io.FileIO(filename, "rb") as f:
+    file_content = f.read()
   try:
     graph_def.ParseFromString(file_content)
     return graph_def
@@ -127,7 +129,7 @@ def _read_file(filename):
   try:
     text_format.Merge(file_content, graph_def)
   except text_format.ParseError as e:
-    raise IOError("Cannot parse file %s: %s." % (filename, str(e)))
+    raise IOError(f"Cannot parse file {filename}: {str(e)}.")
 
   return graph_def
 
@@ -158,12 +160,17 @@ def ops_used_by_graph_def(graph_def):
       functions_to_process.append(name_to_function[op])
     used_ops.add(op)
 
-  for node in graph_def.node:
+  def process_node(node):
     mark_op_as_used(node.op)
+    if node.op in ["PartitionedCall", "StatefulPartitionedCall"]:
+      mark_op_as_used(node.attr["f"].func.name)
+
+  for node in graph_def.node:
+    process_node(node)
   while functions_to_process:
     fun = functions_to_process.pop()
     for node in fun.node_def:
-      mark_op_as_used(node.op)
+      process_node(node)
 
   return [op for op in used_ops if op not in name_to_function]
 
@@ -181,29 +188,17 @@ def stripped_op_list_for_graph(graph_def):
 
   Returns:
     An `OpList` of ops used by the graph.
-
-  Raises:
-    ValueError: If an unregistered op is used.
   """
-  # This is the Python equivalent of StrippedOpListForGraph in C++.
-  # Unfortunately, since the Python op registry can differ from that in C++, we
-  # can't remove the duplication using swig (at least naively).
-  # TODO(irving): Support taking graphs directly.
-
+  # This is similar to StrippedOpListForGraph in C++, but unlike its
+  # C++ counterpart, this version does not require all ops to be registered.
+  # This is done to support Prelu fusion in tfjs.
   used_ops = ops_used_by_graph_def(graph_def)
-
-  # Verify that all used ops are registered.
-  registered_ops = op_def_registry.get_registered_ops()
-  # These internal ops used by functions are not registered, so we need to
-  # whitelist them.  # TODO(irving): Do something better here.
-  op_whitelist = ("_Arg", "_Retval", "_ListToArray", "_ArrayToList")
-  for op in used_ops:
-    if op not in registered_ops and op not in op_whitelist:
-      raise ValueError("Op %s is used by the graph, but is not registered" % op)
-
-  # Build the stripped op list in sorted order
-  return op_def_pb2.OpList(op=[registered_ops[op] for op in sorted(used_ops)
-                               if op in registered_ops])
+  op_defs = []
+  for op in sorted(used_ops):
+    op_def = op_def_registry.get(op)
+    if op_def is not None:
+      op_defs.append(op_def)
+  return op_def_pb2.OpList(op=op_defs)
 
 
 def _get_kind_name(item):
@@ -215,9 +210,9 @@ def _get_kind_name(item):
   Returns:
     The string representation of the kind in CollectionDef.
   """
-  if isinstance(item, (six.string_types, six.binary_type)):
+  if isinstance(item, (str, bytes)):
     kind = "bytes_list"
-  elif isinstance(item, six.integer_types):
+  elif isinstance(item, int):
     kind = "int64_list"
   elif isinstance(item, float):
     kind = "float_list"
@@ -236,31 +231,6 @@ SAVE_AND_RESTORE_OPS = ["SaveV2",
                         "LegacyRestore", "LegacyRestoreSlice"]
 
 
-def _op_name(tensor_name):
-  """Extract the Op name from a Tensor name.
-
-  The Op name is everything before a colon, if present,
-  not including any ^ prefix denoting a control dependency.
-
-  Args:
-    tensor_name: the full name of a Tensor in the graph.
-  Returns:
-    The name of the Op of which the given Tensor is an output.
-  Raises:
-    ValueError: if tensor_name is None or empty.
-  """
-  if not tensor_name:
-    raise ValueError("Tensor name cannot be empty or None.")
-
-  # Control dependency inputs start with ^.
-  if tensor_name.startswith("^"):
-    tensor_name = tensor_name[1:]
-  if ":" in tensor_name:
-    op_name, _ = tensor_name.split(":")
-    return op_name
-  return tensor_name
-
-
 def _get_scope(node_name):
   """Extract the scope name from a node name.
 
@@ -275,7 +245,8 @@ def _get_scope(node_name):
     ValueError: if tensor_name is None or empty
   """
   if not node_name:
-    raise ValueError("Node name cannot be empty or None.")
+    raise ValueError(
+        f"Node name cannot be empty or None. Received: {node_name}.")
 
   # Control dependency inputs start with ^.
   if node_name.startswith("^"):
@@ -306,28 +277,30 @@ def _find_extraneous_saver_nodes(graph_def, saver_def):
   # but it seems unnecessarily complex given the name scope solution.
 
   # load the graph DAG in minimal form, without initializing a full Graph object
-  nodes = {node_def.name:
-           (set([_op_name(x) for x in node_def.input]), node_def.op)
-           for node_def in graph_def.node}
+  nodes = {
+      node_def.name: (
+          set(tensor.get_op_name(x) for x in node_def.input), node_def.op)
+      for node_def in graph_def.node
+  }
 
   retain_scope_save = None
   retain_scope_restore = None
   # It's possible to have no saver if the graph has no Variables
   if saver_def is not None:
-    save_op_name = _op_name(saver_def.save_tensor_name)
-    restore_op_name = _op_name(saver_def.restore_op_name)
+    save_op_name = tensor.get_op_name(saver_def.save_tensor_name)
+    restore_op_name = tensor.get_op_name(saver_def.restore_op_name)
 
     # The save and restore scopes should always be the same, but if they differ
     # for some reason, we retain them both to be safe.
     retain_scope_restore = _get_scope(restore_op_name) + "/"
     retain_scope_save = _get_scope(save_op_name) + "/"
 
-  all_saver_node_names = set([name for name, (_, op) in nodes.items()
-                              if op in SAVE_AND_RESTORE_OPS])
+  all_saver_node_names = set(
+      name for name, (_, op) in nodes.items() if op in SAVE_AND_RESTORE_OPS)
 
-  all_saver_scopes = (set([_get_scope(x) for x in all_saver_node_names])
-                      - all_saver_node_names)
-  all_saver_scopes = set([x + "/" for x in all_saver_scopes])
+  all_saver_scopes = (
+      set(_get_scope(x) for x in all_saver_node_names) - all_saver_node_names)
+  all_saver_scopes = set(x + "/" for x in all_saver_scopes)
 
   extraneous_scopes = all_saver_scopes - set([retain_scope_save,
                                               retain_scope_restore])
@@ -357,7 +330,7 @@ def _should_include_node(node_or_node_name, export_scope, exclude_nodes):
   Returns:
     `True` if the node should be included.
   """
-  if not isinstance(node_or_node_name, six.string_types):
+  if not isinstance(node_or_node_name, str):
     try:
       node_name = node_or_node_name.name
     except AttributeError:
@@ -390,9 +363,10 @@ def add_collection_def(meta_graph_def, key, graph=None,
       ignoring the current values (if set).
   """
   if graph and not isinstance(graph, ops.Graph):
-    raise TypeError("graph must be of type Graph, not %s", type(graph))
+    raise TypeError(
+        f"graph must be of type Graph. Received type: {type(graph)}.")
 
-  if not isinstance(key, six.string_types) and not isinstance(key, bytes):
+  if not isinstance(key, str) and not isinstance(key, bytes):
     logging.warning("Only collections with string type keys will be "
                     "serialized. This key has %s", type(key))
     return
@@ -439,9 +413,10 @@ def add_collection_def(meta_graph_def, key, graph=None,
       else:
         getattr(col_def, kind).value.extend([x for x in collection_list])
   except Exception as e:  # pylint: disable=broad-except
-    logging.warning("Error encountered when serializing %s.\n"
+    logging.warning("Issue encountered when serializing %s.\n"
                     "Type is unsupported, or the types of the items don't "
-                    "match field type in CollectionDef.\n%s", key, str(e))
+                    "match field type in CollectionDef. Note this is a warning "
+                    "and probably safe to ignore.\n%s", key, str(e))
     if key in meta_graph_def.collection_def:
       del meta_graph_def.collection_def[key]
     return
@@ -453,15 +428,15 @@ def _is_default_attr_value(op_def, attr_name, attr_value):
     if attr_def.name == attr_name:
       if not attr_def.HasField("default_value"):
         return False
-      # pywrap_tensorflow.EqualAttrValueWrapper returns an empty string
+      # c_api.EqualAttrValueWrapper returns an empty string
       # if both arguments represent an equivalent AttrValue instance.
-      return not pywrap_tensorflow.EqualAttrValueWrapper(
+      return not c_api.EqualAttrValueWrapper(
           attr_value.SerializeToString(),
           attr_def.default_value.SerializeToString())
   return False
 
 
-def _strip_graph_default_valued_attrs(meta_graph_def):
+def strip_graph_default_valued_attrs(meta_graph_def):
   """Strips default valued attributes for node defs in given MetaGraphDef.
 
   This method also sets `meta_info_def.stripped_default_attrs` in the given
@@ -478,14 +453,14 @@ def _strip_graph_default_valued_attrs(meta_graph_def):
   for function_def in meta_graph_def.graph_def.library.function:
     op_name_to_function[function_def.signature.name] = function_def
 
-  # Get all registered ops.
-  registered_ops = op_def_registry.get_registered_ops()
-
   def _strip_node_default_valued_attrs(node_def):
     """Removes default valued attributes from a single node def."""
-    if node_def.op in op_name_to_function or node_def.op not in registered_ops:
+    if node_def.op in op_name_to_function:
       return
-    op_def = registered_ops[node_def.op]
+
+    op_def = op_def_registry.get(node_def.op)
+    if op_def is None:
+      return
 
     attrs_to_strip = set()
     for attr_name, attr_value in node_def.attr.items():
@@ -545,17 +520,21 @@ def create_meta_graph_def(meta_info_def=None,
   # pylint: enable=line-too-long
   # Type check.
   if graph and not isinstance(graph, ops.Graph):
-    raise TypeError("graph must be of type Graph, not %s", type(graph))
+    raise TypeError(
+        f"graph must be of type Graph. Received type: {type(graph)}.")
   if meta_info_def and not isinstance(meta_info_def,
                                       meta_graph_pb2.MetaGraphDef.MetaInfoDef):
-    raise TypeError("meta_info_def must be of type MetaInfoDef, not %s",
-                    type(meta_info_def))
+    raise TypeError(
+        "meta_info_def must be of type MetaInfoDef. "
+        f"Received type: {type(meta_info_def)}.")
   if graph_def and not isinstance(graph_def, graph_pb2.GraphDef):
-    raise TypeError("graph_def must be of type GraphDef, not %s",
-                    type(graph_def))
+    raise TypeError(
+        "graph_def must be of type GraphDef. "
+        f"Received type: {type(graph_def)}.")
   if saver_def and not isinstance(saver_def, saver_pb2.SaverDef):
-    raise TypeError("saver_def must be of type SaverDef, not %s",
-                    type(saver_def))
+    raise TypeError(
+        f"saver_def must be of type SaverDef. "
+        f"Received type: {type(saver_def)}.")
 
   # Sets graph to default graph if it's not passed in.
   graph = graph or ops.get_default_graph()
@@ -586,7 +565,7 @@ def create_meta_graph_def(meta_info_def=None,
 
   # Strip default valued attributes in graph_def.
   if strip_default_attrs:
-    _strip_graph_default_valued_attrs(meta_graph_def)
+    strip_graph_default_valued_attrs(meta_graph_def)
 
   # Adds saver_def.
   if saver_def:
@@ -629,11 +608,14 @@ def read_meta_graph_file(filename):
   """
   meta_graph_def = meta_graph_pb2.MetaGraphDef()
   if not file_io.file_exists(filename):
-    raise IOError("File %s does not exist." % filename)
+    raise IOError(f"File does not exist. Received: {filename}.")
   # First try to read it as a binary file.
-  file_content = file_io.FileIO(filename, "rb").read()
+  with file_io.FileIO(filename, "rb") as f:
+    file_content = f.read()
   try:
     meta_graph_def.ParseFromString(file_content)
+    if sys.byteorder == "big":
+      bst.swap_tensor_content_in_graph_function(meta_graph_def, "little", "big")
     return meta_graph_def
   except Exception:  # pylint: disable=broad-except
     pass
@@ -641,8 +623,10 @@ def read_meta_graph_file(filename):
   # Next try to read it as a text file.
   try:
     text_format.Merge(file_content.decode("utf-8"), meta_graph_def)
+    if sys.byteorder == "big":
+      bst.swap_tensor_content_in_graph_function(meta_graph_def, "little", "big")
   except text_format.ParseError as e:
-    raise IOError("Cannot parse file %s: %s." % (filename, str(e)))
+    raise IOError(f"Cannot parse file {filename}: {str(e)}.")
 
   return meta_graph_def
 
@@ -695,6 +679,67 @@ def import_scoped_meta_graph(meta_graph_or_file,
   Raises:
     ValueError: If the graph_def contains unbound inputs.
   """
+  return import_scoped_meta_graph_with_return_elements(
+      meta_graph_or_file, clear_devices, graph, import_scope, input_map,
+      unbound_inputs_col_name, restore_collections_predicate)[0]
+
+
+def import_scoped_meta_graph_with_return_elements(
+    meta_graph_or_file,
+    clear_devices=False,
+    graph=None,
+    import_scope=None,
+    input_map=None,
+    unbound_inputs_col_name="unbound_inputs",
+    restore_collections_predicate=(lambda key: True),
+    return_elements=None):
+  """Imports graph from `MetaGraphDef` and returns vars and return elements.
+
+  This function takes a `MetaGraphDef` protocol buffer as input. If
+  the argument is a file containing a `MetaGraphDef` protocol buffer ,
+  it constructs a protocol buffer from the file content. The function
+  then adds all the nodes from the `graph_def` field to the
+  current graph, recreates the desired collections, and returns a dictionary of
+  all the Variables imported into the name scope.
+
+  In combination with `export_scoped_meta_graph()`, this function can be used to
+
+  * Serialize a graph along with other Python objects such as `QueueRunner`,
+    `Variable` into a `MetaGraphDef`.
+
+  * Restart training from a saved graph and checkpoints.
+
+  * Run inference from a saved graph and checkpoints.
+
+  Args:
+    meta_graph_or_file: `MetaGraphDef` protocol buffer or filename (including
+      the path) containing a `MetaGraphDef`.
+    clear_devices: Boolean which controls whether to clear device information
+      from graph_def. Default false.
+    graph: The `Graph` to import into. If `None`, use the default graph.
+    import_scope: Optional `string`. Name scope into which to import the
+      subgraph. If `None`, the graph is imported to the root name scope.
+    input_map: A dictionary mapping input names (as strings) in `graph_def` to
+      `Tensor` objects. The values of the named input tensors in the imported
+      graph will be re-mapped to the respective `Tensor` values.
+    unbound_inputs_col_name: Collection name for looking up unbound inputs.
+    restore_collections_predicate: a predicate on collection names. A collection
+      named c (i.e whose key is c) will be restored iff
+      1) `restore_collections_predicate(c)` is True, and
+      2) `c != unbound_inputs_col_name`.
+    return_elements:  A list of strings containing operation names in the
+      `MetaGraphDef` that will be returned as `Operation` objects; and/or
+      tensor names in `MetaGraphDef` that will be returned as `Tensor` objects.
+
+  Returns:
+    A tuple of (
+      dictionary of all the `Variables` imported into the name scope,
+      list of `Operation` or `Tensor` objects from the `return_elements` list).
+
+  Raises:
+    ValueError: If the graph_def contains unbound inputs.
+
+  """
   if context.executing_eagerly():
     raise ValueError("Exporting/importing meta graphs is not supported when "
                      "eager execution is enabled.")
@@ -713,9 +758,10 @@ def import_scoped_meta_graph(meta_graph_or_file,
             sorted([compat.as_str(v) for v in field.value]) !=
             sorted(input_map)):
           raise ValueError("Graph contains unbound inputs: %s. Must "
-                           "provide these inputs through input_map." %
-                           ",".join([compat.as_str(v) for v in field.value
-                                     if not input_map or v not in input_map]))
+                           "provide these inputs through input_map." % ",".join(
+                               compat.as_str(v)
+                               for v in field.value
+                               if not input_map or v not in input_map))
         break
 
   # Sets graph to default graph if it's not passed in.
@@ -736,15 +782,36 @@ def import_scoped_meta_graph(meta_graph_or_file,
     scope_to_prepend_to_names = graph.unique_name(
         import_scope or "", mark_as_used=False)
 
-    importer.import_graph_def(
+    imported_return_elements = importer.import_graph_def(
         input_graph_def,
         name=(import_scope or scope_to_prepend_to_names),
         input_map=input_map,
-        producer_op_list=producer_op_list)
+        producer_op_list=producer_op_list,
+        return_elements=return_elements)
+
+    # TensorFlow versions before 1.9 (not inclusive) exported SavedModels
+    # without a VariableDef.trainable field set.
+    tf_version = meta_graph_def.meta_info_def.tensorflow_version
+    if not tf_version:
+      variables_have_trainable = True
+    else:
+      variables_have_trainable = (
+          packaging_version.parse(tf_version) >= packaging_version.parse("1.9"))
+
+    # Sort collections so we see TRAINABLE_VARIABLES first and can default these
+    # variables to trainable if the value is not set in their VariableDef.
+    sorted_collections = []
+    if ops.GraphKeys.TRAINABLE_VARIABLES in meta_graph_def.collection_def:
+      sorted_collections.append(
+          (ops.GraphKeys.TRAINABLE_VARIABLES,
+           meta_graph_def.collection_def[ops.GraphKeys.TRAINABLE_VARIABLES]))
+    for key, value in sorted(meta_graph_def.collection_def.items()):
+      if key != ops.GraphKeys.TRAINABLE_VARIABLES:
+        sorted_collections.append((key, value))
 
     # Restores all the other collections.
     variable_objects = {}
-    for key, col_def in sorted(meta_graph_def.collection_def.items()):
+    for key, col_def in sorted_collections:
       # Don't add unbound_inputs to the new graph.
       if key == unbound_inputs_col_name:
         continue
@@ -757,6 +824,13 @@ def import_scoped_meta_graph(meta_graph_or_file,
                       key)
         continue
       from_proto = ops.get_from_proto_function(key)
+
+      # Temporary change to allow the TFMA evaluator to read metric variables
+      # saved as a bytes list.
+      # TODO(kathywu): Remove this hack once cl/248406059 has been submitted.
+      if key == ops.GraphKeys.METRIC_VARIABLES:
+        # Metric variables will use the same proto functions as GLOBAL_VARIABLES
+        from_proto = ops.get_from_proto_function(ops.GraphKeys.GLOBAL_VARIABLES)
       if from_proto and kind == "bytes_list":
         proto_type = ops.get_collection_proto_type(key)
         if key in ops.GraphKeys._VARIABLE_COLLECTIONS:  # pylint: disable=protected-access
@@ -765,6 +839,14 @@ def import_scoped_meta_graph(meta_graph_or_file,
             if variable is None:
               proto = proto_type()
               proto.ParseFromString(value)
+              if not variables_have_trainable:
+                # If the VariableDef proto does not contain a "trainable"
+                # property because it was exported before that property was
+                # added, we default it to whether the variable is in the
+                # TRAINABLE_VARIABLES collection. We've sorted
+                # TRAINABLE_VARIABLES to be first, so trainable variables will
+                # be created from that collection.
+                proto.trainable = (key == ops.GraphKeys.TRAINABLE_VARIABLES)
               variable = from_proto(
                   proto, import_scope=scope_to_prepend_to_names)
               variable_objects[value] = variable
@@ -805,7 +887,7 @@ def import_scoped_meta_graph(meta_graph_or_file,
     for v in variables:
       var_list[ops.strip_name_scope(v.name, scope_to_prepend_to_names)] = v
 
-  return var_list
+  return var_list, imported_return_elements
 
 
 def export_scoped_meta_graph(filename=None,
@@ -818,6 +900,7 @@ def export_scoped_meta_graph(filename=None,
                              saver_def=None,
                              clear_extraneous_savers=False,
                              strip_default_attrs=False,
+                             save_debug_info=False,
                              **kwargs):
   """Returns `MetaGraphDef` proto. Optionally writes it to filename.
 
@@ -847,7 +930,10 @@ def export_scoped_meta_graph(filename=None,
         graph (both Save/Restore ops and SaverDefs) that are not associated
         with the provided SaverDef.
     strip_default_attrs: Set to true if default valued attributes must be
-        removed while exporting the GraphDef.
+      removed while exporting the GraphDef.
+    save_debug_info: If `True`, save the GraphDebugInfo to a separate file,
+      which in the same directory of filename and with `_debug` added before the
+      file extension.
     **kwargs: Optional keyed arguments, including meta_info_def and
         collection_list.
 
@@ -857,8 +943,11 @@ def export_scoped_meta_graph(filename=None,
 
   Raises:
     ValueError: When the `GraphDef` is larger than 2GB.
+    ValueError: When executing in Eager mode and either `graph_def` or `graph`
+      is undefined.
   """
-  if context.executing_eagerly():
+  if context.executing_eagerly() and not (graph_def is not None and
+                                          graph is not None):
     raise ValueError("Exporting/importing meta graphs is not supported when "
                      "Eager Execution is enabled.")
   graph = graph or ops.get_default_graph()
@@ -906,7 +995,9 @@ def export_scoped_meta_graph(filename=None,
                 output.get_shape().as_proto() for output in value.outputs])
           bytesize += value.node_def.ByteSize()
           if bytesize >= (1 << 31) or bytesize < 0:
-            raise ValueError("GraphDef cannot be larger than 2GB.")
+            raise ValueError(
+                "GraphDef cannot be larger than 2GB. "
+                f"Received size: {bytesize}.")
 
       graph._copy_functions_to_graph_def(graph_def, bytesize)  # pylint: disable=protected-access
 
@@ -942,6 +1033,26 @@ def export_scoped_meta_graph(filename=None,
         os.path.dirname(filename),
         os.path.basename(filename),
         as_text=as_text)
+    if save_debug_info:
+      name, _ = os.path.splitext(filename)
+      debug_filename = "{name}{ext}".format(name=name, ext=".debug")
+
+      # Gets the operation from the graph by the name. Excludes variable nodes,
+      # so only the nodes in the frozen models are included.
+      # TODO(liufengdb): fix this for functions.
+      ops_to_export = []
+      for node in scoped_meta_graph_def.graph_def.node:
+        scoped_op_name = ops.prepend_name_scope(node.name, export_scope)
+        ops_to_export.append(("", graph.get_operation_by_name(scoped_op_name)))
+
+      graph_debug_info = error_interpolation.create_graph_debug_info_def(
+          ops_to_export)
+
+      graph_io.write_graph(
+          graph_debug_info,
+          os.path.dirname(debug_filename),
+          os.path.basename(debug_filename),
+          as_text=as_text)
 
   return scoped_meta_graph_def, var_list
 
@@ -970,7 +1081,10 @@ def copy_scoped_meta_graph(from_scope, to_scope,
 
   if from_graph == to_graph and from_scope == to_scope:
     raise ValueError("'from_scope' and 'to_scope' need to be different "
-                     "when performing copy in the same graph.")
+                     "when performing copy in the same graph. "
+                     f"Received: 'from_graph': {from_graph}, "
+                     f"'to_graph': {to_graph}, "
+                     f"'from_scope': {from_scope}, 'to_scope': {to_scope}.")
 
   orig_meta_graph, var_list = export_scoped_meta_graph(
       export_scope=from_scope, graph=from_graph)

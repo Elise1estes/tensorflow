@@ -51,13 +51,15 @@ function build_libtensorflow_tarball() {
   rm -rf ${DIR}
 
   TARBALL_SUFFIX="${1}"
-  BAZEL_OPTS="-c opt --cxxopt=-D_GLIBCXX_USE_CXX11_ABI=0"
-  export CC_OPT_FLAGS='-mavx'
-  if [ "${TF_NEED_CUDA}" == "1" ]; then
-    BAZEL_OPTS="${BAZEL_OPTS} --config=cuda"
+  if [ "$(uname)" == "Darwin" ]; then
+    BAZEL_OPTS="${BAZEL_OPTS} --config=release_cpu_macos"
+  elif [ "${TF_NEED_CUDA}" == "1" ]; then
+    BAZEL_OPTS="${BAZEL_OPTS} --config=release_gpu_linux"
+  else
+    BAZEL_OPTS="${BAZEL_OPTS} --config=release_cpu_linux"
   fi
-  bazel clean --expunge
-  yes "" | ./configure
+  export PYTHON_BIN_PATH="$(which python3.8)"
+  BAZEL_OPTS="${BAZEL_OPTS} --action_env=PYTHON_BIN_PATH=${PYTHON_BIN_PATH}"
 
   # Remove this test call when
   # https://github.com/bazelbuild/bazel/issues/2352
@@ -66,7 +68,7 @@ function build_libtensorflow_tarball() {
   # in tensorflow/tools/lib_package/BUILD are removed.
   # Till then, must manually run the test since these tests are
   # not covered by the continuous integration.
-  bazel test ${BAZEL_OPTS} \
+  bazel test ${BAZEL_OPTS} --test_output=errors \
     //tensorflow/tools/lib_package:libtensorflow_test \
     //tensorflow/tools/lib_package:libtensorflow_java_test
 
@@ -83,7 +85,7 @@ function build_libtensorflow_tarball() {
   cp bazel-bin/tensorflow/tools/lib_package/libtensorflow_jni.tar.gz ${DIR}/libtensorflow_jni${TARBALL_SUFFIX}.tar.gz
   cp bazel-bin/tensorflow/java/libtensorflow.jar ${DIR}
   cp_normalized_srcjar bazel-bin/tensorflow/java/libtensorflow-src.jar ${DIR}/libtensorflow-src.jar
-  cp bazel-genfiles/tensorflow/tools/lib_package/libtensorflow_proto.zip ${DIR}
+  cp bazel-bin/tensorflow/tools/lib_package/libtensorflow_proto.zip ${DIR}
   chmod -x ${DIR}/*
 }
 

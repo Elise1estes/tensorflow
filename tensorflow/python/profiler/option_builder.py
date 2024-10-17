@@ -13,17 +13,13 @@
 # limitations under the License.
 # ==============================================================================
 """Utilities for building profiler options."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import copy
 
 from tensorflow.python.profiler import tfprof_logger
 from tensorflow.python.util.tf_export import tf_export
 
 
-@tf_export('profiler.ProfileOptionBuilder')
+@tf_export(v1=['profiler.ProfileOptionBuilder'])
 class ProfileOptionBuilder(object):
   # pylint: disable=line-too-long
   """Option Builder for Profiling API.
@@ -37,7 +33,7 @@ class ProfileOptionBuilder(object):
       tf.profiler.ProfileOptionBuilder.trainable_variables_parameter())
 
   # Or, build your own options:
-  opts = (tf.profiler.ProfileOptionBuilder()
+  opts = (tf.compat.v1.profiler.ProfileOptionBuilder()
       .with_max_depth(10)
       .with_min_micros(1000)
       .select(['accelerator_micros'])
@@ -45,13 +41,13 @@ class ProfileOptionBuilder(object):
       .build()
 
   # Or customize the pre-built options:
-  opts = (tf.profiler.ProfileOptionBuilder(
+  opts = (tf.compat.v1.profiler.ProfileOptionBuilder(
       tf.profiler.ProfileOptionBuilder.time_and_memory())
       .with_displaying_options(show_name_regexes=['.*rnn.*'])
       .build())
 
   # Finally, profiling with the options:
-  _ = tf.profiler.profile(tf.get_default_graph(),
+  _ = tf.compat.v1.profiler.profile(tf.compat.v1.get_default_graph(),
                           run_meta=run_meta,
                           cmd='scope',
                           options=opts)

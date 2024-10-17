@@ -15,37 +15,22 @@
 """Convenience functions to save a model.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 
 # pylint: disable=unused-import
 from tensorflow.python.saved_model import builder
 from tensorflow.python.saved_model import constants
 from tensorflow.python.saved_model import loader
 from tensorflow.python.saved_model import main_op
+from tensorflow.python.saved_model import method_name_updater
 from tensorflow.python.saved_model import signature_constants
 from tensorflow.python.saved_model import signature_def_utils
 from tensorflow.python.saved_model import tag_constants
 from tensorflow.python.saved_model import utils
+from tensorflow.python.saved_model.fingerprinting import Fingerprint
+from tensorflow.python.saved_model.fingerprinting import read_fingerprint
+from tensorflow.python.saved_model.load import load
+from tensorflow.python.saved_model.save import save
 # pylint: enable=unused-import
 # pylint: disable=wildcard-import
 from tensorflow.python.saved_model.simple_save import *
 # pylint: enable=wildcard-import
-
-from tensorflow.python.util.all_util import remove_undocumented
-
-
-_allowed_symbols = [
-    "builder",
-    "constants",
-    "loader",
-    "main_op",
-    "signature_constants",
-    "signature_def_utils",
-    "simple_save",
-    "tag_constants",
-    "utils",
-]
-remove_undocumented(__name__, _allowed_symbols)

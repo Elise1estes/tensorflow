@@ -14,31 +14,29 @@
 # ==============================================================================
 """Implementation of tf.sets."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.ops import gen_set_ops
+from tensorflow.python.util import dispatch
 from tensorflow.python.util.tf_export import tf_export
 
+_VALID_DTYPES = frozenset([
+    dtypes.int8, dtypes.int16, dtypes.int32, dtypes.int64, dtypes.uint8,
+    dtypes.uint16, dtypes.string
+])
 
-_VALID_DTYPES = set([
-    dtypes.int8, dtypes.int16, dtypes.int32, dtypes.int64,
-    dtypes.uint8, dtypes.uint16, dtypes.string])
 
-
-@tf_export("sets.set_size")
+@tf_export("sets.size", v1=["sets.size", "sets.set_size"])
+@dispatch.add_dispatch_support
 def set_size(a, validate_indices=True):
   """Compute number of unique elements along last dimension of `a`.
 
   Args:
     a: `SparseTensor`, with indices sorted in row-major order.
     validate_indices: Whether to validate the order and range of sparse indices
-       in `a`.
+      in `a`. Note that setting this to `false` allows for undefined behavior
+      when calling this function with invalid indices.
 
   Returns:
     `int32` `Tensor` of set sizes. For `a` ranked `n`, this is a `Tensor` with
@@ -52,13 +50,15 @@ def set_size(a, validate_indices=True):
   if not isinstance(a, sparse_tensor.SparseTensor):
     raise TypeError("Expected `SparseTensor`, got %s." % a)
   if a.values.dtype.base_dtype not in _VALID_DTYPES:
-    raise TypeError("Invalid dtype %s." % a.values.dtype)
+    raise TypeError(
+        f"Invalid dtype `{a.values.dtype}` not in supported dtypes: "
+        f"`{_VALID_DTYPES}`.")
   # pylint: disable=protected-access
-  return gen_set_ops.set_size(
-      a.indices, a.values, a.dense_shape, validate_indices)
+  return gen_set_ops.set_size(a.indices, a.values, a.dense_shape,
+                              validate_indices)
+
 
 ops.NotDifferentiable("SetSize")
-
 
 ops.NotDifferentiable("DenseToDenseSetOperation")
 ops.NotDifferentiable("DenseToSparseSetOperation")
@@ -80,7 +80,9 @@ def _convert_to_tensors_or_sparse_tensors(a, b):
   """
   a = sparse_tensor.convert_to_tensor_or_sparse_tensor(a, name="a")
   if a.dtype.base_dtype not in _VALID_DTYPES:
-    raise TypeError("'a' invalid dtype %s." % a.dtype)
+    raise TypeError(
+        f"'a' has invalid dtype `{a.dtype}` not in supported dtypes: "
+        f"`{_VALID_DTYPES}`.")
   b = sparse_tensor.convert_to_tensor_or_sparse_tensor(b, name="b")
   if b.dtype.base_dtype != a.dtype.base_dtype:
     raise TypeError("Types don't match, %s vs %s." % (a.dtype, b.dtype))
@@ -97,14 +99,14 @@ def _set_operation(a, b, set_operation, validate_indices=True):
 
   Args:
     a: `Tensor` or `SparseTensor` of the same type as `b`. If sparse, indices
-        must be sorted in row-major order.
+      must be sorted in row-major order.
     b: `Tensor` or `SparseTensor` of the same type as `a`. Must be
-        `SparseTensor` if `a` is `SparseTensor`. If sparse, indices must be
-        sorted in row-major order.
+      `SparseTensor` if `a` is `SparseTensor`. If sparse, indices must be sorted
+      in row-major order.
     set_operation: String indicating set operation. See
         SetOperationOp::SetOperationFromContext for valid values.
     validate_indices: Whether to validate the order and range of sparse indices
-       in `a` and `b`.
+      in `a` and `b`.
 
   Returns:
     A `SparseTensor` with the same rank as `a` and `b`, and all but the last
@@ -118,9 +120,8 @@ def _set_operation(a, b, set_operation, validate_indices=True):
   if isinstance(a, sparse_tensor.SparseTensor):
     if isinstance(b, sparse_tensor.SparseTensor):
       indices, values, shape = gen_set_ops.sparse_to_sparse_set_operation(
-          a.indices, a.values, a.dense_shape,
-          b.indices, b.values, b.dense_shape,
-          set_operation, validate_indices)
+          a.indices, a.values, a.dense_shape, b.indices, b.values,
+          b.dense_shape, set_operation, validate_indices)
     else:
       raise ValueError("Sparse,Dense is not supported, but Dense,Sparse is. "
                        "Please flip the order of your inputs.")
@@ -133,7 +134,9 @@ def _set_operation(a, b, set_operation, validate_indices=True):
   return sparse_tensor.SparseTensor(indices, values, shape)
 
 
-@tf_export("sets.set_intersection")
+@tf_export(
+    "sets.intersection", v1=["sets.intersection", "sets.set_intersection"])
+@dispatch.add_dispatch_support
 def set_intersection(a, b, validate_indices=True):
   """Compute set intersection of elements in last dimension of `a` and `b`.
 
@@ -155,7 +158,8 @@ def set_intersection(a, b, validate_indices=True):
         ((1, 1, 0), 5),
         ((1, 1, 1), 6),
     ])
-    a = tf.SparseTensor(list(a.keys()), list(a.values()), dense_shape=[2,2,2])
+    a = tf.sparse.SparseTensor(list(a.keys()), list(a.values()),
+                               dense_shape=[2,2,2])
 
     # b = np.array([[{1}, {}], [{4}, {5, 6, 7, 8}]])
     b = collections.OrderedDict([
@@ -166,10 +170,11 @@ def set_intersection(a, b, validate_indices=True):
         ((1, 1, 2), 7),
         ((1, 1, 3), 8),
     ])
-    b = tf.SparseTensor(list(b.keys()), list(b.values()), dense_shape=[2, 2, 4])
+    b = tf.sparse.SparseTensor(list(b.keys()), list(b.values()),
+                               dense_shape=[2, 2, 4])
 
-    # `tf.sets.set_intersection` is applied to each aligned pair of sets.
-    tf.sets.set_intersection(a, b)
+    # `tf.sets.intersection` is applied to each aligned pair of sets.
+    tf.sets.intersection(a, b)
 
     # The result will be equivalent to either of:
     #
@@ -185,11 +190,11 @@ def set_intersection(a, b, validate_indices=True):
 
   Args:
     a: `Tensor` or `SparseTensor` of the same type as `b`. If sparse, indices
-        must be sorted in row-major order.
+      must be sorted in row-major order.
     b: `Tensor` or `SparseTensor` of the same type as `a`. If sparse, indices
-        must be sorted in row-major order.
+      must be sorted in row-major order.
     validate_indices: Whether to validate the order and range of sparse indices
-       in `a` and `b`.
+      in `a` and `b`.
 
   Returns:
     A `SparseTensor` whose shape is the same rank as `a` and `b`, and all but
@@ -200,7 +205,8 @@ def set_intersection(a, b, validate_indices=True):
   return _set_operation(a, b, "intersection", validate_indices)
 
 
-@tf_export("sets.set_difference")
+@tf_export("sets.difference", v1=["sets.difference", "sets.set_difference"])
+@dispatch.add_dispatch_support
 def set_difference(a, b, aminusb=True, validate_indices=True):
   """Compute set difference of elements in last dimension of `a` and `b`.
 
@@ -222,7 +228,8 @@ def set_difference(a, b, aminusb=True, validate_indices=True):
         ((1, 1, 0), 5),
         ((1, 1, 1), 6),
     ])
-    a = tf.SparseTensor(list(a.keys()), list(a.values()), dense_shape=[2, 2, 2])
+    a = tf.sparse.SparseTensor(list(a.keys()), list(a.values()),
+                               dense_shape=[2, 2, 2])
 
     # np.array([[{1, 3}, {2}], [{4, 5}, {5, 6, 7, 8}]])
     b = collections.OrderedDict([
@@ -236,10 +243,11 @@ def set_difference(a, b, aminusb=True, validate_indices=True):
         ((1, 1, 2), 7),
         ((1, 1, 3), 8),
     ])
-    b = tf.SparseTensor(list(b.keys()), list(b.values()), dense_shape=[2, 2, 4])
+    b = tf.sparse.SparseTensor(list(b.keys()), list(b.values()),
+                               dense_shape=[2, 2, 4])
 
     # `set_difference` is applied to each aligned pair of sets.
-    tf.sets.set_difference(a, b)
+    tf.sets.difference(a, b)
 
     # The result will be equivalent to either of:
     #
@@ -253,17 +261,24 @@ def set_difference(a, b, aminusb=True, validate_indices=True):
 
   Args:
     a: `Tensor` or `SparseTensor` of the same type as `b`. If sparse, indices
-        must be sorted in row-major order.
+      must be sorted in row-major order.
     b: `Tensor` or `SparseTensor` of the same type as `a`. If sparse, indices
-        must be sorted in row-major order.
+      must be sorted in row-major order.
     aminusb: Whether to subtract `b` from `a`, vs vice versa.
     validate_indices: Whether to validate the order and range of sparse indices
-       in `a` and `b`.
+      in `a` and `b`.
 
   Returns:
     A `SparseTensor` whose shape is the same rank as `a` and `b`, and all but
     the last dimension the same. Elements along the last dimension contain the
     differences.
+
+  Raises:
+    TypeError: If inputs are invalid types, or if `a` and `b` have
+        different types.
+    ValueError: If `a` is sparse and `b` is dense.
+    errors_impl.InvalidArgumentError: If the shapes of `a` and `b` do not
+        match in any dimension other than the last dimension.
   """
   a, b, flipped = _convert_to_tensors_or_sparse_tensors(a, b)
   if flipped:
@@ -271,7 +286,8 @@ def set_difference(a, b, aminusb=True, validate_indices=True):
   return _set_operation(a, b, "a-b" if aminusb else "b-a", validate_indices)
 
 
-@tf_export("sets.set_union")
+@tf_export("sets.union", v1=["sets.union", "sets.set_union"])
+@dispatch.add_dispatch_support
 def set_union(a, b, validate_indices=True):
   """Compute set union of elements in last dimension of `a` and `b`.
 
@@ -292,7 +308,8 @@ def set_union(a, b, validate_indices=True):
         ((1, 1, 0), 5),
         ((1, 1, 1), 6),
     ])
-    a = tf.SparseTensor(list(a.keys()), list(a.values()), dense_shape=[2, 2, 2])
+    a = tf.sparse.SparseTensor(list(a.keys()), list(a.values()),
+                               dense_shape=[2, 2, 2])
 
     # [[{1, 3}, {2}], [{4, 5}, {5, 6, 7, 8}]]
     b = collections.OrderedDict([
@@ -306,10 +323,11 @@ def set_union(a, b, validate_indices=True):
         ((1, 1, 2), 7),
         ((1, 1, 3), 8),
     ])
-    b = tf.SparseTensor(list(b.keys()), list(b.values()), dense_shape=[2, 2, 4])
+    b = tf.sparse.SparseTensor(list(b.keys()), list(b.values()),
+                               dense_shape=[2, 2, 4])
 
     # `set_union` is applied to each aligned pair of sets.
-    tf.sets.set_union(a, b)
+    tf.sets.union(a, b)
 
     # The result will be a equivalent to either of:
     #
@@ -332,11 +350,11 @@ def set_union(a, b, validate_indices=True):
 
   Args:
     a: `Tensor` or `SparseTensor` of the same type as `b`. If sparse, indices
-        must be sorted in row-major order.
+      must be sorted in row-major order.
     b: `Tensor` or `SparseTensor` of the same type as `a`. If sparse, indices
-        must be sorted in row-major order.
+      must be sorted in row-major order.
     validate_indices: Whether to validate the order and range of sparse indices
-       in `a` and `b`.
+      in `a` and `b`.
 
   Returns:
     A `SparseTensor` whose shape is the same rank as `a` and `b`, and all but

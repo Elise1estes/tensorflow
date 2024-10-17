@@ -16,6 +16,8 @@ limitations under the License.
 // See docs in ../ops/parse_ops.cc.
 
 #include <errno.h>
+
+#include <cstdint>
 #include <string>
 
 #include "tensorflow/core/framework/kernel_def_builder.h"
@@ -40,7 +42,7 @@ class StringToNumberOp : public OpKernel {
     // underlying storage.
     const Tensor* input_tensor;
     OP_REQUIRES_OK(context, context->input("string_tensor", &input_tensor));
-    const auto& input_flat = input_tensor->flat<string>();
+    const auto& input_flat = input_tensor->flat<tstring>();
 
     Tensor* output_tensor = nullptr;
     OP_REQUIRES_OK(context,
@@ -51,7 +53,7 @@ class StringToNumberOp : public OpKernel {
     for (int i = 0; i < input_flat.size(); ++i) {
       OP_REQUIRES(
           context,
-          strings::SafeStringToNumeric<OutputType>(input_flat(i).c_str(),
+          strings::SafeStringToNumeric<OutputType>(input_flat(i),
                                                    &output_flat(i)),
           errors::InvalidArgument(kErrorMessage, input_flat(i).c_str()));
     }
@@ -67,7 +69,9 @@ class StringToNumberOp : public OpKernel {
 REGISTER(float);
 REGISTER(double);
 REGISTER(int32);
-REGISTER(int64);
+REGISTER(int64_t);
+REGISTER(uint32_t);
+REGISTER(uint64_t);
 #undef REGISTER
 
 }  // namespace tensorflow

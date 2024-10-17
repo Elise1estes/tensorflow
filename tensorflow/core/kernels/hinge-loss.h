@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_HINGE_LOSS_H_
-#define TENSORFLOW_KERNELS_HINGE_LOSS_H_
+#ifndef TENSORFLOW_CORE_KERNELS_HINGE_LOSS_H_
+#define TENSORFLOW_CORE_KERNELS_HINGE_LOSS_H_
 
 #include <algorithm>
 #include <limits>
@@ -43,7 +43,7 @@ class HingeLossUpdater : public DualLossUpdater {
                             const double example_weight,
                             const double current_dual, const double wx,
                             const double weighted_example_norm) const final {
-    // Intutitvely there are 3 cases:
+    // Intuitively there are 3 cases:
     // a. new optimal value of the dual variable falls within the admissible
     // range [0, 1]. In this case we set new dual to this value.
     // b. new optimal value is < 0. Then, because of convexity, the optimal
@@ -109,10 +109,10 @@ class HingeLossUpdater : public DualLossUpdater {
   Status ConvertLabel(float* const example_label) const final {
     if (*example_label == 0.0) {
       *example_label = -1;
-      return Status::OK();
+      return absl::OkStatus();
     }
     if (*example_label == 1.0) {
-      return Status::OK();
+      return absl::OkStatus();
     }
     return errors::InvalidArgument(
         "Only labels of 0.0 or 1.0 are supported right now. "
@@ -123,4 +123,4 @@ class HingeLossUpdater : public DualLossUpdater {
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_HINGE_LOSS_H_
+#endif  // TENSORFLOW_CORE_KERNELS_HINGE_LOSS_H_

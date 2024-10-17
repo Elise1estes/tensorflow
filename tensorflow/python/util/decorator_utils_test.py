@@ -15,10 +15,6 @@
 """decorator_utils tests."""
 
 # pylint: disable=unused-import
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import functools
 
 from tensorflow.python.platform import test
@@ -55,8 +51,9 @@ class AddNoticeToDocstringTest(test.TestCase):
         expected)
 
   def test_regular(self):
-    expected = ("Brief (suffix)\n\nGo away\nInstructions\n\nDocstring\n\n"
-                "Args:\n  arg1: desc")
+    expected = (
+        "Brief (suffix)\n\nWarning: Go away\nInstructions\n\nDocstring\n\n"
+        "Args:\n  arg1: desc")
     # No indent for main docstring
     self._check("Brief\n\nDocstring\n\nArgs:\n  arg1: desc", expected)
     # 2 space indent for main docstring, blank lines not indented
@@ -71,7 +68,7 @@ class AddNoticeToDocstringTest(test.TestCase):
                 expected)
 
   def test_brief_only(self):
-    expected = "Brief (suffix)\n\nGo away\nInstructions"
+    expected = "Brief (suffix)\n\nWarning: Go away\nInstructions"
     self._check("Brief", expected)
     self._check("Brief\n", expected)
     self._check("Brief\n  ", expected)
@@ -79,12 +76,12 @@ class AddNoticeToDocstringTest(test.TestCase):
     self._check("\n  Brief\n  ", expected)
 
   def test_no_docstring(self):
-    expected = "Nothing here\n\nGo away\nInstructions"
+    expected = "Nothing here\n\nWarning: Go away\nInstructions"
     self._check(None, expected)
     self._check("", expected)
 
   def test_no_empty_line(self):
-    expected = "Brief (suffix)\n\nGo away\nInstructions\n\nDocstring"
+    expected = "Brief (suffix)\n\nWarning: Go away\nInstructions\n\nDocstring"
     # No second line indent
     self._check("Brief\nDocstring", expected)
     # 2 space second line indent
@@ -119,6 +116,50 @@ class ValidateCallableTest(test.TestCase):
   def test_fail_non_callable(self):
     x = 0
     self.assertRaises(ValueError, decorator_utils.validate_callable, x, "test")
+
+
+class CachedClassPropertyTest(test.TestCase):
+
+  def testCachedClassProperty(self):
+    log = []  # log all calls to `MyClass.value`.
+
+    class MyClass(object):
+
+      @decorator_utils.cached_classproperty
+      def value(cls):  # pylint: disable=no-self-argument
+        log.append(cls)
+        return cls.__name__
+
+    class MySubclass(MyClass):
+      pass
+
+    # Property is computed first time it is accessed.
+    self.assertLen(log, 0)
+    self.assertEqual(MyClass.value, "MyClass")
+    self.assertEqual(log, [MyClass])
+
+    # Cached values are used on subsequent accesses.
+    self.assertEqual(MyClass.value, "MyClass")
+    self.assertEqual(MyClass.value, "MyClass")
+    self.assertEqual(log, [MyClass])
+
+    # The wrapped method is called for each subclass.
+    self.assertEqual(MySubclass.value, "MySubclass")
+    self.assertEqual(log, [MyClass, MySubclass])
+    self.assertEqual(MySubclass.value, "MySubclass")
+    self.assertEqual(MySubclass.value, "MySubclass")
+    self.assertEqual(log, [MyClass, MySubclass])
+
+    # The property can also be accessed via an instance.
+    self.assertEqual(MyClass().value, "MyClass")
+    self.assertEqual(MySubclass().value, "MySubclass")
+    self.assertEqual(log, [MyClass, MySubclass])
+
+    # Attempts to modify the property via an instance will fail.
+    with self.assertRaises(AttributeError):
+      MyClass().value = 12
+    with self.assertRaises(AttributeError):
+      del MyClass().value
 
 
 if __name__ == "__main__":

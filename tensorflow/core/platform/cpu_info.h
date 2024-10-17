@@ -13,100 +13,82 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATFORM_CPU_INFO_H_
-#define TENSORFLOW_PLATFORM_CPU_INFO_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_CPU_INFO_H_
+#define TENSORFLOW_CORE_PLATFORM_CPU_INFO_H_
 
 #include <string>
 
-#if defined(_MSC_VER)
-#include "tensorflow/core/platform/windows/cpu_info.h"
-#endif
+// TODO(ahentz): This is not strictly required here but, for historical
+// reasons, many people depend on cpu_info.h in order to use kLittleEndian.
+#include "tensorflow/core/platform/byte_order.h"
+#include "tsl/platform/cpu_info.h"
 
 namespace tensorflow {
 namespace port {
-
-// TODO(jeff,sanjay): Make portable
-constexpr bool kLittleEndian = __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__;
-
-// Returns an estimate of the number of schedulable CPUs for this
-// process.  Usually, it's constant throughout the lifetime of a
-// process, but it might change if the underlying cluster management
-// software can change it dynamically.
-int NumSchedulableCPUs();
-
-// Mostly ISA related features that we care about
-enum CPUFeature {
-  // Do not change numeric assignments.
-  MMX = 0,
-  SSE = 1,
-  SSE2 = 2,
-  SSE3 = 3,
-  SSSE3 = 4,
-  SSE4_1 = 5,
-  SSE4_2 = 6,
-  CMOV = 7,
-  CMPXCHG8B = 8,
-  CMPXCHG16B = 9,
-  POPCNT = 10,
-  AES = 11,
-  AVX = 12,
-  RDRAND = 13,
-  AVX2 = 14,
-  FMA = 15,
-  F16C = 16,
-  PCLMULQDQ = 17,
-  RDSEED = 18,
-  ADX = 19,
-  SMAP = 20,
-
-  // Prefetch Vector Data Into Caches with Intent to Write and T1 Hint
-  // http://www.felixcloutier.com/x86/PREFETCHWT1.html.
-  // You probably want PREFETCHW instead.
-  PREFETCHWT1 = 21,
-
-  BMI1 = 22,
-  BMI2 = 23,
-  HYPERVISOR = 25,  // 0 when on a real CPU, 1 on (well-behaved) hypervisor.
-
-  // Prefetch Data into Caches in Anticipation of a Write (3D Now!).
-  // http://www.felixcloutier.com/x86/PREFETCHW.html
-  PREFETCHW = 26,
-
-  // AVX-512: 512-bit vectors (plus masking, etc.) in Knights Landing,
-  // Skylake
-  // Xeon, etc.; each of these entries is a different subset of
-  // instructions,
-  // various combinations of which occur on various CPU types.
-  AVX512F = 27,        // Foundation
-  AVX512CD = 28,       // Conflict detection
-  AVX512ER = 29,       // Exponential and reciprocal
-  AVX512PF = 30,       // Prefetching
-  AVX512VL = 31,       // Shorter vector lengths
-  AVX512BW = 32,       // Byte and word
-  AVX512DQ = 33,       // Dword and qword
-  AVX512VBMI = 34,     // Bit manipulation
-  AVX512IFMA = 35,     // Integer multiply-add
-  AVX512_4VNNIW = 36,  // Integer neural network
-  AVX512_4FMAPS = 37,  // Floating point neural network
-};
-
-// Checks whether the current processor supports one of the features above.
-// Checks CPU registers to return hardware capabilities.
-bool TestCPUFeature(CPUFeature feature);
-
-// Returns CPU Vendor string (i.e. 'GenuineIntel', 'AuthenticAMD', etc.)
-std::string CPUVendorIDString();
-
-// Returns CPU family.
-int CPUFamily();
-
-// Returns CPU model number.
-int CPUModelNum();
-
-// Returns nominal core processor cycles per second of each processor.
-double NominalCPUFrequency();
+using tsl::port::Aarch64CPU;
+using tsl::port::ADX;
+using tsl::port::AES;
+using tsl::port::AMX_BF16;
+using tsl::port::AMX_FP16;
+using tsl::port::AMX_INT8;
+using tsl::port::AMX_TILE;
+using tsl::port::AVX;
+using tsl::port::AVX2;
+using tsl::port::AVX512_4FMAPS;
+using tsl::port::AVX512_4VNNIW;
+using tsl::port::AVX512_BF16;
+using tsl::port::AVX512_FP16;
+using tsl::port::AVX512_VNNI;
+using tsl::port::AVX512BW;
+using tsl::port::AVX512CD;
+using tsl::port::AVX512DQ;
+using tsl::port::AVX512ER;
+using tsl::port::AVX512F;
+using tsl::port::AVX512IFMA;
+using tsl::port::AVX512PF;
+using tsl::port::AVX512VBMI;
+using tsl::port::AVX512VL;
+using tsl::port::AVX_NE_CONVERT;
+using tsl::port::AVX_VNNI;
+using tsl::port::AVX_VNNI_INT8;
+using tsl::port::BMI1;
+using tsl::port::BMI2;
+using tsl::port::CMOV;
+using tsl::port::CMPXCHG16B;
+using tsl::port::CMPXCHG8B;
+using tsl::port::CPUFamily;
+using tsl::port::CPUFeature;
+using tsl::port::CPUIDNumSMT;
+using tsl::port::CPUModelNum;
+using tsl::port::CPUVendorIDString;
+using tsl::port::F16C;
+using tsl::port::FMA;
+using tsl::port::GetCurrentCPU;
+using tsl::port::HYPERVISOR;
+using tsl::port::kUnknownCPU;
+using tsl::port::MaxParallelism;
+using tsl::port::MMX;
+using tsl::port::NominalCPUFrequency;
+using tsl::port::NumHyperthreadsPerCore;
+using tsl::port::NumSchedulableCPUs;
+using tsl::port::NumTotalCPUs;
+using tsl::port::PCLMULQDQ;
+using tsl::port::POPCNT;
+using tsl::port::PREFETCHW;
+using tsl::port::PREFETCHWT1;
+using tsl::port::RDRAND;
+using tsl::port::RDSEED;
+using tsl::port::SMAP;
+using tsl::port::SSE;
+using tsl::port::SSE2;
+using tsl::port::SSE3;
+using tsl::port::SSE4_1;
+using tsl::port::SSE4_2;
+using tsl::port::SSSE3;
+using tsl::port::TestAarch64CPU;
+using tsl::port::TestCPUFeature;
 
 }  // namespace port
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_PLATFORM_CPU_INFO_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_CPU_INFO_H_

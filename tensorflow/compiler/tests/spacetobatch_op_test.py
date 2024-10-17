@@ -14,13 +14,10 @@
 # ==============================================================================
 """Functional tests for SpaceToBatch and BatchToSpace ops."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
-from tensorflow.compiler.tests.xla_test import XLATestCase
+from tensorflow.compiler.tests import xla_test
+from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_array_ops
@@ -68,11 +65,11 @@ def space_to_batch_direct(input_array, block_shape, paddings):
   return permuted_reshaped_padded.reshape(output_shape)
 
 
-class SpaceToBatchTest(XLATestCase):
+class SpaceToBatchTest(xla_test.XLATestCase):
   """Tests input-output pairs for the SpaceToBatch and BatchToSpace ops."""
 
   def _testPad(self, inputs, paddings, block_size, outputs):
-    with self.test_session() as sess, self.test_scope():
+    with self.session() as sess, self.test_scope():
       for dtype in self.float_types:
         # outputs = space_to_batch(inputs)
         placeholder = array_ops.placeholder(dtype)
@@ -149,13 +146,36 @@ class SpaceToBatchTest(XLATestCase):
     self._testOne(x_np, block_size, x_out)
 
 
-class SpaceToBatchNDTest(XLATestCase):
+class SpaceToBatchNDErrorHandlingTest(xla_test.XLATestCase):
+
+  def testInvalidBlockShape(self):
+    with self.assertRaisesRegex(ValueError, "block_shape must be positive"):
+      with self.session() as sess, self.test_scope():
+        tf_in = constant_op.constant(
+            -3.5e+35, shape=[10, 20, 20], dtype=dtypes.float32)
+        block_shape = constant_op.constant(-10, shape=[2], dtype=dtypes.int64)
+        paddings = constant_op.constant(0, shape=[2, 2], dtype=dtypes.int32)
+        sess.run(array_ops.space_to_batch_nd(tf_in, block_shape, paddings))
+
+  def testOutputSizeOutOfBounds(self):
+    with self.assertRaisesRegex(ValueError,
+                                "Negative.* dimension size caused by overflow"):
+      with self.session() as sess, self.test_scope():
+        tf_in = constant_op.constant(
+            -3.5e+35, shape=[10, 19, 22], dtype=dtypes.float32)
+        block_shape = constant_op.constant(
+            1879048192, shape=[2], dtype=dtypes.int64)
+        paddings = constant_op.constant(0, shape=[2, 2], dtype=dtypes.int32)
+        sess.run(array_ops.space_to_batch_nd(tf_in, block_shape, paddings))
+
+
+class SpaceToBatchNDTest(xla_test.XLATestCase):
   """Tests input-output pairs for the SpaceToBatchND and BatchToSpaceND ops."""
 
   def _testPad(self, inputs, block_shape, paddings, outputs):
     block_shape = np.array(block_shape)
     paddings = np.array(paddings).reshape((len(block_shape), 2))
-    with self.test_session() as sess, self.test_scope():
+    with self.session() as sess, self.test_scope():
       for dtype in self.float_types:
         # TODO(b/68813416): Skip bfloat16's as the input type for direct is
         # float32 and results in a mismatch, while making testDirect provide the

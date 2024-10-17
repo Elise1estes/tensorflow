@@ -17,7 +17,9 @@ limitations under the License.
 #define TENSORFLOW_PYTHON_CLIENT_TF_SESSION_HELPER_H_
 
 // Must be included first
-#include "tensorflow/python/lib/core/numpy.h"
+// clang-format off
+#include "xla/tsl/python/lib/core/numpy.h" //NOLINT
+// clang-format on
 
 #include "tensorflow/c/c_api.h"
 #include "tensorflow/core/framework/graph.pb.h"
@@ -32,13 +34,16 @@ namespace tensorflow {
 
 // A NameVector is a vector of tensor or operation names, as borrowed
 // C strings.
-typedef tensorflow::gtl::InlinedVector<const char*, 8> NameVector;
+typedef absl::InlinedVector<const char*, 8UL> NameVector;
 
 // A PyObjectVector is a vector of borrowed pointers to PyObjects.
-typedef tensorflow::gtl::InlinedVector<PyObject*, 8> PyObjectVector;
+typedef absl::InlinedVector<PyObject*, 8UL> PyObjectVector;
 
 // A TF_TensorVector is a vector of borrowed pointers to TF_Tensors.
-typedef gtl::InlinedVector<TF_Tensor*, 8> TF_TensorVector;
+typedef absl::InlinedVector<TF_Tensor*, 8UL> TF_TensorVector;
+
+TF_Session* TF_NewSessionRef(TF_Graph* graph, const TF_SessionOptions* opts,
+                             TF_Status* status);
 
 // Run the graph associated with the session starting with the
 // supplied inputs[].  Regardless of success or failure, inputs[] are
@@ -62,27 +67,26 @@ void TF_Run_wrapper(TF_DeprecatedSession* session, const TF_Buffer* run_options,
 // Python wrappers for the `Session::MakeCallable()` API.
 void TF_DeprecatedSessionMakeCallable(TF_DeprecatedSession* session,
                                       const TF_Buffer* callable_options,
-                                      int64_t* out_handle,
-                                      TF_Status* out_status);
+                                      int64_t* out_handle, TF_Status* status);
 void TF_SessionMakeCallable(TF_Session* session,
                             const TF_Buffer* callable_options,
-                            int64_t* out_handle, TF_Status* out_status);
+                            int64_t* out_handle, TF_Status* status);
 
 // Python wrappers for the `Session::RunCallable()` API.
 void TF_DeprecatedSessionRunCallable(TF_DeprecatedSession* session,
                                      int64_t handle, PyObject* feed_values,
-                                     TF_Status* out_status,
                                      PyObjectVector* out_values,
-                                     TF_Buffer* run_metadata);
+                                     TF_Buffer* run_metadata,
+                                     TF_Status* status);
 void TF_SessionRunCallable(TF_Session* session, int64_t handle,
-                           PyObject* feed_values, TF_Status* out_status,
-                           PyObjectVector* out_values, TF_Buffer* run_metadata);
+                           PyObject* feed_values, PyObjectVector* out_values,
+                           TF_Buffer* run_metadata, TF_Status* status);
 
 // Python wrappers for the `Session::ReleaseCallable()` API.
 void TF_DeprecatedSessionReleaseCallable(TF_DeprecatedSession* session,
-                                         int64_t handle, TF_Status* out_status);
+                                         int64_t handle, TF_Status* status);
 void TF_SessionReleaseCallable(TF_Session* session, int64_t handle,
-                               TF_Status* out_status);
+                               TF_Status* status);
 
 // Set up the graph with the intended feeds and fetches for partial run.
 // *out_handle is owned by the caller.
@@ -115,7 +119,7 @@ void TF_PRun_wrapper(TF_DeprecatedSession* session, const char* handle,
 
 // Wrapper for TF_Reset that converts the string vectors to character arrays.
 void TF_Reset_wrapper(const TF_SessionOptions* opt,
-                      const NameVector& containers, TF_Status* out_status);
+                      const NameVector& containers, TF_Status* status);
 
 // Convenience wrapper around EqualGraphDef to make it easier to wrap.
 // Returns an explanation if a difference is found, or the empty string
@@ -135,7 +139,7 @@ string EqualAttrValueWrapper(const string& actual, const string& expected);
 // dimension".  Sets unknown_shape to false.
 //
 // If shape is unknown, sets unknown_shape to true.
-tensorflow::gtl::InlinedVector<int64_t, 6> TF_GraphGetTensorShapeHelper(
+absl::InlinedVector<int64_t, 6UL> TF_GraphGetTensorShapeHelper(
     TF_Graph* graph, TF_Output output, TF_Status* status, bool* unknown_shape);
 
 // Runs the graph associated with the session starting with the supplied inputs.
@@ -205,7 +209,9 @@ TF_Function* TF_GraphToFunction_wrapper(
     const TF_Graph* fn_body, const char* fn_name, bool append_hash_to_fn_name,
     const std::vector<TF_Operation*>* opers,
     const std::vector<TF_Output>& inputs, const std::vector<TF_Output>& outputs,
-    const NameVector& output_names, const TF_FunctionOptions* opts,
+    const NameVector& output_names,
+    const std::vector<TF_Operation*>* control_outputs,
+    const NameVector& control_output_names, const TF_FunctionOptions* opts,
     const char* description, TF_Status* status);
 
 // Set the shapes and types for the output's handle.
@@ -222,6 +228,14 @@ void TF_GraphSetOutputHandleShapesAndTypes_wrapper(
     const std::vector<std::vector<int64_t> >& shapes,
     const std::vector<int>& ranks, const std::vector<TF_DataType>& types,
     TF_Status* status);
+
+// Creates Placeholders with specified types in the Graph.
+//
+// This is an internal API used to speed up creation of unused placeholders
+// in while_v2 cond graph and is subject to change/removal.
+std::vector<TF_Output> TF_CreatePlaceholders(TF_Graph* graph, PyObject* dtypes,
+                                             const char* prefix,
+                                             TF_Status* status);
 
 // Set the shape of output. If unknown is true, `num_dims` must be set to
 // -1 and `dims` is set to nullptr.

@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMMON_RUNTIME_DEBUGGER_STATE_INTERFACE_H_
-#define TENSORFLOW_COMMON_RUNTIME_DEBUGGER_STATE_INTERFACE_H_
+#ifndef TENSORFLOW_CORE_COMMON_RUNTIME_DEBUGGER_STATE_INTERFACE_H_
+#define TENSORFLOW_CORE_COMMON_RUNTIME_DEBUGGER_STATE_INTERFACE_H_
 
 #include <memory>
 
@@ -48,9 +48,9 @@ class DebuggerStateInterface {
   //   input_names: Name of the input Tensors (feed keys).
   //   output_names: Names of the fetched Tensors.
   //   target_names: Names of the target nodes.
-  virtual Status PublishDebugMetadata(
-      const int64 global_step, const int64 session_run_index,
-      const int64 executor_step_index, const std::vector<string>& input_names,
+  virtual absl::Status PublishDebugMetadata(
+      const int64_t global_step, const int64_t session_run_index,
+      const int64_t executor_step_index, const std::vector<string>& input_names,
       const std::vector<string>& output_names,
       const std::vector<string>& target_nodes) = 0;
 };
@@ -62,11 +62,11 @@ class DebugGraphDecoratorInterface {
   // Insert special-purpose debug nodes to graph and dump the graph for
   // record. See the documentation of DebugNodeInserter::InsertNodes() for
   // details.
-  virtual Status DecorateGraph(Graph* graph, Device* device) = 0;
+  virtual absl::Status DecorateGraph(Graph* graph, Device* device) = 0;
 
   // Publish Graph to debug URLs.
-  virtual Status PublishGraph(const Graph& graph,
-                              const string& device_name) = 0;
+  virtual absl::Status PublishGraph(const Graph& graph,
+                                    const string& device_name) = 0;
 };
 
 typedef std::function<std::unique_ptr<DebuggerStateInterface>(
@@ -88,13 +88,15 @@ class DebuggerStateRegistry {
   // DebuggerStateInterface implementation using the registered factory,
   // owned by the caller and return an OK Status. Otherwise returns an error
   // Status.
-  static Status CreateState(const DebugOptions& debug_options,
-                            std::unique_ptr<DebuggerStateInterface>* state);
+  static absl::Status CreateState(
+      const DebugOptions& debug_options,
+      std::unique_ptr<DebuggerStateInterface>* state);
 
  private:
   static DebuggerStateFactory* factory_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(DebuggerStateRegistry);
+  DebuggerStateRegistry(const DebuggerStateRegistry&) = delete;
+  void operator=(const DebuggerStateRegistry&) = delete;
 };
 
 typedef std::function<std::unique_ptr<DebugGraphDecoratorInterface>(
@@ -105,16 +107,17 @@ class DebugGraphDecoratorRegistry {
  public:
   static void RegisterFactory(const DebugGraphDecoratorFactory& factory);
 
-  static Status CreateDecorator(
+  static absl::Status CreateDecorator(
       const DebugOptions& options,
       std::unique_ptr<DebugGraphDecoratorInterface>* decorator);
 
  private:
   static DebugGraphDecoratorFactory* factory_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(DebugGraphDecoratorRegistry);
+  DebugGraphDecoratorRegistry(const DebugGraphDecoratorRegistry&) = delete;
+  void operator=(const DebugGraphDecoratorRegistry&) = delete;
 };
 
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_COMMON_RUNTIME_DEBUGGER_STATE_INTERFACE_H_
+#endif  // TENSORFLOW_CORE_COMMON_RUNTIME_DEBUGGER_STATE_INTERFACE_H_

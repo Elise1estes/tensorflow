@@ -24,7 +24,10 @@ limitations under the License.
 #include <setjmp.h>
 #include <stddef.h>
 
+#include "jpeglib.h"  // from @libjpeg_turbo
+#include "tensorflow/core/platform/jpeg.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/tstring.h"
 
 namespace tensorflow {
 namespace jpeg {
@@ -84,7 +87,7 @@ void SetDest(j_compress_ptr cinfo, void *buffer, int bufsize) {
 
 // -----------------------------------------------------------------------------
 void SetDest(j_compress_ptr cinfo, void *buffer, int bufsize,
-             string *destination) {
+             tstring *destination) {
   MemDestMgr *dest;
   if (cinfo->dest == nullptr) {
     cinfo->dest = reinterpret_cast<struct jpeg_destination_mgr *>(

@@ -13,9 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/compiler/tf2xla/lib/batch_dot.h"
+#include <optional>
+
+#include "tensorflow/compiler/tf2xla/lib/util.h"
+#include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "xla/hlo/builder/lib/math.h"
+#include "xla/hlo/builder/lib/matrix.h"
+#include "xla/xla_data.pb.h"
+#include "tsl/platform/tensor_float_32_utils.h"
 
 namespace tensorflow {
 namespace {
@@ -25,22 +32,42 @@ class BatchMatMulOp : public XlaOpKernel {
   explicit BatchMatMulOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("adj_x", &adj_x_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("adj_y", &adj_y_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("grad_x", &grad_x_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("grad_y", &grad_y_));
+
+    if (ctx->HasAttr("Tout")) {
+      DataType output_type;
+      OP_REQUIRES_OK(ctx, ctx->GetAttr("Tout", &output_type));
+
+      xla::PrimitiveType xla_type;
+      OP_REQUIRES_OK(ctx, DataTypeToPrimitiveType(output_type, &xla_type));
+      preferred_element_type_.emplace(xla_type);
+    }
   }
 
   void Compile(XlaOpKernelContext* ctx) override {
-    auto result = BatchDot(ctx->builder(), ctx->Input(0), ctx->Input(1),
-                           /*transpose_x=*/adj_x_, /*transpose_y=*/adj_y_,
-                           /*conjugate_x=*/adj_x_, /*conjugate_y=*/adj_y_);
-    OP_REQUIRES_OK(ctx, result.status());
-    ctx->SetOutput(0, result.ValueOrDie());
+    xla::PrecisionConfig::Precision precision =
+        tsl::tensor_float_32_execution_enabled()
+            ? xla::PrecisionConfig::DEFAULT
+            : xla::PrecisionConfig::HIGHEST;
+    auto result =
+        xla::BatchDot(MaybeConjugate(ctx->Input(0), adj_x_), adj_x_,
+                      MaybeConjugate(ctx->Input(1), adj_y_), adj_y_, precision,
+                      preferred_element_type_, grad_x_, grad_y_);
+    ctx->SetOutput(0, result);
   }
 
  private:
   bool adj_x_;
   bool adj_y_;
+  bool grad_x_;
+  bool grad_y_;
+  std::optional<xla::PrimitiveType> preferred_element_type_;
 };
 
 REGISTER_XLA_OP(Name("BatchMatMul"), BatchMatMulOp);
+REGISTER_XLA_OP(Name("BatchMatMulV2"), BatchMatMulOp);
+REGISTER_XLA_OP(Name("BatchMatMulV3"), BatchMatMulOp);
 
 }  // namespace
 }  // namespace tensorflow

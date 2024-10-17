@@ -16,12 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_LIB_STRINGS_PROTO_TEXT_UTIL_H_
 #define TENSORFLOW_CORE_LIB_STRINGS_PROTO_TEXT_UTIL_H_
 
-#include "tensorflow/core/lib/strings/numbers.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/lib/strings/scanner.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/macros.h"
+#include "tensorflow/core/platform/numbers.h"
 #include "tensorflow/core/platform/protobuf.h"
+#include "tensorflow/core/platform/str_util.h"
+#include "tensorflow/core/platform/strcat.h"
 
 namespace tensorflow {
 namespace strings {
@@ -84,8 +85,7 @@ class ProtoTextOutput {
 
   // Appends a string value, like my_field: "abc123".
   void AppendString(const char field_name[], const string& value) {
-    AppendFieldAndValue(
-        field_name, StrCat("\"", ::tensorflow::str_util::CEscape(value), "\""));
+    AppendFieldAndValue(field_name, StrCat("\"", absl::CEscape(value), "\""));
   }
 
   // Appends a string value, like my_field: "abc123", but only if value is not
@@ -101,8 +101,8 @@ class ProtoTextOutput {
 
  private:
   void AppendFieldAndValue(const char field_name[], StringPiece value_text) {
-    StrAppend(output_, level_empty_ ? "" : field_separator_, indent_,
-              field_name, kColonSeparator, value_text);
+    absl::StrAppend(output_, level_empty_ ? "" : field_separator_, indent_,
+                    field_name, kColonSeparator, value_text);
     level_empty_ = false;
   }
 
@@ -115,7 +115,8 @@ class ProtoTextOutput {
   // current deepest level of nesting.
   bool level_empty_ = true;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(ProtoTextOutput);
+  ProtoTextOutput(const ProtoTextOutput&) = delete;
+  void operator=(const ProtoTextOutput&) = delete;
 };
 
 inline void ProtoSpaceAndComments(Scanner* scanner) {

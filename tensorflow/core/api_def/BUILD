@@ -4,28 +4,44 @@
 # The following targets can be used to access ApiDefs:
 #   :base_api_def
 #   :python_api_def
+#   :java_api_def
 
-package(
-    default_visibility = ["//visibility:private"],
+load(
+    "@local_config_tensorrt//:build_defs.bzl",
+    "if_tensorrt",
 )
-
-licenses(["notice"])  # Apache 2.0
-
+load(
+    "@local_xla//xla/tsl/mkl:build_defs.bzl",
+    "if_mkl",
+)
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cc_binary",
     "tf_cc_test",
 )
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
-filegroup(
+package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    default_visibility = ["//visibility:private"],
+    licenses = ["notice"],
+)
+
+alias(
     name = "base_api_def",
-    srcs = glob(["base_api/*"]),
+    actual = "//tensorflow/core/api_def/base_api:base_api_def",
     visibility = ["//tensorflow:internal"],
 )
 
-filegroup(
+alias(
     name = "python_api_def",
-    srcs = glob(["python_api/*"]),
+    actual = "//tensorflow/core/api_def/python_api:python_api_def",
+    visibility = ["//tensorflow:internal"],
+)
+
+alias(
+    name = "java_api_def",
+    actual = "//tensorflow/core/api_def/java_api:java_api_def",
     visibility = ["//tensorflow:internal"],
 )
 
@@ -33,6 +49,7 @@ cc_library(
     name = "excluded_ops_lib",
     srcs = ["excluded_ops.cc"],
     hdrs = ["excluded_ops.h"],
+    copts = if_mkl(["-DINTEL_MKL=1"]) + if_tensorrt(["-DGOOGLE_TENSORRT=1"]),
 )
 
 cc_library(
@@ -98,5 +115,9 @@ tf_cc_test(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "//tensorflow/core/platform:resource_loader",
+        "//tensorflow/core/tpu/ops:sparse_core_ops",
+        "//tensorflow/core/tpu/ops:sparse_core_preprocess_ops",
+        "//tensorflow/core/tpu/ops:tpu_copy_with_dynamic_shape_op",
     ],
 )

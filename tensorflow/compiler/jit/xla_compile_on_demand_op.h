@@ -19,9 +19,17 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_JIT_XLA_COMPILE_ON_DEMAND_OP_H_
 #define TENSORFLOW_COMPILER_JIT_XLA_COMPILE_ON_DEMAND_OP_H_
 
-#include "tensorflow/compiler/jit/xla_device.h"
+#include <vector>
+
+#include "tensorflow/compiler/jit/device_compilation_profiler.h"
+#include "tensorflow/compiler/jit/variable_info.h"
+#include "tensorflow/compiler/jit/variable_info_util.h"
+#include "tensorflow/compiler/jit/xla_launch_util.h"
+#include "tensorflow/compiler/jit/xla_platform_info.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
-#include "tensorflow/compiler/xla/client/local_client.h"
+#include "xla/client/local_client.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -29,26 +37,39 @@ limitations under the License.
 namespace tensorflow {
 
 // An OpKernel that compiles an op to an XLA computation and runs it. Unlike
-// _XlaLaunch this doesn't rely on any rewrites of the graphdef - it will run a
+// XlaLaunch this doesn't rely on any rewrites of the graphdef - it will run a
 // vanilla TensorFlow op as long as the bridge supports it.
-//
-// Importantly _XlaLaunch assumes all input and output tensors are on the host,
-// whereas XlacompileOnDemandOp works with tensors in device memory.
 class XlaCompileOnDemandOp : public OpKernel {
  public:
-  explicit XlaCompileOnDemandOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+  explicit XlaCompileOnDemandOp(OpKernelConstruction* ctx)
+      : OpKernel(ctx),
+        platform_info_(XlaPlatformInfoFromDevice(ctx->device())) {}
   void Compute(OpKernelContext* ctx) override;
 
  private:
-  XlaCompiler::Argument CreateCompilerArgument(OpKernelContext* ctx, int64 i);
-  bool ShouldArgumentBeConstant(const OpKernel* op_kernel, int64 argument_idx);
-  bool MustArgumentBeConstant(const OpKernel* op_kernel, int64 argument_idx);
-  Status Compile(OpKernelContext* ctx, const XlaDevice::Metadata& metadata,
-                 const XlaCompiler::CompilationResult** result,
-                 xla::LocalExecutable** executable);
-  Status Run(OpKernelContext* ctx, const XlaDevice::Metadata& metadata,
-             const XlaCompiler::CompilationResult* result,
-             xla::LocalExecutable* executable);
+  absl::Status Compile(const std::vector<XlaCompiler::Argument>& args,
+                       OpKernelContext* ctx,
+                       DeviceCompiler<xla::LocalExecutable, xla::LocalClient>**
+                           xla_device_compiler,
+                       DeviceCompilationProfiler** profiler,
+                       const XlaCompiler::CompilationResult** result,
+                       xla::LocalExecutable** executable);
+
+  absl::Status Compile(const std::vector<XlaCompiler::Argument>& args,
+                       OpKernelContext* ctx,
+                       DeviceCompiler<xla::PjRtLoadedExecutable,
+                                      xla::PjRtClient>** pjrt_device_compiler,
+                       DeviceCompilationProfiler** profiler,
+                       const XlaCompiler::CompilationResult** result,
+                       xla::PjRtLoadedExecutable** executable);
+
+  absl::Status Run(const ResourceVarsSnapshot& variable_args,
+                   const XlaCompiler::CompilationResult* result,
+                   const DeviceCompiler<xla::LocalExecutable, xla::LocalClient>*
+                       xla_device_compiler,
+                   xla::LocalExecutable* executable, OpKernelContext* ctx);
+
+  const XlaPlatformInfo platform_info_;
 };
 
 }  // namespace tensorflow

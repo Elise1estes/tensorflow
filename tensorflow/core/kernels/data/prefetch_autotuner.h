@@ -16,9 +16,15 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_DATA_PREFETCH_AUTOTUNER_H_
 #define TENSORFLOW_CORE_KERNELS_DATA_PREFETCH_AUTOTUNER_H_
 
+#include <cstdint>
+#include <memory>
+#include <optional>
+
+#include "tensorflow/core/framework/model.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
+namespace data {
 
 // PrefetchAutotuner dynamically adjusts the buffer size of a prefetch iterator.
 //
@@ -38,12 +44,17 @@ namespace tensorflow {
 // PrefetchAutotuner is NOT thread safe.
 class PrefetchAutotuner {
  public:
-  static const int64 kAutoTune = -1;
+  explicit PrefetchAutotuner(
+      int64_t initial_buffer_size, int64_t buffer_size_min,
+      std::shared_ptr<model::RamBudgetManager> ram_budget_manager);
 
-  explicit PrefetchAutotuner(int64 initial_buffer_size);
+  int64_t buffer_limit() const { return buffer_limit_; }
 
-  int64 buffer_limit() const { return buffer_limit_; }
-
+  // Reports whether the element size has been set.
+  bool HasElementSize() const { return element_size_bytes_.has_value(); }
+  // Sets the element size to use for predicting memory usage. Element size must
+  // be set before the autotuner can increase the buffer size.
+  void SetElementSize(int64_t element_size_bytes);
   void RecordConsumption(size_t current_buffer_size);
   void RecordEmpty() { RecordConsumption(0); }
 
@@ -62,10 +73,14 @@ class PrefetchAutotuner {
     kDownswing,
   };
 
-  int64 buffer_limit_;
+  int64_t buffer_limit_;
+  // Estimated per-element size.
+  std::optional<int64_t> element_size_bytes_;
   Mode mode_ = Mode::kDisabled;
+  std::shared_ptr<model::RamBudgetManager> ram_budget_manager_;
 };
 
+}  // namespace data
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_KERNELS_DATA_PREFETCH_AUTOTUNER_H_

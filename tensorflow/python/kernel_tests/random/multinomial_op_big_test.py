@@ -14,15 +14,12 @@
 # ==============================================================================
 """Long tests for Multinomial."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import random_seed
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import random_ops
 from tensorflow.python.platform import test
 
@@ -33,14 +30,14 @@ class MultinomialTest(test.TestCase):
   def testLargeDynamicRange(self):
     random_seed.set_random_seed(10)
     counts_by_indices = {}
-    with self.test_session(use_gpu=True) as sess:
+    with self.test_session():
       samples = random_ops.multinomial(
           constant_op.constant([[-30, 0]], dtype=dtypes.float32),
           num_samples=1000000,
           seed=15)
       for _ in range(100):
-        x = sess.run(samples)
-        indices, counts = np.unique(x, return_counts=True)
+        x = self.evaluate(samples)
+        indices, counts = np.unique(x, return_counts=True)  # pylint: disable=unexpected-keyword-arg
         for index, count in zip(indices, counts):
           if index in counts_by_indices.keys():
             counts_by_indices[index] += count
@@ -51,14 +48,14 @@ class MultinomialTest(test.TestCase):
   def testLargeDynamicRange2(self):
     random_seed.set_random_seed(10)
     counts_by_indices = {}
-    with self.test_session(use_gpu=True) as sess:
+    with self.test_session():
       samples = random_ops.multinomial(
           constant_op.constant([[0, -30]], dtype=dtypes.float32),
           num_samples=1000000,
           seed=15)
       for _ in range(100):
-        x = sess.run(samples)
-        indices, counts = np.unique(x, return_counts=True)
+        x = self.evaluate(samples)
+        indices, counts = np.unique(x, return_counts=True)  # pylint: disable=unexpected-keyword-arg
         for index, count in zip(indices, counts):
           if index in counts_by_indices.keys():
             counts_by_indices[index] += count
@@ -66,11 +63,12 @@ class MultinomialTest(test.TestCase):
             counts_by_indices[index] = count
     self.assertEqual(counts_by_indices[0], 100000000)
 
+  @test_util.run_deprecated_v1
   def testLargeDynamicRange3(self):
     random_seed.set_random_seed(10)
     counts_by_indices = {}
     # here the cpu undersamples and won't pass this test either
-    with self.test_session(use_gpu=True) as sess:
+    with self.test_session():
       samples = random_ops.multinomial(
           constant_op.constant([[0, -17]], dtype=dtypes.float32),
           num_samples=1000000,
@@ -79,8 +77,8 @@ class MultinomialTest(test.TestCase):
       # we'll run out of memory if we try to draw 1e9 samples directly
       # really should fit in 12GB of memory...
       for _ in range(100):
-        x = sess.run(samples)
-        indices, counts = np.unique(x, return_counts=True)
+        x = self.evaluate(samples)
+        indices, counts = np.unique(x, return_counts=True)  # pylint: disable=unexpected-keyword-arg
         for index, count in zip(indices, counts):
           if index in counts_by_indices.keys():
             counts_by_indices[index] += count

@@ -26,6 +26,7 @@ limitations under the License.
 #include "tensorflow/tools/graph_transforms/transform_utils.h"
 #if !defined(PLATFORM_WINDOWS)
 #include <pwd.h>
+#include <unistd.h>
 #endif
 
 namespace tensorflow {
@@ -56,7 +57,7 @@ Status ParseTransformParameters(const string& transforms_string,
       if (remaining.empty()) {
         // Nothing remains after consuming trailing spaces.
         // Consumed all transform parameter string without errors.
-        return Status::OK();
+        return OkStatus();
       }
       // See if we have a valid transform name.
       const bool found_transform_name =
@@ -65,19 +66,19 @@ Status ParseTransformParameters(const string& transforms_string,
               .GetResult(&remaining, &transform_name);
       if (!found_transform_name) {
         return errors::InvalidArgument("Looking for transform name, but found ",
-                                       remaining.ToString().c_str());
+                                       string(remaining).c_str());
       }
       if (Scanner(remaining).OneLiteral("(").GetResult(&remaining, &match)) {
         state = TRANSFORM_PARAM_NAME;
       } else {
         // Add a transform with no parameters.
-        params_list->push_back({transform_name.ToString(), func_parameters});
+        params_list->push_back({string(transform_name), func_parameters});
         transform_name = "";
         state = TRANSFORM_NAME;
       }
     } else if (state == TRANSFORM_PARAM_NAME) {
       if (Scanner(remaining).OneLiteral(")").GetResult(&remaining, &match)) {
-        params_list->push_back({transform_name.ToString(), func_parameters});
+        params_list->push_back({string(transform_name), func_parameters});
         transform_name = "";
         state = TRANSFORM_NAME;
       } else {
@@ -92,13 +93,13 @@ Status ParseTransformParameters(const string& transforms_string,
         if (!found_parameter_name) {
           return errors::InvalidArgument(
               "Looking for parameter name, but found ",
-              remaining.ToString().c_str());
+              string(remaining).c_str());
         }
         if (Scanner(remaining).OneLiteral("=").GetResult(&remaining, &match)) {
           state = TRANSFORM_PARAM_VALUE;
         } else {
           return errors::InvalidArgument("Looking for =, but found ",
-                                         remaining.ToString().c_str());
+                                         string(remaining).c_str());
         }
       }
     } else if (state == TRANSFORM_PARAM_VALUE) {
@@ -120,17 +121,16 @@ Status ParseTransformParameters(const string& transforms_string,
       }
       if (!found_parameter_value) {
         return errors::InvalidArgument("Looking for parameter name, but found ",
-                                       remaining.ToString().c_str());
+                                       string(remaining).c_str());
       }
-      func_parameters[parameter_name.ToString()].push_back(
-          parameter_value.ToString());
+      func_parameters[string(parameter_name)].emplace_back(parameter_value);
       // Eat up any trailing quotes.
       Scanner(remaining).ZeroOrOneLiteral("\"").GetResult(&remaining, &match);
       Scanner(remaining).ZeroOrOneLiteral("'").GetResult(&remaining, &match);
       state = TRANSFORM_PARAM_NAME;
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 std::string ExpandPath(const std::string& path_string) {
@@ -141,7 +141,7 @@ std::string ExpandPath(const std::string& path_string) {
     return path_string;
   }
 
-  const char* home = NULL;
+  const char* home = nullptr;
   std::string::size_type prefix = path_string.find_first_of('/');
   if (path_string.length() == 1 || prefix == 1) {
     // The value of $HOME, e.g., ~/foo
@@ -240,7 +240,7 @@ int ParseFlagsAndTransformGraph(int argc, char* argv[], bool init_main) {
       ParseTransformParameters(transforms_string, &transform_params);
   if (!parse_status.ok()) {
     LOG(ERROR) << "Failed to parse --transform argument, error was "
-               << parse_status.error_message();
+               << parse_status.message();
     return -1;
   }
   if (transform_params.empty()) {
@@ -252,7 +252,7 @@ int ParseFlagsAndTransformGraph(int argc, char* argv[], bool init_main) {
   Status load_status = LoadTextOrBinaryGraphFile(in_graph, &graph_def);
   if (!load_status.ok()) {
     LOG(ERROR) << "Loading graph '" << in_graph_string << "' failed with "
-               << load_status.error_message();
+               << load_status.message();
     LOG(ERROR) << usage;
     return -1;
   }
@@ -261,7 +261,7 @@ int ParseFlagsAndTransformGraph(int argc, char* argv[], bool init_main) {
       TransformGraph(inputs, outputs, transform_params, &graph_def);
 
   if (!transform_result.ok()) {
-    LOG(ERROR) << transform_result.error_message();
+    LOG(ERROR) << transform_result.message();
     LOG(ERROR) << usage;
     return -1;
   }
@@ -274,7 +274,7 @@ int ParseFlagsAndTransformGraph(int argc, char* argv[], bool init_main) {
   }
   if (!save_status.ok()) {
     LOG(ERROR) << "Saving graph '" << out_graph_string << "' failed with "
-               << save_status.error_message();
+               << save_status.message();
     return -1;
   }
 
@@ -287,7 +287,7 @@ Status ShouldIgnoreErrors(const TransformFuncParameters& transform_params,
   if (transform_params.count("ignore_errors") &&
       (!transform_params.at("ignore_errors").empty())) {
     const string& ignore_errors_string =
-        str_util::Lowercase(transform_params.at("ignore_errors").at(0));
+        absl::AsciiStrToLower(transform_params.at("ignore_errors").at(0));
     if (ignore_errors_string == "true") {
       *ignore_errors = true;
     } else if (ignore_errors_string == "false") {
@@ -298,7 +298,7 @@ Status ShouldIgnoreErrors(const TransformFuncParameters& transform_params,
           ignore_errors_string);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status TransformGraph(const std::vector<string>& inputs,
@@ -331,7 +331,7 @@ Status TransformGraph(const std::vector<string>& inputs,
     if (!transform_result.ok()) {
       if (ignore_errors) {
         LOG(ERROR) << transform_name << ": Ignoring error "
-                   << transform_result.error_message();
+                   << transform_result.message();
         transformed_graph_def = *graph_def;
       } else {
         return transform_result;
@@ -343,7 +343,7 @@ Status TransformGraph(const std::vector<string>& inputs,
 
     *graph_def = transformed_graph_def;
   }
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace graph_transforms
 }  // namespace tensorflow

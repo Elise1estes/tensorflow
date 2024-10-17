@@ -13,13 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/cc/ops/string_ops.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/fuzzing/fuzz_session.h"
 
 namespace tensorflow {
 namespace fuzzing {
 
-class FuzzEncodeBase64 : public FuzzSession {
+class FuzzEncodeBase64 : public FuzzStringInputOp {
   SINGLE_INPUT_OP_BUILDER(DT_STRING, EncodeBase64);
 };
 

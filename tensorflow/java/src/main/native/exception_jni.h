@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_JAVA_EXCEPTION_JNI_H_
-#define TENSORFLOW_JAVA_EXCEPTION_JNI_H_
+#ifndef TENSORFLOW_JAVA_SRC_MAIN_NATIVE_EXCEPTION_JNI_H_
+#define TENSORFLOW_JAVA_SRC_MAIN_NATIVE_EXCEPTION_JNI_H_
 
 #include <jni.h>
 
@@ -22,7 +22,7 @@ limitations under the License.
 extern "C" {
 #endif
 
-struct TF_Status;
+struct TSL_Status;
 
 extern const char kIllegalArgumentException[];
 extern const char kIllegalStateException[];
@@ -34,9 +34,9 @@ void throwException(JNIEnv* env, const char* clazz, const char* fmt, ...);
 
 // If status is not TF_OK, then throw an appropriate exception.
 // Returns true iff TF_GetCode(status) == TF_OK.
-bool throwExceptionIfNotOK(JNIEnv* env, const TF_Status* status);
+bool throwExceptionIfNotOK(JNIEnv* env, const TSL_Status* status);
 
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
-#endif  // TENSORFLOW_JAVA_EXCEPTION_JNI_H_
+#endif  // TENSORFLOW_JAVA_SRC_MAIN_NATIVE_EXCEPTION_JNI_H_

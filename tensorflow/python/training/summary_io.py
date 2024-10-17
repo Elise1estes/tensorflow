@@ -14,10 +14,6 @@
 # ==============================================================================
 """Reads Summaries from and writes Summaries to event files."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 # pylint: disable=unused-import
 from tensorflow.python.summary.summary_iterator import summary_iterator
 from tensorflow.python.summary.writer.writer import FileWriter as _FileWriter
@@ -56,9 +52,9 @@ class SummaryWriter(_FileWriter):
     ```python
     ...create a graph...
     # Launch the graph in a session.
-    sess = tf.Session()
+    sess = tf.compat.v1.Session()
     # Create a summary writer, add the 'graph' to the event file.
-    writer = tf.summary.FileWriter(<some-directory>, sess.graph)
+    writer = tf.compat.v1.summary.FileWriter(<some-directory>, sess.graph)
     ```
 
     The other arguments to the constructor control the asynchronous writes to

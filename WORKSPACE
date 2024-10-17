@@ -1,97 +1,119 @@
+# buildifier: disable=load-on-top
+
 workspace(name = "org_tensorflow")
 
+# buildifier: disable=load-on-top
+
+# We must initialize hermetic python first.
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
 http_archive(
-    name = "io_bazel_rules_closure",
-    sha256 = "a38539c5b5c358548e75b44141b4ab637bba7c4dc02b46b1f62a96d6433f56ae",
-    strip_prefix = "rules_closure-dbb96841cc0a5fb2664c37822803b06dab20c7d1",
-    urls = [
-        "https://mirror.bazel.build/github.com/bazelbuild/rules_closure/archive/dbb96841cc0a5fb2664c37822803b06dab20c7d1.tar.gz",
-        "https://github.com/bazelbuild/rules_closure/archive/dbb96841cc0a5fb2664c37822803b06dab20c7d1.tar.gz",  # 2018-04-13
-    ],
+    name = "rules_java",
+    sha256 = "c73336802d0b4882e40770666ad055212df4ea62cfa6edf9cb0f9d29828a0934",
+    url = "https://github.com/bazelbuild/rules_java/releases/download/5.3.5/rules_java-5.3.5.tar.gz",
 )
 
-load("@io_bazel_rules_closure//closure:defs.bzl", "closure_repositories")
-
-closure_repositories()
-
-# We must check the bazel version before trying to parse any other BUILD
-# files, in case the parsing of those build files depends on the bazel
-# version we require here.
-load("//tensorflow:version_check.bzl", "check_bazel_version_at_least")
-check_bazel_version_at_least("0.10.0")
-
-load("//tensorflow:workspace.bzl", "tf_workspace")
-
-# Uncomment and update the paths in these entries to build the Android demo.
-#android_sdk_repository(
-#    name = "androidsdk",
-#    api_level = 23,
-#    # Ensure that you have the build_tools_version below installed in the
-#    # SDK manager as it updates periodically.
-#    build_tools_version = "26.0.1",
-#    # Replace with path to Android SDK on your system
-#    path = "<PATH_TO_SDK>",
-#)
+# Initialize the TensorFlow repository and all dependencies.
 #
-#android_ndk_repository(
-#    name="androidndk",
-#    path="<PATH_TO_NDK>",
-#    # This needs to be 14 or higher to compile TensorFlow.
-#    # Please specify API level to >= 21 to build for 64-bit
-#    # archtectures or the Android NDK will automatically select biggest
-#    # API level that it supports without notice.
-#    # Note that the NDK version is not the API level.
-#    api_level=14)
+# The cascade of load() statements and tf_workspace?() calls works around the
+# restriction that load() statements need to be at the top of .bzl files.
+# E.g. we can not retrieve a new repository with http_archive and then load()
+# a macro from that repository in the same file.
+load("@//tensorflow:workspace3.bzl", "tf_workspace3")
 
-# Please add all new TensorFlow dependencies in workspace.bzl.
-tf_workspace()
+tf_workspace3()
 
-new_http_archive(
-    name = "inception_v1",
-    build_file = "models.BUILD",
-    sha256 = "7efe12a8363f09bc24d7b7a450304a15655a57a7751929b2c1593a71183bb105",
-    urls = [
-        "http://storage.googleapis.com/download.tensorflow.org/models/inception_v1.zip",
-        "http://download.tensorflow.org/models/inception_v1.zip",
+# Initialize hermetic Python
+load("@local_tsl//third_party/py:python_init_rules.bzl", "python_init_rules")
+
+python_init_rules()
+
+load("@local_tsl//third_party/py:python_init_repositories.bzl", "python_init_repositories")
+
+python_init_repositories(
+    default_python_version = "system",
+    local_wheel_dist_folder = "dist",
+    local_wheel_inclusion_list = [
+        "tensorflow*",
+        "tf_nightly*",
     ],
+    local_wheel_workspaces = ["//:WORKSPACE"],
+    requirements = {
+        "3.9": "//:requirements_lock_3_9.txt",
+        "3.10": "//:requirements_lock_3_10.txt",
+        "3.11": "//:requirements_lock_3_11.txt",
+        "3.12": "//:requirements_lock_3_12.txt",
+    },
 )
 
-new_http_archive(
-    name = "mobile_ssd",
-    build_file = "models.BUILD",
-    sha256 = "bddd81ea5c80a97adfac1c9f770e6f55cbafd7cce4d3bbe15fbeb041e6b8f3e8",
-    urls = [
-        "http://storage.googleapis.com/download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_android_export.zip",
-        "http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_android_export.zip",
-    ],
+load("@local_tsl//third_party/py:python_init_toolchains.bzl", "python_init_toolchains")
+
+python_init_toolchains()
+
+load("@local_tsl//third_party/py:python_init_pip.bzl", "python_init_pip")
+
+python_init_pip()
+
+load("@pypi//:requirements.bzl", "install_deps")
+
+install_deps()
+# End hermetic Python initialization
+
+load("@//tensorflow:workspace2.bzl", "tf_workspace2")
+
+tf_workspace2()
+
+load("@//tensorflow:workspace1.bzl", "tf_workspace1")
+
+tf_workspace1()
+
+load("@//tensorflow:workspace0.bzl", "tf_workspace0")
+
+tf_workspace0()
+
+load(
+    "@local_tsl//third_party/gpus/cuda/hermetic:cuda_json_init_repository.bzl",
+    "cuda_json_init_repository",
 )
 
-new_http_archive(
-    name = "mobile_multibox",
-    build_file = "models.BUILD",
-    sha256 = "859edcddf84dddb974c36c36cfc1f74555148e9c9213dedacf1d6b613ad52b96",
-    urls = [
-        "http://storage.googleapis.com/download.tensorflow.org/models/mobile_multibox_v1a.zip",
-        "http://download.tensorflow.org/models/mobile_multibox_v1a.zip",
-    ],
+cuda_json_init_repository()
+
+load(
+    "@cuda_redist_json//:distributions.bzl",
+    "CUDA_REDISTRIBUTIONS",
+    "CUDNN_REDISTRIBUTIONS",
+)
+load(
+    "@local_tsl//third_party/gpus/cuda/hermetic:cuda_redist_init_repositories.bzl",
+    "cuda_redist_init_repositories",
+    "cudnn_redist_init_repository",
 )
 
-new_http_archive(
-    name = "stylize",
-    build_file = "models.BUILD",
-    sha256 = "3d374a730aef330424a356a8d4f04d8a54277c425e274ecb7d9c83aa912c6bfa",
-    urls = [
-        "http://storage.googleapis.com/download.tensorflow.org/models/stylize_v1.zip",
-        "http://download.tensorflow.org/models/stylize_v1.zip",
-    ],
+cuda_redist_init_repositories(
+    cuda_redistributions = CUDA_REDISTRIBUTIONS,
 )
 
-new_http_archive(
-    name = "speech_commands",
-    build_file = "models.BUILD",
-    sha256 = "c3ec4fea3158eb111f1d932336351edfe8bd515bb6e87aad4f25dbad0a600d0c",
-    urls = [
-        "http://storage.googleapis.com/download.tensorflow.org/models/speech_commands_v0.01.zip",
-        "http://download.tensorflow.org/models/speech_commands_v0.01.zip",
-    ],
+cudnn_redist_init_repository(
+    cudnn_redistributions = CUDNN_REDISTRIBUTIONS,
 )
+
+load(
+    "@local_tsl//third_party/gpus/cuda/hermetic:cuda_configure.bzl",
+    "cuda_configure",
+)
+
+cuda_configure(name = "local_config_cuda")
+
+load(
+    "@local_tsl//third_party/nccl/hermetic:nccl_redist_init_repository.bzl",
+    "nccl_redist_init_repository",
+)
+
+nccl_redist_init_repository()
+
+load(
+    "@local_tsl//third_party/nccl/hermetic:nccl_configure.bzl",
+    "nccl_configure",
+)
+
+nccl_configure(name = "local_config_nccl")

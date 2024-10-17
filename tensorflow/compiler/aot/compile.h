@@ -21,9 +21,10 @@ limitations under the License.
 
 #include "tensorflow/compiler/aot/flags.h"
 #include "tensorflow/compiler/tf2xla/tf2xla.pb.h"
-#include "tensorflow/compiler/xla/service/cpu/cpu_compiler.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "xla/service/cpu/cpu_compiler.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
 namespace tfcompile {
@@ -33,17 +34,20 @@ namespace tfcompile {
 struct CompileResult {
   // Contains object file and meta-info.
   std::unique_ptr<xla::cpu::CpuAotCompilationResult> aot;
-  xla::ProgramShape program_shape;  // Static shape of args and results.
-  string entry_point;               // Name of generated function.
-  int pointer_size = 0;             // Size of a pointer in bytes.
+  xla::ProgramShapeProto program_shape;  // Static shape of args and results.
+  string entry_point;                    // Name of generated function.
+  int pointer_size = 0;                  // Size of a pointer in bytes.
 };
 
 // CompileGraph compiles the graph_def into an object file containing a function
 // that performs the graph operations.
 //
 // The XLA compilation options are specified in the flags.
-Status CompileGraph(const GraphDef& graph_def, const tf2xla::Config& config,
+Status CompileGraph(GraphDef graph_def, const tf2xla::Config& config,
                     const MainFlags& flags, CompileResult* compile_result);
+
+// The full compilation method, for reuse in a library setting.
+Status Main(const MainFlags& flags);
 
 }  // namespace tfcompile
 }  // namespace tensorflow

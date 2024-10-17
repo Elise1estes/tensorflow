@@ -27,22 +27,45 @@ limitations under the License.
 #define TENSORFLOW_CORE_KERNELS_BATCHING_UTIL_BATCH_SCHEDULER_H_
 
 #include <stddef.h>
+
 #include <algorithm>
-#include <functional>
+#include <atomic>
+#include <cstddef>
+#include <deque>
+#include <iterator>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/platform/types.h"
+#include "tsl/platform/criticality.h"
+#include "tsl/profiler/lib/traceme.h"
 
 namespace tensorflow {
 namespace serving {
+
+const absl::string_view kLowPriorityPaddingWithMaxBatchSizeAttrValue =
+    "low_priority_padding_with_max_batch_size";
+const absl::string_view kLowPriorityPaddingWithNextAllowedBatchSizeAttrValue =
+    "low_priority_padding_with_next_allowed_batch_size";
+const absl::string_view kPriorityIsolationAttrValue = "priority_isolation";
+
+enum class MixedPriorityBatchingPolicy {
+  kLowPriorityPaddingWithMaxBatchSize,
+  kLowPriorityPaddingWithNextAllowedBatchSize,
+  kPriorityIsolation
+};
+
+absl::StatusOr<MixedPriorityBatchingPolicy> GetMixedPriorityBatchingPolicy(
+    absl::string_view attr_value);
 
 // The abstract superclass for a unit of work to be done as part of a batch.
 //
@@ -62,7 +85,164 @@ class BatchTask {
   // Returns the size of the task, in terms of how much it contributes to the
   // size of a batch. (A batch's size is the sum of its task sizes.)
   virtual size_t size() const = 0;
+
+  // Returns the criticality of associated with the task. It defaults to
+  // kCritical.
+  virtual tsl::criticality::Criticality criticality() const {
+    return tsl::criticality::Criticality::kCritical;
+  }
 };
+
+// A thread-safe collection of BatchTasks. Tasks can be either added or removed
+// from the TaskQueue. It is mainly used to hold the registered tasks without
+// forming batches, so that the batches can be formed more flexibly right before
+// they get scheduled for execution.
+//
+// Type parameter TaskType must be a subclass of BatchTask.
+template <typename TaskType>
+class TaskQueue {
+ public:
+  TaskQueue() = default;
+
+  struct TaskWrapper {
+    std::unique_ptr<TaskType> task;
+    uint64 start_time_micros;
+
+    TaskWrapper(std::unique_ptr<TaskType> task, uint64 start_time_micros)
+        : task(std::move(task)), start_time_micros(start_time_micros) {}
+  };
+
+  // Appends a task to the end of the queue with the given start time.
+  void AddTask(std::unique_ptr<TaskType> task, uint64 start_time_micros);
+
+  // Removes a task from the front of the queue, i.e., the oldest task in the
+  // queue.
+  std::unique_ptr<TaskType> RemoveTask();
+
+  // Removes tasks from the front of the queue as many as possible as long as
+  // the sum of sizes of the removed tasks don't exceed the 'size' given as the
+  // argument.
+  std::vector<std::unique_ptr<TaskType>> RemoveTask(int size);
+
+  // Returns the start time of the earliest task in the queue. If the queue is
+  // empty, return the null value.
+  std::optional<uint64> EarliestTaskStartTime() const;
+
+  // Returns true iff the queue contains 0 tasks.
+  bool empty() const;
+
+  // Returns the number of tasks in the queue.
+  int num_tasks() const;
+
+  // Returns the sum of the task sizes.
+  int size() const;
+
+ private:
+  mutable mutex mu_;
+
+  // Tasks in the queue.
+  std::deque<TaskWrapper> tasks_ TF_GUARDED_BY(mu_);
+
+  // The sum of the sizes of the tasks in 'tasks_'.
+  int size_ TF_GUARDED_BY(mu_) = 0;
+
+  // Whether the queue is empty.
+  std::atomic<bool> empty_ TF_GUARDED_BY(mu_){true};
+
+  // The copy constructor and the assign op are deleted.
+  TaskQueue(const TaskQueue&) = delete;
+  void operator=(const TaskQueue&) = delete;
+};
+
+template <typename TaskType>
+void TaskQueue<TaskType>::AddTask(std::unique_ptr<TaskType> task,
+                                  uint64 start_time_micros) {
+  {
+    mutex_lock l(mu_);
+    size_ += task->size();
+    tasks_.emplace_back(std::move(task), start_time_micros);
+    empty_.store(false);
+  }
+}
+
+template <typename TaskType>
+std::unique_ptr<TaskType> TaskQueue<TaskType>::RemoveTask() {
+  {
+    mutex_lock l(mu_);
+    if (tasks_.empty()) {
+      return nullptr;
+    }
+    std::unique_ptr<TaskType> task = std::move(tasks_.front().task);
+    size_ -= task->size();
+    tasks_.pop_front();
+    if (tasks_.empty()) {
+      empty_.store(true);
+    }
+    return task;
+  }
+}
+
+template <typename TaskType>
+std::vector<std::unique_ptr<TaskType>> TaskQueue<TaskType>::RemoveTask(
+    int size) {
+  {
+    mutex_lock l(mu_);
+    if (tasks_.empty()) {
+      return {};
+    }
+
+    int size_lower_bound = size_ - size;
+    std::vector<std::unique_ptr<TaskType>> remove_tasks;
+    while (!tasks_.empty() &&
+           size_ - static_cast<int>(tasks_.front().task->size()) >=
+               size_lower_bound) {
+      size_ -= static_cast<int>(tasks_.front().task->size());
+      remove_tasks.push_back(std::move(tasks_.front().task));
+      tasks_.pop_front();
+      if (tasks_.empty()) {
+        empty_.store(true);
+      }
+    }
+    return remove_tasks;
+  }
+}
+
+template <typename TaskType>
+bool TaskQueue<TaskType>::empty() const {
+  {
+    mutex_lock l(mu_);
+    return empty_.load();
+  }
+}
+
+template <typename TaskType>
+std::optional<uint64> TaskQueue<TaskType>::EarliestTaskStartTime() const {
+  {
+    mutex_lock l(mu_);
+
+    if (tasks_.empty()) {
+      return std::nullopt;
+    }
+
+    return tasks_.front().start_time_micros;
+  }
+}
+
+template <typename TaskType>
+int TaskQueue<TaskType>::num_tasks() const {
+  {
+    mutex_lock l(mu_);
+    return tasks_.size();
+  }
+}
+
+template <typename TaskType>
+int TaskQueue<TaskType>::size() const {
+  {
+    mutex_lock l(mu_);
+    return size_;
+  }
+}
 
 // A thread-safe collection of BatchTasks, to be executed together in some
 // fashion.
@@ -71,13 +251,14 @@ class BatchTask {
 // accept new tasks; a closed one cannot. A batch is monotonic: initially it is
 // open and tasks can be added to it; then it is closed and its set of tasks
 // remains fixed for the remainder of its life. A closed batch cannot be re-
-// opened. Tasks can never be removed from a batch.
+// opened.
 //
 // Type parameter TaskType must be a subclass of BatchTask.
 template <typename TaskType>
 class Batch {
  public:
-  Batch() = default;
+  Batch();
+  explicit Batch(uint64 traceme_context_id);
   virtual ~Batch();  // Blocks until the batch is closed.
 
   // Appends 'task' to the batch. After calling AddTask(), the newly-added task
@@ -89,6 +270,10 @@ class Batch {
   // empty.
   std::unique_ptr<TaskType> RemoveTask();
 
+  // Caller takes ownership of returned tasks.
+  // Must be called after a batch is closed.
+  std::vector<std::unique_ptr<TaskType>> RemoveAllTasks();
+
   // Returns the number of tasks in the batch.
   int num_tasks() const;
 
@@ -99,6 +284,8 @@ class Batch {
   const TaskType& task(int i) const;
 
   // Returns a pointer to the ith task (in terms of insertion order).
+  //
+  // Caller doesn't take ownership.
   TaskType* mutable_task(int i);
 
   // Returns the sum of the task sizes.
@@ -113,19 +300,37 @@ class Batch {
   // Marks the batch as closed. Dies if called more than once.
   void Close();
 
+  // Returns the TraceMe context id of this batch.
+  uint64 traceme_context_id() const;
+
+  // Attempts to trim this batch to a new, smaller size (not to be confused with
+  // the number of tasks in the batch). On success, the trimmed tasks go into
+  // 'out_trimmed_tasks' in the same order the tasks were in this batch.
+  //
+  // The method might not succeed if it needs to split a large task to hit the
+  // correct size.
+  void TryTrimToNewSize(
+      int new_size, std::vector<std::unique_ptr<TaskType>>& out_trimmed_tasks);
+
  private:
   mutable mutex mu_;
 
   // The tasks in the batch.
-  std::vector<std::unique_ptr<TaskType>> tasks_ GUARDED_BY(mu_);
+  std::vector<std::unique_ptr<TaskType>> tasks_ TF_GUARDED_BY(mu_);
 
   // The sum of the sizes of the tasks in 'tasks_'.
-  size_t size_ GUARDED_BY(mu_) = 0;
+  size_t size_ TF_GUARDED_BY(mu_) = 0;
+
+  std::atomic<bool> empty_ TF_GUARDED_BY(mu_){true};
 
   // Whether the batch has been closed.
   Notification closed_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(Batch);
+  // The TracMe context id.
+  const uint64 traceme_context_id_;
+
+  Batch(const Batch&) = delete;
+  void operator=(const Batch&) = delete;
 };
 
 // An abstract batch scheduler class. Collects individual tasks into batches,
@@ -188,6 +393,13 @@ class BatchScheduler {
 // Implementation details follow. API users need not read.
 
 template <typename TaskType>
+Batch<TaskType>::Batch() : Batch(0) {}
+
+template <typename TaskType>
+Batch<TaskType>::Batch(uint64 traceme_context_id)
+    : traceme_context_id_(traceme_context_id) {}
+
+template <typename TaskType>
 Batch<TaskType>::~Batch() {
   WaitUntilClosed();
 }
@@ -199,6 +411,22 @@ void Batch<TaskType>::AddTask(std::unique_ptr<TaskType> task) {
     mutex_lock l(mu_);
     size_ += task->size();
     tasks_.push_back(std::move(task));
+    empty_.store(false);
+  }
+}
+
+template <typename TaskType>
+std::vector<std::unique_ptr<TaskType>> Batch<TaskType>::RemoveAllTasks() {
+  DCHECK(IsClosed());
+  {
+    mutex_lock l(mu_);
+    size_ = 0;
+    empty_.store(true);
+    std::vector<std::unique_ptr<TaskType>> tasks_to_return;
+
+    // Swapping vector takes constant time.
+    tasks_to_return.swap(tasks_);
+    return std::move(tasks_to_return);
   }
 }
 
@@ -212,6 +440,9 @@ std::unique_ptr<TaskType> Batch<TaskType>::RemoveTask() {
     std::unique_ptr<TaskType> task = std::move(tasks_.back());
     size_ -= task->size();
     tasks_.pop_back();
+    if (tasks_.empty()) {
+      empty_.store(true);
+    }
     return task;
   }
 }
@@ -225,11 +456,13 @@ int Batch<TaskType>::num_tasks() const {
 }
 
 template <typename TaskType>
-bool Batch<TaskType>::empty() const {
-  {
-    mutex_lock l(mu_);
-    return tasks_.empty();
-  }
+bool Batch<TaskType>::empty() const TF_NO_THREAD_SAFETY_ANALYSIS {
+  // tracer is added to zoom in about this method.
+  // TODO(b/160249203): Remove tracer after evaluating a change to reduce
+  // lock contention and cpu usage (which is observed in profiler and
+  // very data-driven).
+  tsl::profiler::TraceMe tracer("BatchTask::empty");
+  return empty_.load();
 }
 
 template <typename TaskType>
@@ -273,6 +506,50 @@ void Batch<TaskType>::WaitUntilClosed() const {
 template <typename TaskType>
 void Batch<TaskType>::Close() {
   closed_.Notify();
+}
+
+template <typename TaskType>
+uint64 Batch<TaskType>::traceme_context_id() const {
+  return traceme_context_id_;
+}
+
+template <typename TaskType>
+void Batch<TaskType>::TryTrimToNewSize(
+    int new_size, std::vector<std::unique_ptr<TaskType>>& out_trimmed_tasks) {
+  mutex_lock l(mu_);
+  DCHECK_GT(new_size, 0);
+  DCHECK_LT(new_size, size_);
+  DCHECK(out_trimmed_tasks.empty());
+
+  // Index of the first task to trim away. It is possible that it is the index
+  // of a task of size larger than 1 that will have to be split in order to get
+  // to the target new_size.
+  int32 first_task_to_move = 0;
+  // The sum of sizes of tasks i, where i < first_task_to_move.
+  int32 size_of_previous_tasks = 0;
+  while (size_of_previous_tasks + tasks_[first_task_to_move]->size() <=
+         new_size) {
+    size_of_previous_tasks += tasks_[first_task_to_move]->size();
+    first_task_to_move++;
+    // The loop must always stop before this check is tripped because new_size
+    // must never be larger than the size of the batch.
+    DCHECK_LT(first_task_to_move, tasks_.size());
+  }
+
+  // Check whether task 'first_task_to_move' will have to be split.
+  if (size_of_previous_tasks < new_size) {
+    // TODO: b/325954758 - Consider supporting splitting large tasks and then
+    // drop 'Try' from the method name.
+    return;
+  }
+  DCHECK_EQ(size_of_previous_tasks, new_size);
+
+  // Actually trim.
+  out_trimmed_tasks.reserve(tasks_.size() - first_task_to_move);
+  std::move(tasks_.begin() + first_task_to_move, tasks_.end(),
+            std::back_inserter(out_trimmed_tasks));
+  tasks_.resize(first_task_to_move);
+  size_ = new_size;
 }
 
 }  // namespace serving

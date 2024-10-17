@@ -16,152 +16,69 @@ limitations under the License.
 // This file defines helper routines for XLA compilation.
 
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
-#include "tensorflow/compiler/tf2xla/lib/util.h"
 
+#include <map>
+#include <string>
+
+#include "absl/synchronization/notification.h"
+#include "absl/types/span.h"
+#include "tensorflow/compiler/tf2xla/lib/util.h"
 #include "tensorflow/compiler/tf2xla/literal_util.h"
+#include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/tf2xla/xla_context.h"
-#include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
-#include "tensorflow/compiler/xla/client/computation_builder.h"
-#include "tensorflow/compiler/xla/types.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/service/gpu/gpu_executable_run_options.h"
+#include "xla/service/gpu/runtime/nccl_clique_key.h"
+#include "xla/stream_executor/stream.h"
+#include "xla/stream_executor/stream_executor.h"
+#include "xla/types.h"
+#include "tensorflow/core/common_runtime/device_mgr.h"
+#include "tensorflow/core/framework/collective.h"
+#include "tensorflow/core/framework/device.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/lib/gtl/array_slice.h"
 
 namespace tensorflow {
 
-namespace {
-
-Status ArgMinMax(xla::ComputationBuilder* builder, XlaOpKernelContext* ctx,
-                 const xla::ComputationDataHandle& input,
-                 const TensorShape& input_shape, DataType input_type,
-                 DataType output_type, int axis, bool is_min,
-                 xla::ComputationDataHandle* argminmax) {
-  xla::ComputationDataHandle init_value;
-  const xla::Computation* reducer;
-  if (is_min) {
-    init_value = XlaHelpers::MaxValue(builder, input_type);
-    reducer = ctx->GetOrCreateMin(input_type);
-  } else {
-    init_value = XlaHelpers::MinValue(builder, input_type);
-    reducer = ctx->GetOrCreateMax(input_type);
-  }
-
-  xla::PrimitiveType xla_output_type;
-  TF_RETURN_IF_ERROR(DataTypeToPrimitiveType(output_type, &xla_output_type));
-
-  xla::ComputationDataHandle input_max = builder->Reduce(
-      input, init_value, *reducer, /*dimensions_to_reduce=*/{axis});
-  std::vector<int64> broadcast_dims(input_shape.dims() - 1);
-  std::iota(broadcast_dims.begin(), broadcast_dims.begin() + axis, 0);
-  std::iota(broadcast_dims.begin() + axis, broadcast_dims.end(), axis + 1);
-  // Compute a mask that has 1s for elements equal to the maximum.
-  xla::ComputationDataHandle partial_mask = builder->ConvertElementType(
-      builder->Eq(input, input_max, broadcast_dims), xla_output_type);
-
-  // In order to make identity elements for a bitwise And, we:
-  //   Left shift the 1 to the leftmost bit, yielding 0x10...0
-  //   Arithmetic right shift the 1 back to the rightmost bit, yielding
-  //   0xFF...F
-  int32 bits_in_type =
-      xla::ShapeUtil::ByteSizeOfPrimitiveType(xla_output_type) * 8 - 1;
-  xla::ComputationDataHandle shift_amount =
-      XlaHelpers::IntegerLiteral(builder, output_type, bits_in_type);
-  xla::ComputationDataHandle full_mask = builder->ShiftRightArithmetic(
-      builder->ShiftLeft(partial_mask, shift_amount), shift_amount);
-
-  // And with the vector [0, 1, 2, ...] to convert each 0xFF...F into its
-  // index.
-  xla::ComputationDataHandle iota;
-
-  const int64 axis_size = input_shape.dim_size(axis);
-  TF_RETURN_IF_ERROR(XlaHelpers::Iota(builder, output_type, axis_size, &iota));
-  xla::ComputationDataHandle product =
-      builder->And(full_mask, iota, /*broadcast_dimensions=*/{axis});
-
-  // If there are multiple maximum elements, choose the one with the highest
-  // index.
-  xla::ComputationDataHandle output =
-      builder->Reduce(product, XlaHelpers::MinValue(builder, output_type),
-                      *ctx->GetOrCreateMax(output_type),
-                      /*dimensions_to_reduce=*/{axis});
-  *argminmax = output;
-  return Status::OK();
-}
-
-}  // namespace
-
-xla::ComputationDataHandle XlaHelpers::MinValue(xla::ComputationBuilder* b,
-                                                DataType data_type) {
+xla::XlaOp XlaHelpers::Zero(xla::XlaBuilder* b, DataType data_type) {
   xla::PrimitiveType type;
   TF_CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
-  return b->ConstantLiteral(xla::Literal::MinValue(type));
+  return xla::ConstantLiteral(b, xla::LiteralUtil::Zero(type));
 }
 
-xla::ComputationDataHandle XlaHelpers::MaxValue(xla::ComputationBuilder* b,
-                                                DataType data_type) {
+xla::XlaOp XlaHelpers::One(xla::XlaBuilder* b, DataType data_type) {
   xla::PrimitiveType type;
   TF_CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
-  return b->ConstantLiteral(xla::Literal::MaxValue(type));
+  return xla::ConstantLiteral(b, xla::LiteralUtil::One(type));
 }
 
-xla::ComputationDataHandle XlaHelpers::Zero(xla::ComputationBuilder* b,
-                                            DataType data_type) {
-  xla::PrimitiveType type;
-  TF_CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
-  return b->ConstantLiteral(xla::Literal::Zero(type));
-}
-
-xla::ComputationDataHandle XlaHelpers::One(xla::ComputationBuilder* b,
-                                           DataType data_type) {
-  xla::PrimitiveType type;
-  TF_CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
-  return b->ConstantLiteral(xla::Literal::One(type));
-}
-
-xla::ComputationDataHandle XlaHelpers::Epsilon(xla::ComputationBuilder* b,
-                                               DataType data_type) {
-  switch (data_type) {
-    case DT_HALF:
-      return b->ConstantR0<Eigen::half>(
-          static_cast<Eigen::half>(Eigen::NumTraits<Eigen::half>::epsilon()));
-    case DT_BFLOAT16:
-      return b->ConstantR0<bfloat16>(bfloat16::epsilon());
-    case DT_FLOAT:
-      return b->ConstantR0<float>(std::numeric_limits<float>::epsilon());
-    case DT_DOUBLE:
-      return b->ConstantR0<double>(std::numeric_limits<double>::epsilon());
-    default:
-      LOG(FATAL) << "Unsupported type in XlaHelpers::Epsilon: "
-                 << DataTypeString(data_type);
-  }
-}
-
-xla::ComputationDataHandle XlaHelpers::IntegerLiteral(
-    xla::ComputationBuilder* b, DataType data_type, int64 value) {
+xla::XlaOp XlaHelpers::IntegerLiteral(xla::XlaBuilder* b, DataType data_type,
+                                      int64_t value) {
   xla::PrimitiveType type;
   TF_CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
   return ::tensorflow::IntegerLiteral(b, type, value);
 }
 
-xla::ComputationDataHandle XlaHelpers::FloatLiteral(xla::ComputationBuilder* b,
-                                                    DataType data_type,
-                                                    double value) {
+xla::XlaOp XlaHelpers::FloatLiteral(xla::XlaBuilder* b, DataType data_type,
+                                    double value) {
   xla::PrimitiveType type;
   TF_CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
   return ::tensorflow::FloatLiteral(b, type, value);
 }
 
 /* static */ Status XlaHelpers::ReshapeLiteral(
-    const xla::Literal& input, gtl::ArraySlice<int64> dimensions,
+    const xla::Literal& input, absl::Span<const int64_t> dimensions,
     xla::Literal* output) {
-  if (xla::ShapeUtil::IsTuple(input.shape())) {
+  if (input.shape().IsTuple()) {
     return errors::InvalidArgument("ReshapeLiteral does not support tuples.");
   }
   xla::Shape shape =
       xla::ShapeUtil::MakeShape(input.shape().element_type(), dimensions);
-  int64 elements_before = xla::ShapeUtil::ElementsIn(input.shape());
-  int64 elements_after = xla::ShapeUtil::ElementsIn(shape);
+  int64_t elements_before = xla::ShapeUtil::ElementsIn(input.shape());
+  int64_t elements_after = xla::ShapeUtil::ElementsIn(shape);
   if (elements_before != elements_after) {
     return errors::InvalidArgument(
         "Shapes before and after ReshapeLiteral have different numbers of "
@@ -170,127 +87,175 @@ xla::ComputationDataHandle XlaHelpers::FloatLiteral(xla::ComputationBuilder* b,
 
   *output = input.Clone();
   output->mutable_shape_do_not_use()->Swap(&shape);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-template <typename T>
-static Tensor MakeLinspaceTensor(const TensorShape& shape, int64 depth) {
-  Tensor linspace(DataTypeToEnum<T>::v(), shape);
-  auto linspace_flat = linspace.flat<T>();
-  for (int64 i = 0; i < depth; ++i) {
-    linspace_flat(i) = i;
-  }
-  return linspace;
-}
-
-Status XlaHelpers::ArgMax(xla::ComputationBuilder* builder,
-                          XlaOpKernelContext* ctx,
-                          const xla::ComputationDataHandle& input,
-                          const TensorShape& input_shape, DataType input_type,
-                          DataType output_type, int axis,
-                          xla::ComputationDataHandle* argmax) {
-  return ArgMinMax(builder, ctx, input, input_shape, input_type, output_type,
-                   axis, /*is_min=*/false, argmax);
-}
-
-Status XlaHelpers::ArgMin(xla::ComputationBuilder* builder,
-                          XlaOpKernelContext* ctx,
-                          const xla::ComputationDataHandle& input,
-                          const TensorShape& input_shape, DataType input_type,
-                          DataType output_type, int axis,
-                          xla::ComputationDataHandle* argmin) {
-  return ArgMinMax(builder, ctx, input, input_shape, input_type, output_type,
-                   axis, /*is_min=*/true, argmin);
-}
-
-Status XlaHelpers::Iota(xla::ComputationBuilder* builder, DataType dtype,
-                        int64 size, xla::ComputationDataHandle* iota) {
-  TensorShape linspace_shape({size});
-  Tensor linspace;
-  switch (dtype) {
-    case DT_UINT8:
-      linspace = MakeLinspaceTensor<uint8>(linspace_shape, size);
-      break;
-    case DT_INT32:
-      linspace = MakeLinspaceTensor<int32>(linspace_shape, size);
-      break;
-    case DT_INT64:
-      linspace = MakeLinspaceTensor<int64>(linspace_shape, size);
-      break;
-    default:
-      return errors::InvalidArgument("Invalid argument type ",
-                                     DataTypeString(dtype));
-  }
-  xla::Literal linspace_literal;
-  TF_RETURN_IF_ERROR(HostTensorToLiteral(linspace, &linspace_literal));
-  *iota = builder->ConstantLiteral(linspace_literal);
-  return Status::OK();
-}
-
-Status XlaHelpers::OneHot(xla::ComputationBuilder* builder, int64 depth,
-                          int axis, DataType index_type,
-                          const TensorShape& indices_shape,
-                          const xla::ComputationDataHandle& indices,
-                          const xla::ComputationDataHandle& on_value,
-                          const xla::ComputationDataHandle& off_value,
-                          xla::ComputationDataHandle* one_hot) {
-  const int indices_dims = indices_shape.dims();
-  const int output_dims = indices_dims + 1;
+Status XlaHelpers::OneHot(xla::XlaBuilder* builder, int64_t depth, int axis,
+                          DataType index_type, const TensorShape& indices_shape,
+                          const xla::XlaOp indices, const xla::XlaOp on_value,
+                          const xla::XlaOp off_value, xla::XlaOp* one_hot) {
+  // Broadcast the linspace constant across the indices along the new axis,
+  // and test equality at each position.
+  std::vector<int64_t> broadcast_dims(indices_shape.dims());
+  std::iota(broadcast_dims.begin(), broadcast_dims.begin() + axis, 0);
+  std::iota(broadcast_dims.begin() + axis, broadcast_dims.end(), axis + 1);
 
   TensorShape output_shape = indices_shape;
   output_shape.InsertDim(axis, depth);
-
-  // Build a Tensor populated with values 0, 1, 2, ... depth.
-  std::vector<int64> linspace_dims(output_dims, 1);
-  linspace_dims[axis] = depth;
-  TensorShape linspace_shape(linspace_dims);
-  Tensor linspace;
-  switch (index_type) {
-    case DT_UINT8:
-      linspace = MakeLinspaceTensor<uint8>(linspace_shape, depth);
-      break;
-    case DT_INT32:
-      linspace = MakeLinspaceTensor<int32>(linspace_shape, depth);
-      break;
-    case DT_INT64:
-      linspace = MakeLinspaceTensor<int64>(linspace_shape, depth);
-      break;
-    default:
-      return errors::InvalidArgument("Invalid argument type ",
-                                     DataTypeString(index_type));
-  }
-  xla::Literal linspace_literal;
-  TF_RETURN_IF_ERROR(HostTensorToLiteral(linspace, &linspace_literal));
-
-  // Broadcast the linspace constant across the indices along the new axis,
-  // and test equality at each position.
-  std::vector<int64> broadcast_dims(indices_shape.dims());
-  std::iota(broadcast_dims.begin(), broadcast_dims.begin() + axis, 0);
-  std::iota(broadcast_dims.begin() + axis, broadcast_dims.end(), axis + 1);
-  xla::ComputationDataHandle one_hot_bool = builder->Eq(
-      indices, builder->ConstantLiteral(linspace_literal), broadcast_dims);
+  xla::Shape iota_shape;
+  TF_RETURN_IF_ERROR(
+      TensorShapeToXLAShape(index_type, output_shape, &iota_shape));
 
   // Selects the user-provided off_value and on_value values.
-  *one_hot = builder->Select(
-      one_hot_bool, builder->Broadcast(on_value, output_shape.dim_sizes()),
-      builder->Broadcast(off_value, output_shape.dim_sizes()));
-  return Status::OK();
+  *one_hot = xla::Select(
+      xla::Eq(indices, xla::Iota(builder, iota_shape, axis), broadcast_dims),
+      xla::Broadcast(on_value, output_shape.dim_sizes()),
+      xla::Broadcast(off_value, output_shape.dim_sizes()));
+  return absl::OkStatus();
 }
 
 DataType XlaHelpers::SumAccumulationType(const DataType& dtype) {
-  if (dtype == DT_BFLOAT16) {
+  // Upcast 16 bit sum reductions to 32 bit to reduce the precision loss from
+  // repeated floating point additions.
+  if (dtype == DT_BFLOAT16 || dtype == DT_HALF) {
     return DT_FLOAT;
+  }
+  // Upcast small integer types to 32 bit to avoid overflow.
+  if (dtype == DT_INT8 || dtype == DT_INT16) {
+    return DT_INT32;
+  }
+  if (dtype == DT_UINT8 || dtype == DT_UINT16) {
+    return DT_UINT32;
   }
   return dtype;
 }
 
-xla::ComputationDataHandle XlaHelpers::ConvertElementType(
-    xla::ComputationBuilder* const builder,
-    const xla::ComputationDataHandle& operand,
-    const DataType new_element_type) {
+xla::XlaOp XlaHelpers::ConvertElementType(const xla::XlaOp operand,
+                                          const DataType new_element_type) {
   xla::PrimitiveType convert_to;
   TF_CHECK_OK(DataTypeToPrimitiveType(new_element_type, &convert_to));
-  return builder->ConvertElementType(operand, convert_to);
+  return xla::ConvertElementType(operand, convert_to);
+}
+
+XlaHelpers::ShapeRepresentationFn IdentityShapeRepresentationFn() {
+  return
+      [](const TensorShape& shape, DataType dtype, bool use_fast_memory,
+         XlaLayoutPreference layout_preference) -> absl::StatusOr<xla::Shape> {
+        xla::Shape xla_shape;
+        TF_RETURN_IF_ERROR(TensorShapeToXLAShape(dtype, shape, &xla_shape));
+        return xla_shape;
+      };
+}
+
+Status ResolveDeviceAssignment(
+    OpKernelContext* ctx,
+    const XlaCompilationResult::CollectiveInfo& collective_info,
+    xla::ExecutableRunOptions& run_options,
+    xla::DeviceAssignment& device_assignment,
+    xla::gpu::GpuExecutableRunOptions& gpu_options) {
+  // TODO(nnigania): workaround for b/199436990
+  static const int kTimeoutSeconds = 1000;
+  if (ctx->collective_executor() == nullptr) {
+    return errors::InvalidArgument(
+        "CollectiveExecutor is required but not available");
+  }
+
+  auto params = core::RefCountPtr<CollectiveParams>(new CollectiveParams());
+  params->name = "xla-reduction-compilation";
+  params->group.device_type =
+      DeviceType{static_cast<Device*>(ctx->device())->device_type()};
+  params->group.group_size = collective_info.group_size;
+  params->group.group_key = collective_info.group_key;
+  params->instance.type = REDUCTION_COLLECTIVE;
+  params->instance.impl_details.communication_hint = "nccl";
+  params->instance.impl_details.timeout_seconds = kTimeoutSeconds;
+  params->instance.impl_details.collective_name = "NcclReduce";
+  // TODO(cheshire): Avoid passing a dummy shape, TF runtime does not resolve
+  // devices otherwise.
+  params->instance.shape = TensorShape({1});
+
+  VLOG(5) << "Using collective params to resolve device assignment: "
+          << params->ToString();
+
+  Status st;
+  absl::Notification n;
+  ctx->collective_executor()->CompleteParamsAsync(
+      ctx->device()->attributes(), params.get(), ctx->cancellation_manager(),
+      [&](const Status& s) {
+        st = s;
+        n.Notify();
+      });
+  if (!n.WaitForNotificationWithTimeout(absl::Seconds(kTimeoutSeconds))) {
+    return errors::InvalidArgument("Timeout reached");
+  }
+  TF_RETURN_IF_ERROR(st);
+  VLOG(5) << "Collective params completed: " << params->ToString();
+
+  // Identify the physical device associated with each replica.
+  device_assignment = xla::DeviceAssignment(params->group.group_size, 1);
+  for (int device_idx = 0; device_idx < params->group.group_size;
+       device_idx++) {
+    const DeviceAttributes& device = params->group.members[device_idx].device;
+    if (device.xla_global_id() == -1) {
+      if (params->group.device_type == DEVICE_TPU) {
+        return errors::InvalidArgument(
+            absl::StrCat("No global ID was set for TPU device ", device.name(),
+                         ". Try initializing the TPU system, e.g. "
+                         "`tf.tpu.experimental.initialize_tpu_system()`."));
+      } else if (params->group.device_type == DEVICE_GPU) {
+        return errors::Internal(
+            absl::StrCat("No global ID was set for ", device.name(),
+                         ". This is unexpected, please file a bug."));
+      } else {
+        // TODO(b/194942685): Implement CPU collectives.
+        return errors::Unimplemented(
+            absl::StrCat("Collectives are not yet implemented for ",
+                         params->group.device_type.type_string(),
+                         " devices when compiling with XLA. Attempted to "
+                         "compile a collective running on",
+                         device.name(),
+                         ". Please comment on b/194942685 or "
+                         "file a new bug if you don't have access."));
+      }
+    }
+    VLOG(2) << "Assigning physical id " << device.xla_global_id()
+            << " for replica " << device_idx << " (" << device.name() << ")";
+    device_assignment(device_idx, 0) = device.xla_global_id();
+  }
+  VLOG(5) << "Generated device assignment: " << device_assignment.ToString();
+  if (params->group.device_type == DEVICE_GPU) {
+    // For GPU collectives, `xla_global_id`s are arbitrary integers, and XLA
+    // requires a mapping from local device IDs to global device IDs.
+    const DeviceMgr* device_mgr = ctx->function_library()->device_mgr();
+    std::map<int, xla::GlobalDeviceId> global_device_ids;
+
+    for (int device_idx = 0; device_idx < params->group.group_size;
+         device_idx++) {
+      const DeviceAttributes& device_attributes =
+          params->group.members[device_idx].device;
+      Device* resolved_device = nullptr;
+      Status lookup_status =
+          device_mgr->LookupDevice(device_attributes.name(), &resolved_device);
+      if (lookup_status.ok()) {
+        // This is a local device, so include it in the mapping.
+        const DeviceBase::AcceleratorDeviceInfo* accelerator_device_info =
+            resolved_device->tensorflow_accelerator_device_info();
+        global_device_ids[accelerator_device_info->stream->parent()
+                              ->device_ordinal()] =
+            device_attributes.xla_global_id();
+      }
+    }
+    gpu_options.set_gpu_global_device_ids(global_device_ids);
+  }
+  const std::string& communicator_key =
+      params->group.runtime_details.communicator_key;
+  gpu_options.set_nccl_clique_id_callback(
+      [=](const xla::gpu::NcclCliqueKey& key) {
+        return xla::gpu::NcclCliqueId::FromString(communicator_key);
+      });
+  run_options.set_device_assignment(&device_assignment);
+  run_options.set_gpu_executable_run_options(&gpu_options);
+  return absl::OkStatus();
 }
 
 }  // end namespace tensorflow

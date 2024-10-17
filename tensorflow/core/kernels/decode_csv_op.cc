@@ -61,14 +61,17 @@ class DecodeCSVOp : public OpKernel {
     OP_REQUIRES_OK(ctx, ctx->input_list("record_defaults", &record_defaults));
 
     for (int i = 0; i < record_defaults.size(); ++i) {
+      OP_REQUIRES(ctx, record_defaults[i].dims() <= 1,
+                  errors::InvalidArgument(
+                      "Each record default should be at most rank 1"));
       OP_REQUIRES(ctx, record_defaults[i].NumElements() < 2,
                   errors::InvalidArgument(
                       "There should only be 1 default per field but field ", i,
                       " has ", record_defaults[i].NumElements()));
     }
 
-    auto records_t = records->flat<string>();
-    int64 records_size = records_t.size();
+    auto records_t = records->flat<tstring>();
+    int64_t records_size = records_t.size();
 
     OpOutputList output;
     OP_REQUIRES_OK(ctx, ctx->output_list("output", &output));
@@ -78,7 +81,7 @@ class DecodeCSVOp : public OpKernel {
       OP_REQUIRES_OK(ctx, output.allocate(i, records->shape(), &out));
     }
 
-    for (int64 i = 0; i < records_size; ++i) {
+    for (int64_t i = 0; i < records_size; ++i) {
       const StringPiece record(records_t(i));
       std::vector<string> fields;
       ExtractFields(ctx, record, &fields);
@@ -102,7 +105,7 @@ class DecodeCSVOp : public OpKernel {
 
               output[f]->flat<int32>()(i) = record_defaults[f].flat<int32>()(0);
             } else {
-              int32 value;
+              int32_t value;
               OP_REQUIRES(ctx, strings::safe_strto32(fields[f], &value),
                           errors::InvalidArgument(
                               "Field ", f, " in record ", i,
@@ -120,14 +123,15 @@ class DecodeCSVOp : public OpKernel {
                               "Field ", f,
                               " is required but missing in record ", i, "!"));
 
-              output[f]->flat<int64>()(i) = record_defaults[f].flat<int64>()(0);
+              output[f]->flat<int64_t>()(i) =
+                  record_defaults[f].flat<int64_t>()(0);
             } else {
-              int64 value;
+              int64_t value;
               OP_REQUIRES(ctx, strings::safe_strto64(fields[f], &value),
                           errors::InvalidArgument(
                               "Field ", f, " in record ", i,
                               " is not a valid int64: ", fields[f]));
-              output[f]->flat<int64>()(i) = value;
+              output[f]->flat<int64_t>()(i) = value;
             }
             break;
           }
@@ -142,7 +146,7 @@ class DecodeCSVOp : public OpKernel {
               output[f]->flat<float>()(i) = record_defaults[f].flat<float>()(0);
             } else {
               float value;
-              OP_REQUIRES(ctx, strings::safe_strtof(fields[f].c_str(), &value),
+              OP_REQUIRES(ctx, strings::safe_strtof(fields[f], &value),
                           errors::InvalidArgument(
                               "Field ", f, " in record ", i,
                               " is not a valid float: ", fields[f]));
@@ -162,7 +166,7 @@ class DecodeCSVOp : public OpKernel {
                   record_defaults[f].flat<double>()(0);
             } else {
               double value;
-              OP_REQUIRES(ctx, strings::safe_strtod(fields[f].c_str(), &value),
+              OP_REQUIRES(ctx, strings::safe_strtod(fields[f], &value),
                           errors::InvalidArgument(
                               "Field ", f, " in record ", i,
                               " is not a valid double: ", fields[f]));
@@ -178,10 +182,10 @@ class DecodeCSVOp : public OpKernel {
                           errors::InvalidArgument(
                               "Field ", f,
                               " is required but missing in record ", i, "!"));
-              output[f]->flat<string>()(i) =
-                  record_defaults[f].flat<string>()(0);
+              output[f]->flat<tstring>()(i) =
+                  record_defaults[f].flat<tstring>()(0);
             } else {
-              output[f]->flat<string>()(i) = fields[f];
+              output[f]->flat<tstring>()(i) = std::move(fields[f]);
             }
             break;
           }
@@ -196,7 +200,7 @@ class DecodeCSVOp : public OpKernel {
 
  private:
   std::vector<DataType> out_type_;
-  std::vector<int64> select_cols_;
+  std::vector<int64_t> select_cols_;
   char delim_;
   bool use_quote_delim_;
   bool select_all_cols_;
@@ -204,9 +208,9 @@ class DecodeCSVOp : public OpKernel {
 
   void ExtractFields(OpKernelContext* ctx, StringPiece input,
                      std::vector<string>* result) {
-    int64 current_idx = 0;
-    int64 num_fields_parsed = 0;
-    int64 selector_idx = 0;  // Keep track of index into select_cols
+    int64_t current_idx = 0;
+    int64_t num_fields_parsed = 0;
+    int64_t selector_idx = 0;  // Keep track of index into select_cols
 
     if (!input.empty()) {
       while (static_cast<size_t>(current_idx) < input.size()) {

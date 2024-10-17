@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_GRAPH_GRAPH_PARTITION_H_
-#define TENSORFLOW_GRAPH_GRAPH_PARTITION_H_
+#ifndef TENSORFLOW_CORE_GRAPH_GRAPH_PARTITION_H_
+#define TENSORFLOW_CORE_GRAPH_GRAPH_PARTITION_H_
 
 #include <functional>
 #include <string>
@@ -42,7 +42,7 @@ struct PartitionOptions {
   // A function that returns the incarnation of a device given the
   // device's fullname. If not found, GetIncarnationFunc should return
   // kIllegalIncarnation.
-  static const uint64 kIllegalIncarnation = 0;
+  static constexpr uint64 kIllegalIncarnation = 0;
   typedef std::function<uint64(const string&)> GetIncarnationFunc;
   GetIncarnationFunc get_incarnation = nullptr;
 
@@ -76,6 +76,17 @@ struct PartitionOptions {
   // in the graph as a node attribute.
   bool need_to_record_start_times = false;
   std::vector<Microseconds> start_times;
+
+  // Optional customized function to compute the "tensor_name" attr value of
+  // Send/Recv ops inserted during partitioning.
+  std::function<string(const Edge*)> get_tensor_name_attr = nullptr;
+
+  // If true, the `Partition()` function can make destructive changes to the
+  // passed-in `Graph`.
+  //
+  // TODO(b/327983931): Add wrapper functions for partitioning that clearly
+  // signal this intent by taking a `Graph` or `Graph&&`.
+  bool can_make_destructive_changes = false;
 };
 
 // Partition "input" graph into a set of graphs, one per location.
@@ -95,4 +106,4 @@ Status AddControlEdges(const PartitionOptions& opts,
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_GRAPH_GRAPH_PARTITION_H_
+#endif  // TENSORFLOW_CORE_GRAPH_GRAPH_PARTITION_H_

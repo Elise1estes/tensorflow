@@ -14,8 +14,9 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/distributed_runtime/rpc/grpc_tensor_coding.h"
-#include "grpc++/support/byte_buffer.h"
-#include "grpc++/support/slice.h"
+
+#include "grpcpp/support/byte_buffer.h"
+#include "grpcpp/support/slice.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor.pb.h"
@@ -94,7 +95,7 @@ static void EncodeSkeleton(const Tensor& val, io::ProtoEncodeHelper* e) {
   const int ndims = val.shape().dims();
   int tensor_shape_bytes = 0;
   for (int d = 0; d < ndims; d++) {
-    int64 dim_size = val.shape().dim_size(d);
+    int64_t dim_size = val.shape().dim_size(d);
     tensor_shape_bytes +=
         2 +  // TensorShapeProto dim tag + varintlength of submessage
         1 +  // TensorShapeProto_Dim::kSizeFieldNumber
@@ -106,9 +107,9 @@ static void EncodeSkeleton(const Tensor& val, io::ProtoEncodeHelper* e) {
                                tensor_shape_bytes);
     // Encode val.shape()
     for (int d = 0; d < ndims; d++) {
-      int64 dim_size = val.shape().dim_size(d);
-      int64 dim_varlen = 1 +  // TensorShapeProto_Dim::kSizeFieldNumber
-                         core::VarintLength(dim_size);
+      int64_t dim_size = val.shape().dim_size(d);
+      int64_t dim_varlen = 1 +  // TensorShapeProto_Dim::kSizeFieldNumber
+                           core::VarintLength(dim_size);
       e->WriteVarlengthBeginning(TensorShapeProto::kDimFieldNumber, dim_varlen);
       e->WriteUint64(TensorShapeProto_Dim::kSizeFieldNumber, dim_size);
     }
@@ -133,13 +134,24 @@ static void EncodeSkeleton(const Tensor& val, io::ProtoEncodeHelper* e) {
 #endif
 }
 
-void EncodeTensorToByteBuffer(bool is_dead, const Tensor& val,
+void EncodeTensorToByteBuffer(bool is_dead, const Tensor& val, bool require_ack,
                               ::grpc::ByteBuffer* result) {
   const int kLargeTensorBytes = 1024;
+  const int64_t kProtoBufLimitBytes = 1LL << 31;
+
+  if (val.TotalBytes() > kProtoBufLimitBytes) {
+    size_t exceeded_bytes = val.TotalBytes() - kProtoBufLimitBytes;
+    LOG(FATAL) << "Cannot encode a Tensor that exceeds the 2GB protobuf limit. "
+                  "Exceeded bytes: "
+               << exceeded_bytes
+               << ", tensor shape: " << val.shape().AsProto().DebugString();
+  }
+
   RecvTensorResponse response;
   if (is_dead) {
     response.set_is_dead(is_dead);
   }
+  response.set_require_ack(require_ack);
   response.set_send_start_micros(Env::Default()->NowMicros());
   if (!DataTypeCanUseMemcpy(val.dtype())) {
     // Straightforward but slow path for complicated kinds of tensor data
@@ -152,7 +164,8 @@ void EncodeTensorToByteBuffer(bool is_dead, const Tensor& val,
   } else {
     // skeleton is the encoded TensorProto contents (dtype and shape), but
     // not the actual data
-    gtl::InlinedVector<char, 128> skeleton(SkeletonEncodingSizeUpperBound(val));
+    absl::InlinedVector<char, 128UL> skeleton(
+        SkeletonEncodingSizeUpperBound(val));
     io::ProtoEncodeHelper e_skeleton(skeleton.data(), skeleton.size());
     EncodeSkeleton(val, &e_skeleton);
 
@@ -168,20 +181,23 @@ void EncodeTensorToByteBuffer(bool is_dead, const Tensor& val,
         (header.size() +
          VarLengthEncodingSize(RecvTensorResponse::kTensorFieldNumber,
                                overall_tensor_proto_bytesize));
-    // If "tensor_data_is_large == false", we copy the tensor data to the
-    // end of the buffer we are preparing that holds the rest of the
+    // If "share_tensor_slice_memory == false", we copy the tensor data to
+    // the end of the buffer we are preparing that holds the rest of the
     // RecvTensorResponse protocol buffer.
     //
-    // If "tensor_data_is_large == true", we arrange to share the backing
-    // store of the data by creating a slice that also points to the
+    // If "share_tensor_slice_memory == true", we arrange to share the
+    // backing store of the data by creating a slice that also points to the
     // backing store, with appropriate reference counts to keep the
     // backing store alive as needed.
-    bool tensor_data_is_large = (tdata.size() > kLargeTensorBytes);
+    //
+    // We enable this behavior if the tensor is large.
+    bool share_tensor_slice_memory = (tdata.size() > kLargeTensorBytes);
+
     size_t encoder_size = expected_size - tdata.size();
 
     // Encode all but the actual "tdata", but including the tag and
     // varlength header for the "tdata"
-    gtl::InlinedVector<char, 1024> space(encoder_size);
+    absl::InlinedVector<char, 1024UL> space(encoder_size);
     io::ProtoEncodeHelper e(space.data(), space.size());
     // (A)
     e.WriteRawBytes(header);
@@ -201,10 +217,11 @@ void EncodeTensorToByteBuffer(bool is_dead, const Tensor& val,
     ::grpc::Slice slices[2];
     int num_slices = 0;
     {
-      size_t slice_len = e.size() + (tensor_data_is_large ? 0 : tdata.size());
+      size_t slice_len =
+          e.size() + (share_tensor_slice_memory ? 0 : tdata.size());
       slices[0] = ::grpc::Slice(slice_len);
       memcpy(const_cast<uint8_t*>(slices[0].begin()), e.data(), e.size());
-      if (!tensor_data_is_large) {
+      if (!share_tensor_slice_memory) {
         // (E)
         memcpy(const_cast<uint8_t*>(slices[0].begin()) + e.size(), tdata.data(),
                tdata.size());
@@ -212,7 +229,7 @@ void EncodeTensorToByteBuffer(bool is_dead, const Tensor& val,
       num_slices += 1;
     }
 
-    if (tensor_data_is_large) {
+    if (share_tensor_slice_memory) {
       // (E) Encode tensor data, but by sharing backing store
       const TensorBuffer* buf = DMAHelper::buffer(&val);
       buf->Ref();

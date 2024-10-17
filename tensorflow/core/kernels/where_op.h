@@ -13,10 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_WHERE_OP_H_
-#define TENSORFLOW_KERNELS_WHERE_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_WHERE_OP_H_
+#define TENSORFLOW_CORE_KERNELS_WHERE_OP_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/platform/macros.h"
@@ -27,7 +27,6 @@ namespace tensorflow {
 #define TF_CALL_WHERE_GPU_TYPES(m) \
   TF_CALL_int8(m);                 \
   TF_CALL_uint8(m);                \
-  TF_CALL_int32(m);                \
   TF_CALL_int64(m);                \
   TF_CALL_float(m);                \
   TF_CALL_double(m);               \
@@ -42,7 +41,7 @@ struct NumTrue {
   EIGEN_ALWAYS_INLINE static Status Compute(
       OpKernelContext* ctx, const Device& d,
       typename TTypes<T>::ConstFlat input,
-      typename TTypes<TIndex>::Scalar num_true);
+      typename TTypes<TIndex>::UnalignedScalar num_true);
 };
 
 template <typename Device, int NDIM, typename T, typename TIndex>
@@ -56,11 +55,11 @@ struct Where {
   EIGEN_ALWAYS_INLINE static Status Compute(
       OpKernelContext* ctx, const Device& d,
       typename TTypes<T, NDIM>::ConstTensor input,
-      typename TTypes<int64>::Matrix output, TIndex* found_true);
+      typename TTypes<int64_t>::Matrix output, TIndex* found_true);
 };
 
 }  // namespace functor
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_WHERE_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_WHERE_OP_H_

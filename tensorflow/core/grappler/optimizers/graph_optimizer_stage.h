@@ -13,14 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_GRAPPLER_OPTIMIZERS_OPTIMIZER_STAGE_H_
-#define TENSORFLOW_GRAPPLER_OPTIMIZERS_OPTIMIZER_STAGE_H_
+#ifndef TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_GRAPH_OPTIMIZER_STAGE_H_
+#define TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_GRAPH_OPTIMIZER_STAGE_H_
 
 #include <unordered_map>
 #include <unordered_set>
+
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/grappler/costs/graph_properties.h"
 #include "tensorflow/core/grappler/grappler_item.h"
 #include "tensorflow/core/grappler/utils.h"
+#include "tensorflow/core/lib/gtl/flatset.h"
+#include "tensorflow/core/protobuf/rewriter_config.pb.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -44,23 +48,29 @@ const NodeScopeAndName ParseNodeScopeAndName(const string& node_name);
 struct GraphOptimizerContext {
   GraphOptimizerContext(const std::unordered_set<string>* nodes_to_preserve,
                         GraphDef* optimized_graph,
-                        GraphProperties* graph_properties, NodeMap* node_map)
+                        GraphProperties* graph_properties, NodeMap* node_map,
+                        gtl::FlatSet<string>* feed_nodes,
+                        RewriterConfig::Toggle opt_level)
       : nodes_to_preserve(nodes_to_preserve),
         optimized_graph(optimized_graph),
         graph_properties(graph_properties),
-        node_map(node_map) {}
+        node_map(node_map),
+        feed_nodes(feed_nodes),
+        opt_level(opt_level) {}
 
   const std::unordered_set<string>* nodes_to_preserve;
   GraphDef* optimized_graph;
   GraphProperties* graph_properties;
   NodeMap* node_map;
+  gtl::FlatSet<string>* feed_nodes;
+  RewriterConfig::Toggle opt_level;
 };
 
 Status GetInputNode(const GraphOptimizerContext& ctx, const string& input,
                     NodeDef** node);
 Status GetTensorProperties(const GraphOptimizerContext& ctx,
                            const string& tensor,
-                           OpInfo::TensorProperties* properties);
+                           const OpInfo::TensorProperties** properties);
 
 NodeDef* AddCopyNode(const GraphOptimizerContext& ctx, const string& name,
                      const NodeDef* node_to_copy);
@@ -140,7 +150,7 @@ class GraphOptimizerStage {
   // (TrySimplify), and make virtual implementation protected.
   Status EnsureNodeIsSupported(const NodeDef* node) const {
     return IsSupported(node)
-               ? Status::OK()
+               ? absl::OkStatus()
                : errors::InvalidArgument(
                      "Node ", node->name(), " is not supported by optimizer ",
                      optimizer_name_, " and stage ", stage_name_);
@@ -161,6 +171,16 @@ class GraphOptimizerStage {
     return MakeOptimizedNodeName(node, optimizer_name_, prefix);
   }
 
+  const string UniqueOptimizedNodeName(const NodeScopeAndName& node) {
+    const string node_name = OptimizedNodeName(node);
+    return UniqueNodeName(node_name);
+  }
+  const string UniqueOptimizedNodeName(const NodeScopeAndName& node,
+                                       const string& rewrite_rule) {
+    const string node_name = OptimizedNodeName(node, rewrite_rule);
+    return UniqueNodeName(node_name);
+  }
+
   // Get a node by input name from a node map. Return an error if node was not
   // found.
   Status GetInputNode(const string& input, NodeDef** node) const {
@@ -169,8 +189,8 @@ class GraphOptimizerStage {
   // Lookup tensor properties by name. Tensor name might have non-zero port
   // number. Return an error if tensor node doesn't exists in a graph, or it
   // doesn't have properties defined for requested port.
-  Status GetTensorProperties(const string& tensor,
-                             OpInfo::TensorProperties* properties) const {
+  Status GetTensorProperties(
+      const string& tensor, const OpInfo::TensorProperties** properties) const {
     return ::tensorflow::grappler::GetTensorProperties(ctx_, tensor,
                                                        properties);
   }
@@ -185,10 +205,21 @@ class GraphOptimizerStage {
  protected:
   const GraphOptimizerContext& ctx() const { return ctx_; }
 
- private:  // Data members
+ private:
+  const string UniqueNodeName(absl::string_view name) {
+    string node_name = string(name);
+    while (ctx_.node_map->NodeExists(node_name)) {
+      node_name = absl::StrCat(name, "_unique",
+                               optimized_node_name_counter_.fetch_add(1));
+    }
+
+    return node_name;
+  }
+
   const string optimizer_name_;
   const string stage_name_;
   const GraphOptimizerContext ctx_;
+  std::atomic<int64_t> optimized_node_name_counter_ = {0};
 };
 
 template <typename Result>
@@ -230,9 +261,9 @@ class GraphOptimizerStagePipeline {
         // Each stage must be "error safe" (just like exception safe). In
         // case of any error it must leave optimized graph unmodified.
         if (!stage_status.ok()) {
-          LOG(WARNING) << "Failed to run optimizer " << stage->optimizer_name()
-                       << ", stage " << stage->stage_name()
-                       << ". Error: " << stage_status.error_message();
+          VLOG(2) << "Failed to run optimizer " << stage->optimizer_name()
+                  << ", stage " << stage->stage_name() << " node "
+                  << node->name() << ". Error: " << stage_status.message();
         }
         if (break_predicate_(*result)) return true;
       }
@@ -240,10 +271,30 @@ class GraphOptimizerStagePipeline {
     return false;
   }
 
+  // Pass a node through all registered optimizer stages, until break predicate
+  // is true or a stage fails.
+  //
+  // Returns any stage failure status, or else OkStatus().
+  Status PassThroughAllStagesWithStatus(NodeDef* node, Result* result) {
+    for (auto& stage : stages_) {
+      if (!stage->IsSupported(node)) {
+        continue;
+      }
+      const Status stage_status = stage->TrySimplify(node, result);
+      if (!stage_status.ok()) {
+        return stage_status;
+      } else if (break_predicate_(*result)) {
+        break;
+      }
+    }
+    return absl::OkStatus();
+  }
+
   std::size_t NumStages() { return stages_.size(); }
 
   std::vector<string> StageNames() {
     std::vector<string> names;
+    names.reserve(stages_.size());
     for (const auto& stage : stages_) {
       names.push_back(stage->stage_name());
     }
@@ -254,10 +305,11 @@ class GraphOptimizerStagePipeline {
   std::vector<std::unique_ptr<GraphOptimizerStage<Result>>> stages_;
   std::function<bool(const Result&)> break_predicate_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(GraphOptimizerStagePipeline);
+  GraphOptimizerStagePipeline(const GraphOptimizerStagePipeline&) = delete;
+  void operator=(const GraphOptimizerStagePipeline&) = delete;
 };
 
 }  // end namespace grappler
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_GRAPPLER_OPTIMIZERS_OPTIMIZER_STAGE_H_
+#endif  // TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_GRAPH_OPTIMIZER_STAGE_H_

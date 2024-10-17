@@ -13,9 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <vector>
+
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "xla/hlo/builder/xla_builder.h"
 
 namespace tensorflow {
 namespace {
@@ -46,39 +49,42 @@ class CrossOp : public XlaOpKernel {
     // So slice 1 is: in0[...,:,:,:,1:2]
     // So slice 2 is: in0[...,:,:,:,2:3]
 
-    std::vector<int64> starts(in0_shape.dims(), 0);
-    std::vector<int64> limits;
+    std::vector<int64_t> starts(in0_shape.dims(), 0);
+    std::vector<int64_t> limits;
+    const auto& dim_sizes = in0_shape.dim_sizes();
+    limits.reserve(dim_sizes.size());
     for (auto dim_size : in0_shape.dim_sizes()) {
       limits.push_back(dim_size);
     }
-    std::vector<int64> strides(in0_shape.dims(), 1);
+    std::vector<int64_t> strides(in0_shape.dims(), 1);
 
-    xla::ComputationBuilder* b = ctx->builder();
+    xla::XlaBuilder* b = ctx->builder();
     auto in0 = ctx->Input(0);
     auto in1 = ctx->Input(1);
     starts.back() = 0;
     limits.back() = 1;
-    auto u1 = b->Slice(in0, starts, limits, strides);
-    auto v1 = b->Slice(in1, starts, limits, strides);
+    auto u1 = xla::Slice(in0, starts, limits, strides);
+    auto v1 = xla::Slice(in1, starts, limits, strides);
     starts.back() = 1;
     limits.back() = 2;
-    auto u2 = b->Slice(in0, starts, limits, strides);
-    auto v2 = b->Slice(in1, starts, limits, strides);
+    auto u2 = xla::Slice(in0, starts, limits, strides);
+    auto v2 = xla::Slice(in1, starts, limits, strides);
     starts.back() = 2;
     limits.back() = 3;
-    auto u3 = b->Slice(in0, starts, limits, strides);
-    auto v3 = b->Slice(in1, starts, limits, strides);
+    auto u3 = xla::Slice(in0, starts, limits, strides);
+    auto v3 = xla::Slice(in1, starts, limits, strides);
 
-    auto s1 = b->Sub(b->Mul(u2, v3), b->Mul(u3, v2));
-    auto s2 = b->Sub(b->Mul(u3, v1), b->Mul(u1, v3));
-    auto s3 = b->Sub(b->Mul(u1, v2), b->Mul(u2, v1));
-    auto output = b->ConcatInDim({s1, s2, s3}, in0_shape.dims() - 1);
+    auto s1 = xla::Sub(xla::Mul(u2, v3), xla::Mul(u3, v2));
+    auto s2 = xla::Sub(xla::Mul(u3, v1), xla::Mul(u1, v3));
+    auto s3 = xla::Sub(xla::Mul(u1, v2), xla::Mul(u2, v1));
+    auto output = xla::ConcatInDim(b, {s1, s2, s3}, in0_shape.dims() - 1);
 
     ctx->SetOutput(0, output);
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(CrossOp);
+  CrossOp(const CrossOp&) = delete;
+  void operator=(const CrossOp&) = delete;
 };
 
 REGISTER_XLA_OP(Name("Cross"), CrossOp);

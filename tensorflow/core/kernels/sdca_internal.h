@@ -27,7 +27,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -43,8 +43,6 @@ limitations under the License.
 #include "tensorflow/core/lib/random/distribution_sampler.h"
 #include "tensorflow/core/lib/strings/stringprintf.h"
 #include "tensorflow/core/util/guarded_philox_random.h"
-#include "tensorflow/core/util/sparse/group_iterator.h"
-#include "tensorflow/core/util/sparse/sparse_tensor.h"
 #include "tensorflow/core/util/work_sharder.h"
 
 namespace tensorflow {
@@ -58,10 +56,10 @@ struct ExampleStatistics {
   // case, this vector has the same length as the number of classes, where each
   // value corresponds to one class.
   // Use InlinedVector to avoid heap allocation for small number of classes.
-  gtl::InlinedVector<double, 1> wx;
+  absl::InlinedVector<double, 1> wx;
 
   // Logits for each class, using the previous weights.
-  gtl::InlinedVector<double, 1> prev_wx;
+  absl::InlinedVector<double, 1> prev_wx;
 
   // Sum of squared feature values occurring in the example divided by
   // L2 * sum(example_weights).
@@ -82,7 +80,7 @@ class Regularizations {
     TF_RETURN_IF_ERROR(context->GetAttr("l1", &symmetric_l1_));
     TF_RETURN_IF_ERROR(context->GetAttr("l2", &symmetric_l2_));
     shrinkage_ = symmetric_l1_ / symmetric_l2_;
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Proximal SDCA shrinking for L1 regularization.
@@ -119,7 +117,8 @@ class Regularizations {
   // L1 divided by L2, pre-computed for use during weight shrinking.
   double shrinkage_ = 0;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(Regularizations);
+  Regularizations(const Regularizations&) = delete;
+  void operator=(const Regularizations&) = delete;
 };
 
 class ModelWeights;
@@ -148,7 +147,7 @@ class Example {
   // can be optionally absent, in which we case we implicitly assume a value of
   // 1.0f.
   struct SparseFeatures {
-    std::unique_ptr<TTypes<const int64>::UnalignedConstVec> indices;
+    std::unique_ptr<TTypes<const int64_t>::UnalignedConstVec> indices;
     std::unique_ptr<TTypes<const float>::UnalignedConstVec>
         values;  // nullptr encodes optional.
   };
@@ -172,7 +171,7 @@ class Example {
     }
 
     const TTypes<float>::ConstMatrix data_matrix;
-    const int64 row_index;
+    const int64_t row_index;
   };
 
  private:
@@ -203,14 +202,14 @@ class FeatureWeightsDenseStorage {
   }
 
   // Check if a feature index is with-in the bounds.
-  bool IndexValid(const int64 index) const {
+  bool IndexValid(const int64_t index) const {
     return index >= 0 && index < deltas_.dimension(1);
   }
 
   // Nominals here are the original weight matrix.
   TTypes<const float>::Matrix nominals() const { return nominals_; }
 
-  // Delta weights durining mini-batch updates.
+  // Delta weights during mini-batch updates.
   TTypes<float>::Matrix deltas() const { return deltas_; }
 
   // Updates delta weights based on active dense features in the example and
@@ -231,30 +230,30 @@ class FeatureWeightsDenseStorage {
 // in an unordered map.
 class FeatureWeightsSparseStorage {
  public:
-  FeatureWeightsSparseStorage(const TTypes<const int64>::Vec indices,
+  FeatureWeightsSparseStorage(const TTypes<const int64_t>::Vec indices,
                               const TTypes<const float>::Matrix nominals,
                               TTypes<float>::Matrix deltas)
       : nominals_(nominals), deltas_(deltas) {
     // Create a map from sparse index to the dense index of the underlying
     // storage.
-    for (int64 j = 0; j < indices.size(); ++j) {
+    for (int64_t j = 0; j < indices.size(); ++j) {
       indices_to_id_[indices(j)] = j;
     }
   }
 
   // Check if a feature index exists.
-  bool IndexValid(const int64 index) const {
+  bool IndexValid(const int64_t index) const {
     return indices_to_id_.find(index) != indices_to_id_.end();
   }
 
   // Nominal value at a particular feature index and class label.
-  float nominals(const int class_id, const int64 index) const {
+  float nominals(const int class_id, const int64_t index) const {
     auto it = indices_to_id_.find(index);
     return nominals_(class_id, it->second);
   }
 
-  // Delta weights durining mini-batch updates.
-  float deltas(const int class_id, const int64 index) const {
+  // Delta weights during mini-batch updates.
+  float deltas(const int class_id, const int64_t index) const {
     auto it = indices_to_id_.find(index);
     return deltas_(class_id, it->second);
   }
@@ -272,7 +271,7 @@ class FeatureWeightsSparseStorage {
   // The accumulated delta weight for a feature (indexed by its id).
   TTypes<float>::Matrix deltas_;
   // Map from feature index to an index to the dense vector.
-  std::unordered_map<int64, int64> indices_to_id_;
+  std::unordered_map<int64_t, int64_t> indices_to_id_;
 };
 
 // Weights in the model, wraps both current weights, and the delta weights
@@ -281,11 +280,11 @@ class ModelWeights {
  public:
   ModelWeights() {}
 
-  bool SparseIndexValid(const int col, const int64 index) const {
+  bool SparseIndexValid(const int col, const int64_t index) const {
     return sparse_weights_[col].IndexValid(index);
   }
 
-  bool DenseIndexValid(const int col, const int64 index) const {
+  bool DenseIndexValid(const int col, const int64_t index) const {
     return dense_weights_[col].IndexValid(index);
   }
 
@@ -309,7 +308,8 @@ class ModelWeights {
   std::vector<FeatureWeightsSparseStorage> sparse_weights_;
   std::vector<FeatureWeightsDenseStorage> dense_weights_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(ModelWeights);
+  ModelWeights(const ModelWeights&) = delete;
+  void operator=(const ModelWeights&) = delete;
 };
 
 // Examples contains all the training examples that SDCA uses for a mini-batch.
@@ -384,7 +384,8 @@ class Examples {
 
   int num_features_ = 0;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(Examples);
+  Examples(const Examples&) = delete;
+  void operator=(const Examples&) = delete;
 };
 
 }  // namespace sdca

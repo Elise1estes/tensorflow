@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <string>
+
 #include "tensorflow/cc/client/client_session.h"
 #include "tensorflow/cc/framework/testutil.h"
 #include "tensorflow/cc/ops/standard_ops.h"
@@ -200,10 +202,10 @@ TEST(CCOpTest, TemplatedConst) {
   test::ExpectTensorEqual<float>(
       out, test::AsTensor<float>({3.f, 2.f, -1.f, 0.f}, {2, 2}));
 
-  auto c2 = ops::Const<string>(root, {{"this"}, {"is"}, {"a"}, {"constant"}});
+  auto c2 = ops::Const<tstring>(root, {{"this"}, {"is"}, {"a"}, {"constant"}});
   test::GetTensor(root, c2, &out);
-  test::ExpectTensorEqual<string>(
-      out, test::AsTensor<string>({"this", "is", "a", "constant"}, {4, 1}));
+  test::ExpectTensorEqual<tstring>(
+      out, test::AsTensor<tstring>({"this", "is", "a", "constant"}, {4, 1}));
 }
 
 TEST(CCOpTest, EmptyConst) {
@@ -241,7 +243,7 @@ TEST(CCOpTest, InvalidFinalize) {
       ops::ReaderReadUpTo(root, Variable(root, {}, DT_STRING),
                           Variable(root, {}, DT_STRING), static_cast<int32>(2));
   EXPECT_FALSE(root.status().ok());
-  auto err_msg = root.status().error_message();
+  auto err_msg = std::string(root.status().message());
   EXPECT_NE(err_msg.find("'num_records' passed int32 expected int64"),
             string::npos);
 }

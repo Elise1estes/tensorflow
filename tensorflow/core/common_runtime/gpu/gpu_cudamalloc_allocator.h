@@ -13,42 +13,40 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMMON_RUNTIME_GPU_GPU_CUDA_MALLOC_ALLOCATOR_H_
-#define TENSORFLOW_COMMON_RUNTIME_GPU_GPU_CUDA_MALLOC_ALLOCATOR_H_
+#ifndef TENSORFLOW_CORE_COMMON_RUNTIME_GPU_GPU_CUDAMALLOC_ALLOCATOR_H_
+#define TENSORFLOW_CORE_COMMON_RUNTIME_GPU_GPU_CUDAMALLOC_ALLOCATOR_H_
 
 #include <memory>
+#include <string>
 
-#include "tensorflow/core/common_runtime/gpu/gpu_id.h"
-#include "tensorflow/core/common_runtime/visitable_allocator.h"
-#include "tensorflow/core/platform/macros.h"
-#include "tensorflow/core/platform/stream_executor.h"
-#include "tensorflow/core/platform/types.h"
+#include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/framework/allocator.h"
+#include "xla/tsl/framework/device_id.h"
+#include "tsl/platform/macros.h"
 
 namespace tensorflow {
 
-// An allocator that wraps a GPU allocator and adds debugging
-// functionality that verifies that users do not write outside their
-// allocated memory.
-class GPUcudaMallocAllocator : public VisitableAllocator {
+// An allocator which directly uses cuMemAlloc and cuMemFree to allocate and
+// free memory.
+class GPUcudaMallocAllocator : public tsl::Allocator {
  public:
-  explicit GPUcudaMallocAllocator(VisitableAllocator* allocator,
-                                  CudaGpuId cuda_gpu_id);
-  ~GPUcudaMallocAllocator() override;
-  string Name() override { return "gpu_debug"; }
+  explicit GPUcudaMallocAllocator(tsl::PlatformDeviceId platform_device_id);
+  std::string Name() override { return "gpu_debug"; }
   void* AllocateRaw(size_t alignment, size_t num_bytes) override;
   void DeallocateRaw(void* ptr) override;
-  void AddAllocVisitor(Visitor visitor) override;
-  void AddFreeVisitor(Visitor visitor) override;
-  bool TracksAllocationSizes() override;
+  bool TracksAllocationSizes() const override;
+
+  tsl::AllocatorMemoryType GetMemoryType() const override {
+    return tsl::AllocatorMemoryType::kDevice;
+  }
 
  private:
-  VisitableAllocator* base_allocator_ = nullptr;  // owned
+  se::StreamExecutor* stream_exec_;  // Not owned.
 
-  perftools::gputools::StreamExecutor* stream_exec_;  // Not owned.
-
-  TF_DISALLOW_COPY_AND_ASSIGN(GPUcudaMallocAllocator);
+  GPUcudaMallocAllocator(const GPUcudaMallocAllocator&) = delete;
+  void operator=(const GPUcudaMallocAllocator&) = delete;
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_COMMON_RUNTIME_GPU_GPU_CUDAMALLOC_ALLOCATOR_H_
+#endif  // TENSORFLOW_CORE_COMMON_RUNTIME_GPU_GPU_CUDAMALLOC_ALLOCATOR_H_

@@ -25,7 +25,17 @@ limitations under the License.
 #include "tensorflow/cc/framework/scope.h"
 #include "tensorflow/core/public/session_options.h"
 
+namespace tsl {
+namespace thread {
+struct ThreadPoolOptions;
+}
+}  // namespace tsl
+
 namespace tensorflow {
+
+namespace thread {
+using tsl::thread::ThreadPoolOptions;
+}
 
 /// @addtogroup core
 /// @{
@@ -58,7 +68,7 @@ class ClientSession {
   ClientSession(const Scope& scope, const string& target);
 
   /// Same as above, but use the empty string ("") as the target specification.
-  ClientSession(const Scope& scope);
+  explicit ClientSession(const Scope& scope);
 
   /// Create a new session, configuring it with `session_options`.
   ClientSession(const Scope& scope, const SessionOptions& session_options);
@@ -87,7 +97,55 @@ class ClientSession {
              const std::vector<Operation>& run_outputs,
              std::vector<Tensor>* outputs, RunMetadata* run_metadata) const;
 
-  // TODO(keveman): Add support for partial run.
+  /// Same as above. Additionally allows user to provide custom threadpool
+  /// implementation via ThreadPoolOptions.
+  Status Run(const RunOptions& run_options, const FeedType& inputs,
+             const std::vector<Output>& fetch_outputs,
+             const std::vector<Operation>& run_outputs,
+             std::vector<Tensor>* outputs, RunMetadata* run_metadata,
+             const thread::ThreadPoolOptions& threadpool_options) const;
+
+  /// \brief A handle to a subgraph, created with
+  /// `ClientSession::MakeCallable()`.
+  typedef int64_t CallableHandle;
+
+  /// \brief Creates a `handle` for invoking the subgraph defined by
+  /// `callable_options`.
+  /// NOTE: This API is still experimental and may change.
+  Status MakeCallable(const CallableOptions& callable_options,
+                      CallableHandle* out_handle);
+
+  /// \brief Invokes the subgraph named by `handle` with the given options and
+  /// input tensors.
+  ///
+  /// The order of tensors in `feed_tensors` must match the order of names in
+  /// `CallableOptions::feed()` and the order of tensors in `fetch_tensors` will
+  /// match the order of names in `CallableOptions::fetch()` when this subgraph
+  /// was created.
+  /// NOTE: This API is still experimental and may change.
+  Status RunCallable(CallableHandle handle,
+                     const std::vector<Tensor>& feed_tensors,
+                     std::vector<Tensor>* fetch_tensors,
+                     RunMetadata* run_metadata);
+
+  /// \brief Invokes the subgraph named by `handle` with the given options and
+  /// input tensors.
+  ///
+  /// The order of tensors in `feed_tensors` must match the order of names in
+  /// `CallableOptions::feed()` and the order of tensors in `fetch_tensors` will
+  /// match the order of names in `CallableOptions::fetch()` when this subgraph
+  /// was created.
+  /// NOTE: This API is still experimental and may change.
+  Status RunCallable(CallableHandle handle,
+                     const std::vector<Tensor>& feed_tensors,
+                     std::vector<Tensor>* fetch_tensors,
+                     RunMetadata* run_metadata,
+                     const thread::ThreadPoolOptions& options);
+
+  /// \brief Releases resources associated with the given `handle` in this
+  /// session.
+  /// NOTE: This API is still experimental and may change.
+  Status ReleaseCallable(CallableHandle handle);
 
  private:
   class Impl;

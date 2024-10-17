@@ -14,10 +14,6 @@
 # ==============================================================================
 """Communicating tracebacks and source code with debug server."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import socket
 
 import grpc
@@ -58,7 +54,7 @@ def _format_origin_stack(origin_stack, call_traceback_proto):
     call_traceback_proto: A `CallTraceback` proto whose fields are to be
       populated.
   """
-  string_to_id = dict()
+  string_to_id = {}
   string_to_id[None] = 0
   for frame in origin_stack:
     file_path, lineno, func_name, line_text = frame
@@ -116,14 +112,14 @@ def _send_call_tracebacks(destinations,
     origin_stack: The traceback stack for the origin of the execution call. For
       graph execution, this is the traceback of the `tf.Session.run()`
       invocation. For eager execution, this is the traceback of the Python
-      line that executes the eager opertion.
+      line that executes the eager operation.
     is_eager_execution: (`bool`) whether an eager execution call (i.e., not a
       `tf.Session.run` or derived methods) is being sent.
     call_key: The key of the execution call, as a string. For graph execution,
       this is a string describing the feeds, fetches (and targets) names of the
       `tf.Session.run` call. For eager execution, this is ignored.
-    graph: A Python `tf.Graph` object (i.e., *not* a `tf.GraphDef`), which
-      contains op tracebacks, if applicable.
+    graph: A Python `tf.Graph` object (i.e., *not* a `tf.compat.v1.GraphDef`),
+      which contains op tracebacks, if applicable.
     send_source: Whether the source files involved in the op tracebacks but
       outside the TensorFlow library are to be sent.
   """
@@ -155,17 +151,22 @@ def _send_call_tracebacks(destinations,
     source_file_paths.update(_source_file_paths_outside_tensorflow_py_library(
         [call_traceback.origin_stack], call_traceback.origin_id_to_string))
 
-    debugged_source_files = debug_pb2.DebuggedSourceFiles()
+    debugged_source_files = []
     for file_path in source_file_paths:
+      source_files = debug_pb2.DebuggedSourceFiles()
       _load_debugged_source_file(
-          file_path, debugged_source_files.source_files.add())
+          file_path, source_files.source_files.add())
+      debugged_source_files.append(source_files)
 
   for destination in destinations:
-    channel = grpc.insecure_channel(destination)
+    no_max_message_sizes = [("grpc.max_receive_message_length", -1),
+                            ("grpc.max_send_message_length", -1)]
+    channel = grpc.insecure_channel(destination, options=no_max_message_sizes)
     stub = debug_service_pb2_grpc.EventListenerStub(channel)
     stub.SendTracebacks(call_traceback)
     if send_source:
-      stub.SendSourceFiles(debugged_source_files)
+      for source_files in debugged_source_files:
+        stub.SendSourceFiles(source_files)
 
 
 def send_graph_tracebacks(destinations,
@@ -182,8 +183,8 @@ def send_graph_tracebacks(destinations,
     run_key: A string describing the feeds, fetches (and targets) names of the
       `tf.Session.run` call.
     origin_stack: The traceback of the `tf.Session.run()` invocation.
-    graph: A Python `tf.Graph` object (i.e., *not* a `tf.GraphDef`), which
-      contains op tracebacks.
+    graph: A Python `tf.Graph` object (i.e., *not* a `tf.compat.v1.GraphDef`),
+      which contains op tracebacks.
     send_source: Whether the source files involved in the op tracebacks but
       outside the TensorFlow library are to be sent.
   """

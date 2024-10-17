@@ -14,10 +14,6 @@
 # ==============================================================================
 """A Context that captures profile and performs profiling/dumping.
 """
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import contextlib
 import os
 import random
@@ -25,12 +21,12 @@ import sys
 import threading
 
 from tensorflow.core.protobuf import config_pb2
-from tensorflow.python import pywrap_tensorflow as print_mdl
 from tensorflow.python.client import session
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.platform import gfile
 from tensorflow.python.profiler import model_analyzer
+from tensorflow.python.util import _pywrap_tfprof as print_mdl
 from tensorflow.python.util import compat
 
 WARMUP_STEPS = 10
@@ -88,16 +84,19 @@ def _profiled_run(self,
       to_profiles = self.profile_context._profile_candidates()
       for to_prof in to_profiles:
         cmd, opts, _ = to_prof
+        saved_views = self.profile_context._views.setdefault(cmd, {})
         if self.profile_context._debug:
           sys.stderr.write('debug: profiling %s step: %d\n' % (cmd, step))
         if cmd == 'graph':
-          self.profile_context.profiler.profile_graph(opts)
+          saved_views[step] = self.profile_context.profiler.profile_graph(opts)
         elif cmd == 'scope':
-          self.profile_context.profiler.profile_name_scope(opts)
+          saved_views[step] = self.profile_context.profiler.profile_name_scope(
+              opts)
         elif cmd == 'op':
-          self.profile_context.profiler.profile_operations(opts)
+          saved_views[step] = self.profile_context.profiler.profile_operations(
+              opts)
         elif cmd == 'code':
-          self.profile_context.profiler.profile_python(opts)
+          saved_views[step] = self.profile_context.profiler.profile_python(opts)
         else:
           raise ValueError('Unknown cmd: %s\n' % cmd)
       return ret
@@ -112,23 +111,23 @@ class ProfileContext(object):
 
   ```python
     # Trace steps 100~200, profile at [150, 200] and dump profile at 200.
-    with tf.contrib.tfprof.ProfileContext('/tmp/train_dir',
-                                          trace_steps=range(100, 200, 3),
-                                          dump_steps=[200]) as pctx:
+    with profile_context.ProfileContext('/tmp/train_dir',
+                                        trace_steps=range(100, 200, 3),
+                                        dump_steps=[200]) as pctx:
       opts = tf.profiler.ProfileOptionBuilder.time_and_memory()
       pctx.add_auto_profiling('op', opts, [150, 200])
       train_loop().
 
     # Tracing only.
-    with tf.contrib.tfprof.ProfileContext('/tmp/train_dir') as pctx:
+    with profile_context.tfprof.ProfileContext('/tmp/train_dir') as pctx:
       # Run train/eval loop for at least few hundred steps. Profiles will be
       # dumped to train_dir. Use web UI or command line to do profiling.
       train_loop().
 
     # When session object is available, do explicit trace, profile and dump.
-    with tf.contrib.tfprof.ProfileContext('/tmp/train_dir',
-                                          trace_steps=[],
-                                          dump_steps=[]) as pctx:
+    with profile_context.ProfileContext('/tmp/train_dir',
+                                        trace_steps=[],
+                                        dump_steps=[]) as pctx:
       opts = tf.profiler.ProfileOptionBuilder.time_and_memory()
       pctx.trace_next_step()
       _ = session.run(train_op)
@@ -185,7 +184,29 @@ class ProfileContext(object):
     self._traced_steps = 0
     self._auto_profiles = []
     self._profiler = None
+    self._views = {}
     self._lock = threading.Lock()
+
+  def get_profiles(self, cmd):
+    """Returns profiling results for each step at which `cmd` was run.
+
+    Args:
+      cmd: string, profiling command used in an `add_auto_profiling` call.
+
+    Returns:
+      dict[int: (MultiGraphNodeProto | GraphNodeProto)]. Keys are steps at which
+      the profiling command was run. Values are the outputs of profiling.
+      For "code" and "op" commands this will be a `MultiGraphNodeProto`, for
+      "scope" and "graph" commands this will be a `GraphNodeProto.
+
+    Raises:
+      ValueError: if `cmd` was never run (either because no session.run call was
+      made or because there was no `add_auto_profiling` call with the specified
+      `cmd`.
+    """
+    if cmd not in self._views:
+      raise ValueError('No autoprofiler for command: {}, was run'.format(cmd))
+    return self._views[cmd]
 
   def add_auto_profiling(self, cmd, options, profile_steps):
     """Traces and profiles at some session run steps.
@@ -270,22 +291,20 @@ class ProfileContext(object):
       return
     if self._debug:
       sys.stderr.write('debug: dumping file at step: %d\n' % step)
-    if not gfile.Exists(self._profiler_dir):
-      gfile.MakeDirs(self._profiler_dir)
+    gfile.MakeDirs(self._profiler_dir)
 
     filename = os.path.join(compat.as_bytes(self._profiler_dir),
                             compat.as_bytes('profile_%d' % step))
     self.profiler._write_profile(filename)  # pylint: disable=protected-access
 
   def _dump_file(self, pb, basename):
-    if not gfile.Exists(self._profiler_dir):
-      gfile.MakeDirs(self._profiler_dir)
+    gfile.MakeDirs(self._profiler_dir)
     with gfile.Open(os.path.join(self._profiler_dir, basename), 'w') as f:
       f.write('%s' % pb)
 
   @contextlib.contextmanager
   def _new_step(self):
-    acquired = self._lock.acquire(False)
+    acquired = self._lock.acquire(False)  # pylint: disable=assignment-from-no-return
     yield (self._step, acquired)
     self._step += 1
     self._trace_next_step = False

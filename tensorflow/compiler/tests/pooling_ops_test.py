@@ -14,15 +14,14 @@
 # ==============================================================================
 """Functional tests for pooling operations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
-from tensorflow.compiler.tests.xla_test import XLATestCase
+from tensorflow.compiler.tests import xla_test
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_nn_ops
 from tensorflow.python.ops import nn_ops
@@ -38,7 +37,7 @@ def NHWCToNCHW(input_tensor):
   Returns:
     the converted tensor or a shape array
   """
-  if isinstance(input_tensor, ops.Tensor):
+  if isinstance(input_tensor, tensor.Tensor):
     return array_ops.transpose(input_tensor, [0, 3, 1, 2])
   else:
     return [input_tensor[0], input_tensor[3], input_tensor[1], input_tensor[2]]
@@ -53,7 +52,7 @@ def NCHWToNHWC(input_tensor):
   Returns:
     the converted tensor or a shape array
   """
-  if isinstance(input_tensor, ops.Tensor):
+  if isinstance(input_tensor, tensor.Tensor):
     return array_ops.transpose(input_tensor, [0, 2, 3, 1])
   else:
     return [input_tensor[0], input_tensor[2], input_tensor[3], input_tensor[1]]
@@ -69,7 +68,7 @@ def GetTestConfigs():
   return test_configs
 
 
-class PoolingTest(XLATestCase):
+class PoolingTest(xla_test.XLATestCase):
 
   def _VerifyOneTest(self, pool_func, input_sizes, ksize, strides, padding,
                      data_format, expected):
@@ -89,7 +88,7 @@ class PoolingTest(XLATestCase):
     # numbers from 1.
     x = np.array([f * 1.0 for f in range(1, total_size + 1)], dtype=np.float32)
     x = x.reshape(input_sizes)
-    with self.test_session() as sess:
+    with self.session() as sess:
       with self.test_scope():
         inputs = array_ops.placeholder(dtypes.float32)
         t = inputs
@@ -288,7 +287,7 @@ class PoolingTest(XLATestCase):
         expected=expected_output)
 
 
-class PoolGradTest(XLATestCase):
+class PoolGradTest(xla_test.XLATestCase):
 
   CPU_DEVICE = "/job:localhost/replica:0/task:0/cpu:0"
 
@@ -324,7 +323,7 @@ class PoolGradTest(XLATestCase):
     # TODO(b/74222344): Fix nan handling for max pool grad.
     # x[np.random.choice(total_size)] = np.nan
     x = x.reshape(input_sizes)
-    with self.test_session() as sess:
+    with self.session() as sess:
       # Use the forward pool function to compute some corresponding outputs
       # (needed for the CPU device, and we need the shape in both cases).
       with ops.device(self.CPU_DEVICE):
@@ -454,7 +453,7 @@ class PoolGradTest(XLATestCase):
     """Verifies the output values of the pooling function.
 
     Args:
-      pool_func: Pooling function to be called, e.g., tf.nn.max_pool
+      pool_func: Pooling function to be called, e.g., tf.nn.max_pool2d
       pool_grad_func: Corresponding pooling gradient function.
       input_sizes: Input tensor dimensions.
       ksize: The kernel size dimensions
@@ -563,6 +562,34 @@ class PoolGradTest(XLATestCase):
           data_format=data_format)
 
     self._TestPooling(nn_ops.avg_pool, AvgPoolGrad)
+
+  @test_util.disable_mlir_bridge(
+      "TODO(b/266613412): investigate FPE in AvgPoolGrad for TPU"
+  )
+  def testAvgPoolGradSamePaddingZeroStrideZeroSize(self):
+    output_gradient_vals = np.array([0.39117979], dtype=np.float32)
+    output_gradient_vals = output_gradient_vals.reshape([1, 1, 1, 1])
+    with self.session() as sess:
+      with self.test_scope():
+        output_gradients = array_ops.placeholder(
+            dtypes.float32, shape=output_gradient_vals.shape
+        )
+        t = gen_nn_ops.avg_pool_grad(
+            orig_input_shape=[1, 0, 0, 0],
+            grad=output_gradients,
+            ksize=[1, 0, 0, 0],
+            strides=[1, 0, 0, 0],
+            padding="SAME",
+            data_format="NCHW",
+        )
+      with self.assertRaisesRegex(
+          errors.InvalidArgumentError,
+          (
+              "Sliding window ksize field for dimension 1 must be positive but"
+              " is 0"
+          ),
+      ):
+        sess.run(t, {output_gradients: output_gradient_vals})
 
   # The CPU implementation of AvgPoolGrad doesn't accept kernels smaller than
   # the stride size, so we only run the following tests on MaxPoolGrad.

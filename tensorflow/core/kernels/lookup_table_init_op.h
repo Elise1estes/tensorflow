@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_LOOKUP_TABLE_INIT_OP_H_
-#define TENSORFLOW_KERNELS_LOOKUP_TABLE_INIT_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_LOOKUP_TABLE_INIT_OP_H_
+#define TENSORFLOW_CORE_KERNELS_LOOKUP_TABLE_INIT_OP_H_
 
 #include "tensorflow/core/kernels/initializable_lookup_table.h"
 
@@ -22,12 +22,12 @@ namespace tensorflow {
 namespace lookup {
 
 // Helper function to initialize an InitializableLookupTable from a text file.
-Status InitializeTableFromTextFile(const string& filename, int64 vocab_size,
-                                   char delimiter, int32 key_index,
-                                   int32 value_index, Env* env,
+Status InitializeTableFromTextFile(const string& filename, int64_t vocab_size,
+                                   char delimiter, int32_t key_index,
+                                   int32_t value_index, Env* env,
                                    InitializableLookupTable* table);
 
 }  // namespace lookup
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_LOOKUP_TABLE_INIT_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_LOOKUP_TABLE_INIT_OP_H_

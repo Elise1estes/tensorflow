@@ -17,14 +17,13 @@ limitations under the License.
 
 #include <utility>
 
-#include "tensorflow/core/lib/gtl/stl_util.h"
 #include "tensorflow/core/platform/logging.h"
 
 namespace tensorflow {
 
 namespace checkpoint {
 
-TensorSliceReaderCacheWrapper::TensorSliceReaderCacheWrapper() {}
+TensorSliceReaderCacheWrapper::TensorSliceReaderCacheWrapper() = default;
 TensorSliceReaderCacheWrapper::~TensorSliceReaderCacheWrapper() {
   delete cache_;
   cache_ = nullptr;
@@ -42,10 +41,10 @@ const TensorSliceReader* TensorSliceReaderCacheWrapper::GetReader(
                            preferred_shard);
 }
 
-TensorSliceReaderCache::TensorSliceReaderCache() {}
+TensorSliceReaderCache::TensorSliceReaderCache() = default;
 
 TensorSliceReaderCache::~TensorSliceReaderCache() {
-  for (auto pair : readers_) {
+  for (const auto& pair : readers_) {
     delete pair.second.second;
   }
 }

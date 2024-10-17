@@ -22,27 +22,26 @@ namespace tensorflow {
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
-std::function<void(OpKernelContext*, const Tensor&, Tensor*)>
-GetCpuCastFromFloat(DataType dst_dtype) {
+CastFunctorType GetCpuCastFromFloat(DataType dst_dtype) {
   CURRY_TYPES3(CAST_CASE, CPUDevice, float);
+  CAST_CASE(CPUDevice, float, float8_e5m2);
+  CAST_CASE(CPUDevice, float, float8_e4m3fn);
   return nullptr;
 }
 
-#if GOOGLE_CUDA
-std::function<void(OpKernelContext*, const Tensor&, Tensor*)>
-GetGpuCastFromFloat(DataType dst_dtype) {
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA) || \
+    (defined(TENSORFLOW_USE_ROCM) && TENSORFLOW_USE_ROCM)
+CastFunctorType GetGpuCastFromFloat(DataType dst_dtype) {
+#if defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
+  CAST_CASE(GPUDevice, float, bfloat16);
+#else
   CURRY_TYPES3(CAST_CASE, GPUDevice, float);
+#endif
+  CAST_CASE(GPUDevice, float, float8_e5m2);
+  CAST_CASE(GPUDevice, float, float8_e4m3fn);
   return nullptr;
 }
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#ifdef TENSORFLOW_USE_SYCL
-typedef Eigen::SyclDevice SYCLDevice;
-std::function<void(OpKernelContext*, const Tensor&, Tensor*)>
-GetSyclCastFromFloat(DataType dst_dtype) {
-  CURRY_TYPES3_NO_HALF(CAST_CASE, SYCLDevice, float);
-  return nullptr;
-}
-#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow

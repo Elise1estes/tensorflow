@@ -14,24 +14,23 @@
 # ==============================================================================
 """`LinearOperator` acting like a diagonal matrix."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import check_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops.linalg import linalg_impl as linalg
 from tensorflow.python.ops.linalg import linear_operator
+from tensorflow.python.ops.linalg import linear_operator_lower_triangular
 from tensorflow.python.ops.linalg import linear_operator_util
+from tensorflow.python.ops.linalg import property_hint_util
 from tensorflow.python.util.tf_export import tf_export
 
 __all__ = ["LinearOperatorDiag",]
 
 
 @tf_export("linalg.LinearOperatorDiag")
+@linear_operator.make_composite_tensor
 class LinearOperatorDiag(linear_operator.LinearOperator):
   """`LinearOperator` acting like a [batch] square diagonal matrix.
 
@@ -63,13 +62,13 @@ class LinearOperatorDiag(linear_operator.LinearOperator):
   ==> Shape [2, 4] Tensor
 
   # Create a [2, 3] batch of 4 x 4 linear operators.
-  diag = tf.random_normal(shape=[2, 3, 4])
+  diag = tf.random.normal(shape=[2, 3, 4])
   operator = LinearOperatorDiag(diag)
 
   # Create a shape [2, 1, 4, 2] vector.  Note that this shape is compatible
   # since the batch dimensions, [2, 1], are broadcast to
   # operator.batch_shape = [2, 3].
-  y = tf.random_normal(shape=[2, 1, 4, 2])
+  y = tf.random.normal(shape=[2, 1, 4, 2])
   x = operator.solve(y)
   ==> operator.matmul(x) = y
   ```
@@ -140,9 +139,18 @@ class LinearOperatorDiag(linear_operator.LinearOperator):
       TypeError:  If `diag.dtype` is not an allowed type.
       ValueError:  If `diag.dtype` is real, and `is_self_adjoint` is not `True`.
     """
+    parameters = dict(
+        diag=diag,
+        is_non_singular=is_non_singular,
+        is_self_adjoint=is_self_adjoint,
+        is_positive_definite=is_positive_definite,
+        is_square=is_square,
+        name=name
+    )
 
     with ops.name_scope(name, values=[diag]):
-      self._diag = ops.convert_to_tensor(diag, name="diag")
+      self._diag = linear_operator_util.convert_nonref_to_tensor(
+          diag, name="diag")
       self._check_diag(self._diag)
 
       # Check and auto-set hints.
@@ -158,42 +166,127 @@ class LinearOperatorDiag(linear_operator.LinearOperator):
 
       super(LinearOperatorDiag, self).__init__(
           dtype=self._diag.dtype,
-          graph_parents=[self._diag],
           is_non_singular=is_non_singular,
           is_self_adjoint=is_self_adjoint,
           is_positive_definite=is_positive_definite,
           is_square=is_square,
+          parameters=parameters,
           name=name)
 
   def _check_diag(self, diag):
     """Static check of diag."""
-    allowed_dtypes = [
-        dtypes.float16,
-        dtypes.float32,
-        dtypes.float64,
-        dtypes.complex64,
-        dtypes.complex128,
-    ]
-
-    dtype = diag.dtype
-    if dtype not in allowed_dtypes:
-      raise TypeError(
-          "Argument diag must have dtype in %s.  Found: %s"
-          % (allowed_dtypes, dtype))
-
-    if diag.get_shape().ndims is not None and diag.get_shape().ndims < 1:
+    if diag.shape.ndims is not None and diag.shape.ndims < 1:
       raise ValueError("Argument diag must have at least 1 dimension.  "
                        "Found: %s" % diag)
 
   def _shape(self):
     # If d_shape = [5, 3], we return [5, 3, 3].
-    d_shape = self._diag.get_shape()
+    d_shape = self._diag.shape
     return d_shape.concatenate(d_shape[-1:])
 
   def _shape_tensor(self):
     d_shape = array_ops.shape(self._diag)
     k = d_shape[-1]
     return array_ops.concat((d_shape, [k]), 0)
+
+  @property
+  def diag(self):
+    return self._diag
+
+  def _linop_inverse(self) -> "LinearOperatorDiag":
+    return LinearOperatorDiag(
+        1. / self.diag,
+        is_non_singular=self.is_non_singular,
+        is_self_adjoint=self.is_self_adjoint,
+        is_positive_definite=self.is_positive_definite,
+        is_square=True)
+
+  def _linop_matmul(
+      self,
+      left_operator: "LinearOperatorDiag",
+      right_operator: linear_operator.LinearOperator,
+    ) -> linear_operator.LinearOperator:
+    is_non_singular = property_hint_util.combined_non_singular_hint(
+        left_operator, right_operator)
+    is_self_adjoint = property_hint_util.combined_commuting_self_adjoint_hint(
+        left_operator, right_operator)
+    is_positive_definite = (
+        property_hint_util.combined_commuting_positive_definite_hint(
+            left_operator, right_operator))
+    if isinstance(right_operator, LinearOperatorDiag):
+      return LinearOperatorDiag(
+          diag=left_operator.diag * right_operator.diag,
+          is_non_singular=is_non_singular,
+          is_self_adjoint=is_self_adjoint,
+          is_positive_definite=is_positive_definite,
+          is_square=True,
+      )
+    # instance of linear_operator_identity.LinearOperatorScaledIdentity
+    elif hasattr(right_operator, "_ones_diag") and hasattr(
+        right_operator, "multiplier"
+    ):
+      return LinearOperatorDiag(
+          diag=left_operator.diag * right_operator.multiplier,
+          is_non_singular=is_non_singular,
+          is_self_adjoint=is_self_adjoint,
+          is_positive_definite=is_positive_definite,
+          is_square=True)
+    elif isinstance(
+        right_operator,
+        linear_operator_lower_triangular.LinearOperatorLowerTriangular,
+    ):
+      return linear_operator_lower_triangular.LinearOperatorLowerTriangular(
+          tril=left_operator.diag[..., None] * right_operator.to_dense(),
+          is_non_singular=is_non_singular,
+          # This is safe to do since the Triangular matrix is only self-adjoint
+          # when it is a diagonal matrix, and hence commutes.
+          is_self_adjoint=is_self_adjoint,
+          is_positive_definite=None,
+          is_square=True)
+    else:
+      return super()._linop_matmul(left_operator, right_operator)
+
+  def _linop_solve(
+      self,
+      left_operator: "LinearOperatorDiag",
+      right_operator: linear_operator.LinearOperator,
+  ) -> linear_operator.LinearOperator:
+    is_non_singular = property_hint_util.combined_non_singular_hint(
+        left_operator, right_operator)
+    is_self_adjoint = property_hint_util.combined_commuting_self_adjoint_hint(
+        left_operator, right_operator)
+    is_positive_definite = (
+        property_hint_util.combined_commuting_positive_definite_hint(
+            left_operator, right_operator))
+    if isinstance(right_operator, LinearOperatorDiag):
+      return LinearOperatorDiag(
+          diag=right_operator.diag / left_operator.diag,
+          is_non_singular=is_non_singular,
+          is_self_adjoint=is_self_adjoint,
+          is_positive_definite=is_positive_definite,
+          is_square=True)
+    # instance of linear_operator_identity.LinearOperatorScaledIdentity
+    elif (hasattr(right_operator, "_ones_diag")
+          and hasattr(right_operator, "multiplier")):
+      return LinearOperatorDiag(
+          diag=right_operator.multiplier / left_operator.diag,
+          is_non_singular=is_non_singular,
+          is_self_adjoint=is_self_adjoint,
+          is_positive_definite=is_positive_definite,
+          is_square=True)
+    elif isinstance(
+        right_operator,
+        linear_operator_lower_triangular.LinearOperatorLowerTriangular):
+      return linear_operator_lower_triangular.LinearOperatorLowerTriangular(
+          tril=right_operator.to_dense() / left_operator.diag[..., None],
+          is_non_singular=is_non_singular,
+          # This is safe to do since the Triangular matrix is only self-adjoint
+          # when it is a diagonal matrix, and hence commutes.
+          is_self_adjoint=is_self_adjoint,
+          is_positive_definite=None,
+          is_square=True)
+    else:
+      return super()._linop_solve(left_operator, right_operator)
 
   def _assert_non_singular(self):
     return linear_operator_util.assert_no_entries_with_modulus_zero(
@@ -221,18 +314,45 @@ class LinearOperatorDiag(linear_operator.LinearOperator):
             "This diagonal operator contained non-zero imaginary values.  "
             " Thus it was not self-adjoint."))
 
+  def _linop_adjoint(self) -> "LinearOperatorDiag":
+    diag = self.diag
+    if diag.dtype.is_complex:
+      diag = math_ops.conj(diag)
+
+    return LinearOperatorDiag(
+        diag=diag,
+        is_non_singular=self.is_non_singular,
+        is_self_adjoint=self.is_self_adjoint,
+        is_positive_definite=self.is_positive_definite,
+        is_square=True)
+
+  def _linop_cholesky(self) -> "LinearOperatorDiag":
+    return LinearOperatorDiag(
+        math_ops.sqrt(self.diag),
+        is_non_singular=True,
+        is_self_adjoint=True,
+        is_positive_definite=True,
+        is_square=True)
+
   def _matmul(self, x, adjoint=False, adjoint_arg=False):
     diag_term = math_ops.conj(self._diag) if adjoint else self._diag
     x = linalg.adjoint(x) if adjoint_arg else x
     diag_mat = array_ops.expand_dims(diag_term, -1)
     return diag_mat * x
 
+  def _matvec(self, x, adjoint=False):
+    diag_term = math_ops.conj(self._diag) if adjoint else self._diag
+    return diag_term * x
+
   def _determinant(self):
-    return math_ops.reduce_prod(self._diag, reduction_indices=[-1])
+    return math_ops.reduce_prod(self._diag, axis=[-1])
 
   def _log_abs_determinant(self):
-    return math_ops.reduce_sum(
-        math_ops.log(math_ops.abs(self._diag)), reduction_indices=[-1])
+    log_det = math_ops.reduce_sum(
+        math_ops.log(math_ops.abs(self._diag)), axis=[-1])
+    if self.dtype.is_complex:
+      log_det = math_ops.cast(log_det, dtype=self.dtype)
+    return log_det
 
   def _solve(self, rhs, adjoint=False, adjoint_arg=False):
     diag_term = math_ops.conj(self._diag) if adjoint else self._diag
@@ -251,6 +371,18 @@ class LinearOperatorDiag(linear_operator.LinearOperator):
     new_diag = self._diag + x_diag
     return array_ops.matrix_set_diag(x, new_diag)
 
+  def _eigvals(self):
+    return tensor_conversion.convert_to_tensor_v2_with_dispatch(self.diag)
+
+  def _cond(self):
+    abs_diag = math_ops.abs(self.diag)
+    return (math_ops.reduce_max(abs_diag, axis=-1) /
+            math_ops.reduce_min(abs_diag, axis=-1))
+
   @property
-  def diag(self):
-    return self._diag
+  def _composite_tensor_fields(self):
+    return ("diag",)
+
+  @property
+  def _experimental_parameter_ndims_to_matrix_ndims(self):
+    return {"diag": 1}

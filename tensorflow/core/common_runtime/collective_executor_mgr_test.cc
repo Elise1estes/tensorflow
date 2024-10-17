@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/nccl/collective_communicator.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/public/session_options.h"
 
@@ -29,6 +30,12 @@ namespace tensorflow {
 namespace {
 
 #define NUM_DEVS 3
+
+TEST(MaybeCreateNcclCommunicatorm, ZeroGpus) {
+  ConfigProto cp;
+  (*cp.mutable_device_count())["GPU"] = 0;
+  EXPECT_EQ(nullptr, MaybeCreateNcclCommunicator(cp));
+}
 
 class CollectiveExecutorMgrTest : public ::testing::Test {
  protected:
@@ -38,16 +45,21 @@ class CollectiveExecutorMgrTest : public ::testing::Test {
     auto* device_count = options.config.mutable_device_count();
     string task_name = "/job:localhost/replica:0/task:0";
     device_count->insert({"CPU", NUM_DEVS});
-    TF_CHECK_OK(DeviceFactory::AddDevices(options, task_name, &devices_));
-    device_mgr_.reset(new DeviceMgr(devices_));
-    DeviceResolverLocal* drl = new DeviceResolverLocal(device_mgr_.get());
-    cme_.reset(new CollectiveExecutorMgr(
-        cp, device_mgr_.get(), drl,
-        new CollectiveParamResolverLocal(device_mgr_.get(), drl, task_name)));
+    std::vector<std::unique_ptr<Device>> devices;
+    TF_CHECK_OK(DeviceFactory::AddDevices(options, task_name, &devices));
+    device_mgr_ = std::make_unique<StaticDeviceMgr>(std::move(devices));
+    std::unique_ptr<DeviceResolverInterface> drl(
+        new DeviceResolverLocal(device_mgr_.get()));
+    std::unique_ptr<ParamResolverInterface> prl(
+        new CollectiveParamResolverLocal(cp, device_mgr_.get(), drl.get(),
+                                         /*nccl_communicator*/ nullptr,
+                                         task_name));
+    cme_.reset(new CollectiveExecutorMgr(cp, device_mgr_.get(), std::move(drl),
+                                         std::move(prl),
+                                         MaybeCreateNcclCommunicator(cp)));
   }
 
   std::unique_ptr<CollectiveExecutorMgr> cme_;
-  std::vector<Device*> devices_;
   std::unique_ptr<DeviceMgr> device_mgr_;
 };
 
@@ -69,28 +81,28 @@ TEST_F(CollectiveExecutorMgrTest, FindOrCreate) {
 TEST_F(CollectiveExecutorMgrTest, StepSequenceRelated) {
   EXPECT_EQ(CollectiveExecutor::kInvalidId, cme_->NextStepId(123));
   Notification ss_note;
-  Status ss_status;
+  absl::Status ss_status;
   cme_->RefreshStepIdSequenceAsync(
-      123, [this, &ss_status, &ss_note](const Status& s) {
+      123, [&ss_status, &ss_note](const absl::Status& s) {
         ss_status = s;
         ss_note.Notify();
       });
   ss_note.WaitForNotification();
   EXPECT_FALSE(ss_status.ok());
-  EXPECT_EQ(ss_status.error_message(),
+  EXPECT_EQ(ss_status.message(),
             "CollectiveExecutorMgr does not implement RefreshStepIdSequence.");
   Notification gs_note;
-  Status gs_status;
+  absl::Status gs_status;
   GetStepSequenceRequest* req = nullptr;
   GetStepSequenceResponse* resp = nullptr;
   cme_->GetStepSequenceAsync(req, resp,
-                             [this, &gs_status, &gs_note](const Status& s) {
+                             [&gs_status, &gs_note](const absl::Status& s) {
                                gs_status = s;
                                gs_note.Notify();
                              });
   gs_note.WaitForNotification();
   EXPECT_FALSE(gs_status.ok());
-  EXPECT_EQ(gs_status.error_message(),
+  EXPECT_EQ(gs_status.message(),
             "CollectiveExecutorMgr does not implement GetStepSequence.");
 }
 

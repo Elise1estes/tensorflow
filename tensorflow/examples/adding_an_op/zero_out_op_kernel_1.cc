@@ -24,7 +24,7 @@ REGISTER_OP("ZeroOut")
     .Output("zeroed: int32")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(0, c->input(0));
-      return Status::OK();
+      return absl::OkStatus();
     })
     .Doc(R"doc(
 Zeros out all but the first value of a Tensor.
@@ -40,13 +40,13 @@ class ZeroOutOp : public OpKernel {
   void Compute(OpKernelContext* context) override {
     // Grab the input tensor
     const Tensor& input_tensor = context->input(0);
-    auto input = input_tensor.flat<int32>();
+    auto input = input_tensor.flat<int32_t>();
 
     // Create an output tensor
     Tensor* output_tensor = nullptr;
     OP_REQUIRES_OK(context, context->allocate_output(0, input_tensor.shape(),
                                                      &output_tensor));
-    auto output = output_tensor->template flat<int32>();
+    auto output = output_tensor->template flat<int32_t>();
 
     // Set all but the first element of the output tensor to 0.
     const int N = input.size();
@@ -60,3 +60,37 @@ class ZeroOutOp : public OpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("ZeroOut").Device(DEVICE_CPU), ZeroOutOp);
+
+REGISTER_OP("Namespace>ZeroOut")
+    .Input("to_zero: int32")
+    .Output("zeroed: int32")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->input(0));
+      return absl::OkStatus();
+    })
+    .Doc(R"doc(
+Zeros out all but the first value of a Tensor.
+
+zeroed: A Tensor whose first value is identical to `to_zero`, and 0
+  otherwise.
+)doc");
+
+REGISTER_KERNEL_BUILDER(Name("Namespace>ZeroOut").Device(DEVICE_CPU),
+                        ZeroOutOp);
+
+REGISTER_OP("Namespace>Nested>ZeroOut")
+    .Input("to_zero: int32")
+    .Output("zeroed: int32")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->input(0));
+      return absl::OkStatus();
+    })
+    .Doc(R"doc(
+Zeros out all but the first value of a Tensor.
+
+zeroed: A Tensor whose first value is identical to `to_zero`, and 0
+  otherwise.
+)doc");
+
+REGISTER_KERNEL_BUILDER(Name("Namespace>Nested>ZeroOut").Device(DEVICE_CPU),
+                        ZeroOutOp);

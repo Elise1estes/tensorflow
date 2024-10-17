@@ -15,8 +15,12 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_COMMON_RUNTIME_SHAPE_REFINER_H_
 #define TENSORFLOW_CORE_COMMON_RUNTIME_SHAPE_REFINER_H_
 
+#include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "tensorflow/core/common_runtime/graph_runner.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/shape_inference.h"
@@ -28,58 +32,6 @@ namespace tensorflow {
 namespace grappler {
 class GraphProperties;
 }
-
-// This class stores extra inference information in addition to
-// InferenceContext, such as inference tree for user-defined functions and node
-// input and output types.
-class ExtendedInferenceContext {
- public:
-  ExtendedInferenceContext(
-      std::unique_ptr<shape_inference::InferenceContext> ic, const Node* node)
-      : inference_context_(std::move(ic)) {
-    input_types_.reserve(node->num_inputs());
-    for (int i = 0; i < node->num_inputs(); i++) {
-      input_types_.push_back(node->input_type(i));
-    }
-    output_types_.reserve(node->num_outputs());
-    for (int i = 0; i < node->num_outputs(); i++) {
-      output_types_.push_back(node->output_type(i));
-    }
-  }
-
-  const std::unordered_map<string, std::unique_ptr<ExtendedInferenceContext>>&
-  nested_inferences() const {
-    return nested_inferences_;
-  }
-  DataType input_type(int64 idx) const { return input_types_[idx]; }
-  DataType output_type(int64 idx) const { return output_types_[idx]; }
-
-  shape_inference::InferenceContext* get_context() {
-    return inference_context_.get();
-  }
-
-  // Sets nested inference info.
-  // For composite ops (user-defined functions) only.
-  // Inference for trivial ops must not call this setter.
-  void set_nested_inferences(
-      std::unordered_map<string, std::unique_ptr<ExtendedInferenceContext>>
-          inferences) {
-    nested_inferences_ = std::move(inferences);
-  }
-
- private:
-  std::unique_ptr<shape_inference::InferenceContext> inference_context_;
-  std::vector<DataType> input_types_;
-  std::vector<DataType> output_types_;
-
-  // Nested inferences for composite ops (user-defined functions).
-  // Mapping key is nested node name.
-  // For trivial ops this map must be empty.
-  std::unordered_map<string, std::unique_ptr<ExtendedInferenceContext>>
-      nested_inferences_;
-
-  TF_DISALLOW_COPY_AND_ASSIGN(ExtendedInferenceContext);
-};
 
 // ShapeRefiner performs shape inference for TensorFlow Graphs.  It is
 // responsible for instantiating InferenceContext objects for each
@@ -131,21 +83,12 @@ class ShapeRefiner {
     if (it == node_to_context_.end()) {
       return nullptr;
     }
-    return it->second->get_context();
-  }
-
-  // Returns the ExtendedInferenceContext for 'node', if present.
-  ExtendedInferenceContext* GetExtendedContext(const Node* node) const {
-    auto it = node_to_context_.find(node);
-    if (it == node_to_context_.end()) {
-      return nullptr;
-    }
     return it->second.get();
   }
 
   // Getters and setters for graph_def_version_.
   int32 graph_def_version() const { return graph_def_version_; }
-  void set_graph_def_version(int32 version) { graph_def_version_ = version; }
+  void set_graph_def_version(int32_t version) { graph_def_version_ = version; }
 
   void set_require_shape_inference_fns(bool require_shape_inference_fns) {
     require_shape_inference_fns_ = require_shape_inference_fns;
@@ -167,19 +110,6 @@ class ShapeRefiner {
 
   bool function_shape_inference_supported() const {
     return function_library_ != nullptr;
-  }
-
-  // Call this to keep nested shapes information for user-defined functions:
-  // nested inferences will be available on the ExtendedInferenceContext for
-  // each function node, forming a tree of shape inferences corresponding to the
-  // tree of nested function calls. By default this setting is disabled, and
-  // only the shapes for the top-level function node will be reported on the
-  // InferenceContext for each function node, to reduce memory usage.
-  //
-  // This flag has no effect when the function inference is not enabled via
-  // set_function_library_for_shape_inference.
-  void set_keep_nested_shape_inferences() {
-    keep_nested_shape_inferences_ = true;
   }
 
  private:
@@ -209,14 +139,60 @@ class ShapeRefiner {
   //
   // On success:
   // - outer_context will contain output shapes inferred from input shapes
-  // - outer_context will contain nested inferences collection, iff
-  //   keep_nested_shapes is true
-  Status InferShapesForFunction(const tensorflow::FunctionDef* function_def,
-                                bool keep_nested_shapes,
-                                ExtendedInferenceContext* outer_context);
+  Status InferShapesForFunction(
+      const FunctionDef* function_def, AttrSlice attributes,
+      shape_inference::InferenceContext* outer_context);
 
-  Status EvaluateConstantTensorForEdge(const Node* node, int dst_idx,
-                                       bool* evaluated, Tensor* result);
+  // Performs shape inference for a node inside a function.
+  //
+  // 'outer_context' is the 'InferenceContext' for the function's call op.
+  Status InferShapesForFunctionSubNode(
+      const Node* node, shape_inference::InferenceContext* outer_context);
+
+  // Performs validation of 'node' and runs 'node's shape function,
+  // storing its shape outputs.
+  //
+  // All inputs of 'node' must be added to ShapeRefiner prior to
+  // adding 'node'.
+  //
+  // Optionally, if 'node' is in a nested function, the 'InferenceContext' for
+  // the call op of the function can be passed as 'outer_context' (pass nullptr
+  // otherwise). This gets used to perform constant propagation across Arg nodes
+  // by requesting the constant of value of the incoming tensor from the
+  // 'outer_context'.
+  //
+  // Returns an error if:
+  //  - the shape function for 'node' was not registered.
+  //  - 'node' was added before its inputs.
+  //  - The shape inference function returns an error.
+  Status AddNodeInternal(const Node* node,
+                         shape_inference::InferenceContext* outer_context);
+
+  // Attempts to evaluate the 'dst_idx'-th input to 'node'. If the input edge
+  // value can be evaluated, 'evaluated' is set to true and the value returned
+  // in 'result'. Otherwise 'evaluated' is set to false.
+  //
+  // Optionally, if 'node' is in a nested function, the 'InferenceContext' for
+  // the call op of the function can be passed as 'outer_context' (pass nullptr
+  // otherwise). This gets used to perform constant propagation across Arg nodes
+  // by requesting the constant of value of the incoming tensor from the
+  // 'outer_context'.
+  Status EvaluateConstantTensorForEdge(
+      const Node* node, int dst_idx, bool* evaluated, Tensor* result,
+      shape_inference::InferenceContext* outer_context);
+
+  // Wrapper around EvaluateConstantTensorForEdge for scalar int32/int64 input
+  // tensors. The caller is responsible for checking that the specified edge is
+  // scalar and int32 or int64.
+  //
+  // Optionally, if 'node' is in a nested function, the 'InferenceContext' for
+  // the call op of the function can be passed as 'outer_context' (pass nullptr
+  // otherwise). This gets used to perform constant propagation across Arg nodes
+  // by requesting the constant of value of the incoming tensor from the
+  // 'outer_context'.
+  Status EvaluateConstantIntScalarEdge(
+      const Node* node, int dst_idx, bool* evaluated, int64_t* result,
+      shape_inference::InferenceContext* outer_context);
 
   // This function tries to materialize as much information about the 'node''s
   // dst_idx input as a statically computable shape, and the result may be
@@ -239,12 +215,39 @@ class ShapeRefiner {
   //
   // <target_context> is used when creating new DimensionHandle and ShapeHandle
   // objects.
+  //
+  // Optionally, if 'node' is in a nested function, the 'InferenceContext' for
+  // the call op of the function can be passed as 'outer_context' (pass nullptr
+  // otherwise). This gets used to perform constant propagation across Arg nodes
+  // by requesting the constant of value of the incoming tensor from the
+  // 'outer_context'.
   Status ConstantPartialShape(shape_inference::InferenceContext* target_context,
                               const Node* node, int dst_idx,
-                              shape_inference::ShapeHandle* result);
+                              shape_inference::ShapeHandle* result,
+                              shape_inference::InferenceContext* outer_context);
 
+  // Implementation of ConstantPartialShape for StridedSlice nodes.
+  //
+  // Optionally, if 'node' is in a nested function, the 'InferenceContext' for
+  // the call op of the function can be passed as 'outer_context' (pass nullptr
+  // otherwise). This gets used to perform constant propagation across Arg nodes
+  // by requesting the constant of value of the incoming tensor from the
+  // 'outer_context'.
+  Status PartialStridedSliceShape(
+      Node* slice_node, shape_inference::InferenceContext* ctx,
+      shape_inference::ShapeHandle* result,
+      shape_inference::InferenceContext* outer_context);
+
+  // Runs the shape function registered for the node's op type.
+  //
+  // Optionally, if 'node' is in a nested function, the 'InferenceContext' for
+  // the call op of the function can be passed as 'outer_context' (pass nullptr
+  // otherwise). This gets used to perform constant propagation across Arg nodes
+  // by requesting the constant of value of the incoming tensor from the
+  // 'outer_context'.
   Status RunShapeFn(const Node* node, const OpRegistrationData* op_reg_data,
-                    ExtendedInferenceContext* ec);
+                    shape_inference::InferenceContext* context,
+                    shape_inference::InferenceContext* outer_context = nullptr);
 
   int32 graph_def_version_;
   const OpRegistryInterface* const ops_registry_;
@@ -253,20 +256,21 @@ class ShapeRefiner {
   // deleted after the tensors.
   GraphRunner graph_runner_;
 
-  // Stores a map from a node to its ExtendedInferenceContext.
-  std::unordered_map<const Node*, std::unique_ptr<ExtendedInferenceContext>>
+  // Stores a map from a node to its InferenceContext.
+  absl::flat_hash_map<const Node*,
+                      std::unique_ptr<shape_inference::InferenceContext>,
+                      hash<const Node*>>
       node_to_context_;
 
-  // Holds a cache from 'tensor name' to the tensor that is
-  // evaluatable as a constant expression.  This reduces repeated
-  // execution of the entire constant subgraph as a graph is being
-  // built up.  This could be changed to some kind of size-based LRU
-  // cache to avoid consuming too much memory, if that eventually
-  // becomes a concern.
+  // Holds a cache from tensor id (node id:node output) to the tensor that
+  // is evaluable as a constant expression. This reduces repeated execution
+  // of the entire constant subgraph as a graph is being built up. This could
+  // be changed to some kind of size-based LRU cache to avoid consuming too much
+  // memory, if that eventually becomes a concern.
   //
   // Only tensors less than 1KiB are currently stored in the cache.
-  static constexpr int64 kMaxTensorSize = 1024;
-  std::unordered_map<string, Tensor> const_tensor_map_;
+  static constexpr int64_t kMaxTensorSize = 1024;
+  absl::flat_hash_map<std::pair<int, int>, Tensor> const_tensor_map_;
 
   bool require_shape_inference_fns_ = true;
   bool disable_constant_propagation_ = false;
@@ -275,16 +279,12 @@ class ShapeRefiner {
   // shape inference.
   const tensorflow::FunctionLibraryDefinition* function_library_ = nullptr;
 
-  // Determines whether to keep the nested shape inference info for user-
-  // defined functions. By default that info is discarded to save memory.
-  bool keep_nested_shape_inferences_ = false;
-
-  // Cache the graph corresponding to each functin definition for which shapes
+  // Cache the graph corresponding to each function definition for which shapes
   // are refined.
-  std::unordered_map<const FunctionDef*, std::unique_ptr<const Graph>>
-      functions_;
+  absl::flat_hash_map<std::string, std::unique_ptr<const Graph>> functions_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(ShapeRefiner);
+  ShapeRefiner(const ShapeRefiner&) = delete;
+  void operator=(const ShapeRefiner&) = delete;
 };
 
 }  // namespace tensorflow

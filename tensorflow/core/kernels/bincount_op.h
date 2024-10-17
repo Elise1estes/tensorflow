@@ -13,10 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_BINCOUNT_OP_H_
-#define TENSORFLOW_BINCOUNT_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_BINCOUNT_OP_H_
+#define TENSORFLOW_CORE_KERNELS_BINCOUNT_OP_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/framework/types.h"
@@ -26,16 +26,26 @@ namespace tensorflow {
 
 namespace functor {
 
-template <typename Device, typename T>
+template <typename Device, typename Tidx, typename T, bool binary_count>
 struct BincountFunctor {
   static Status Compute(OpKernelContext* context,
-                        const typename TTypes<int32, 1>::ConstTensor& arr,
+                        const typename TTypes<Tidx, 1>::ConstTensor& arr,
                         const typename TTypes<T, 1>::ConstTensor& weights,
-                        typename TTypes<T, 1>::Tensor& output);
+                        typename TTypes<T, 1>::Tensor& output,
+                        const Tidx num_bins);
+};
+
+template <typename Device, typename Tidx, typename T, bool binary_count>
+struct BincountReduceFunctor {
+  static Status Compute(OpKernelContext* context,
+                        const typename TTypes<Tidx, 2>::ConstTensor& in,
+                        const typename TTypes<T, 2>::ConstTensor& weights,
+                        typename TTypes<T, 2>::Tensor& out,
+                        const Tidx num_bins);
 };
 
 }  // end namespace functor
 
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_BINCOUNT_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_BINCOUNT_OP_H_

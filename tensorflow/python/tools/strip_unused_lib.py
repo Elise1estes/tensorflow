@@ -15,9 +15,6 @@
 # ==============================================================================
 """Utilities to remove unneeded nodes from a GraphDefs."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 import copy
 
 from google.protobuf import text_format
@@ -50,8 +47,8 @@ def strip_unused(input_graph_def, input_node_names, output_node_names,
   """
   for name in input_node_names:
     if ":" in name:
-      raise ValueError("Name '%s' appears to refer to a Tensor, "
-                       "not a Operation." % name)
+      raise ValueError(f"Name '{name}' appears to refer to a Tensor, not an "
+                       "Operation.")
 
   # Here we replace the nodes we're going to override as inputs with
   # placeholders so that any unused nodes that are inputs to them are
@@ -75,12 +72,14 @@ def strip_unused(input_graph_def, input_node_names, output_node_names,
       if "_output_shapes" in node.attr:
         placeholder_node.attr["_output_shapes"].CopyFrom(node.attr[
             "_output_shapes"])
+      if "shape" in node.attr:
+        placeholder_node.attr["shape"].CopyFrom(node.attr["shape"])
       inputs_replaced_graph_def.node.extend([placeholder_node])
     else:
       inputs_replaced_graph_def.node.extend([copy.deepcopy(node)])
 
   if not_found:
-    raise KeyError("The following input nodes were not found: %s\n" % not_found)
+    raise KeyError(f"The following input nodes were not found: {not_found}.")
 
   output_graph_def = graph_util.extract_sub_graph(inputs_replaced_graph_def,
                                                   output_node_names)
@@ -102,7 +101,7 @@ def strip_unused_from_files(input_graph, input_binary, output_graph,
 
   input_graph_def = graph_pb2.GraphDef()
   mode = "rb" if input_binary else "r"
-  with gfile.FastGFile(input_graph, mode) as f:
+  with gfile.GFile(input_graph, mode) as f:
     if input_binary:
       input_graph_def.ParseFromString(f.read())
     else:

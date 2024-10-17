@@ -14,14 +14,11 @@
 # ==============================================================================
 """Registration and usage mechanisms for KL-divergences."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import control_flow_assert
 from tensorflow.python.ops import math_ops
+from tensorflow.python.util import deprecation
 from tensorflow.python.util import tf_inspect
 from tensorflow.python.util.tf_export import tf_export
 
@@ -51,7 +48,15 @@ def _registered_kl(type_a, type_b):
   return kl_fn
 
 
-@tf_export("distributions.kl_divergence")
+@deprecation.deprecated(
+    "2019-01-01",
+    "The TensorFlow Distributions library has moved to "
+    "TensorFlow Probability "
+    "(https://github.com/tensorflow/probability). You "
+    "should update all references to use `tfp.distributions` "
+    "instead of `tf.distributions`.",
+    warn_once=True)
+@tf_export(v1=["distributions.kl_divergence"])
 def kl_divergence(distribution_a, distribution_b,
                   allow_nan_stats=True, name=None):
   """Get the KL-divergence KL(distribution_a || distribution_b).
@@ -103,15 +108,24 @@ def kl_divergence(distribution_a, distribution_b,
     kl_t = array_ops.identity(kl_t, name="kl")
 
     with ops.control_dependencies([
-        control_flow_ops.Assert(
-            math_ops.logical_not(
-                math_ops.reduce_any(math_ops.is_nan(kl_t))),
-            ["KL calculation between %s and %s returned NaN values "
-             "(and was called with allow_nan_stats=False). Values:"
-             % (distribution_a.name, distribution_b.name), kl_t])]):
+        control_flow_assert.Assert(
+            math_ops.logical_not(math_ops.reduce_any(math_ops.is_nan(kl_t))), [
+                "KL calculation between %s and %s returned NaN values "
+                "(and was called with allow_nan_stats=False). Values:" %
+                (distribution_a.name, distribution_b.name), kl_t
+            ])
+    ]):
       return array_ops.identity(kl_t, name="checked_kl")
 
 
+@deprecation.deprecated(
+    "2019-01-01",
+    "The TensorFlow Distributions library has moved to "
+    "TensorFlow Probability "
+    "(https://github.com/tensorflow/probability). You "
+    "should update all references to use `tfp.distributions` "
+    "instead of `tf.distributions`.",
+    warn_once=True)
 def cross_entropy(ref, other,
                   allow_nan_stats=True, name=None):
   """Computes the (Shannon) cross entropy.
@@ -127,8 +141,8 @@ def cross_entropy(ref, other,
   where `F` denotes the support of the random variable `X ~ P`.
 
   Args:
-    ref: `tf.distributions.Distribution` instance.
-    other: `tf.distributions.Distribution` instance.
+    ref: `tfd.Distribution` instance.
+    other: `tfd.Distribution` instance.
     allow_nan_stats: Python `bool`, default `True`. When `True`,
       statistics (e.g., mean, mode, variance) use the value "`NaN`" to
       indicate the result is undefined. When `False`, an exception is raised
@@ -144,8 +158,8 @@ def cross_entropy(ref, other,
         ref, other, allow_nan_stats=allow_nan_stats)
 
 
-@tf_export("distributions.RegisterKL")
-class RegisterKL(object):
+@tf_export(v1=["distributions.RegisterKL"])
+class RegisterKL:
   """Decorator to register a KL divergence implementation function.
 
   Usage:
@@ -155,6 +169,14 @@ class RegisterKL(object):
     # Return KL(norm_a || norm_b)
   """
 
+  @deprecation.deprecated(
+      "2019-01-01",
+      "The TensorFlow Distributions library has moved to "
+      "TensorFlow Probability "
+      "(https://github.com/tensorflow/probability). You "
+      "should update all references to use `tfp.distributions` "
+      "instead of `tf.distributions`.",
+      warn_once=True)
   def __init__(self, dist_cls_a, dist_cls_b):
     """Initialize the KL registrar.
 

@@ -12,17 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
 """Subscribe function."""
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 import contextlib
 import re
 
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import tf_logging as logging
@@ -32,22 +28,24 @@ def _recursive_apply(tensors, apply_fn):
   """Helper method to recursively apply a function to structure of tensors.
 
   The structure of the tensors should take the form similar to fetches in
-  `tf.Session` and includes single `Tensor`, `list`, nested `list`, `tuple`,
+  `tf.compat.v1.Session` and includes single `Tensor`, `list`, nested `list`,
+  `tuple`,
   `namedtuple`, or `dict`.
 
   Args:
-    tensors: Single `Tensor`, `list`, nested `list, `tuple`,
-      `namedtuple`, or `dict`.
+    tensors: Single `Tensor`, `list`, nested `list, `tuple`, `namedtuple`, or
+      `dict`.
     apply_fn: Function to apply to each `Tensor` and should return a `Tensor`.
+
   Returns:
     Returns the modified tensors with the same structure.
   Raises:
     `TypeError` if undefined type in the tensors structure.
   """
   tensors_type = type(tensors)
-  if tensors_type is ops.Tensor:
+  if isinstance(tensors, tensor_lib.Tensor):
     return apply_fn(tensors)
-  elif tensors_type is variables.Variable:
+  elif isinstance(tensors, variables.Variable):
     return apply_fn(tensors.value())
   elif isinstance(tensors, (list, tuple)):
     tensors = [_recursive_apply(t, apply_fn) for t in tensors]
@@ -57,15 +55,16 @@ def _recursive_apply(tensors, apply_fn):
       return tuple(tensors)
     return tensors_type(*tensors)  # collections.namedtuple
   elif tensors_type is dict:
-    return dict([(k, _recursive_apply(v, apply_fn))
-                 for k, v in tensors.items()])
+    return dict((k, _recursive_apply(v, apply_fn)) for k, v in tensors.items())
   else:
-    raise TypeError('_recursive_apply argument %r has invalid type %r' %
-                    (tensors, tensors_type))
+    raise TypeError(f'_recursive_apply argument {tensors!r} has invalid type '
+                    f'{tensors_type!r}')
 
 
 class _ControlOutputCache(object):
   """Helper class to manage calculating and caching control_outputs in graph."""
+
+  __slots__ = ['cache']
 
   def __init__(self):
     self.cache = {}
@@ -75,6 +74,7 @@ class _ControlOutputCache(object):
 
     Args:
       graph: The graph to parse.
+
     Returns:
       A map of the control outputs.
     """
@@ -91,6 +91,7 @@ class _ControlOutputCache(object):
 
     Args:
       op: The op to fetch control outputs for.
+
     Returns:
       Iterable of control output ops.
     """
@@ -109,6 +110,7 @@ def _subscribe_new(tensor, side_effects, control_cache):
     tensor: `tf.Tensor`
     side_effects: List of side_effect functions see subscribe for details.
     control_cache: `_ControlOutputCache` helper to get control_outputs faster.
+
   Returns:
     The modified replacement to the passed in tensor which triggers the side
     effects.
@@ -137,12 +139,7 @@ def _subscribe_new(tensor, side_effects, control_cache):
     # are subscribed at the same time, we remove the control dependency from
     # the original op only once and we add the dependencies to all the
     # new identities.
-    if ops._USE_C_API:  # pylint: disable=protected-access
-      new_control_inputs = consumer_op.control_inputs
-    else:
-      # Make a copy so we don't modify the actual control inputs (this is fixed
-      # in the C API).
-      new_control_inputs = list(consumer_op.control_inputs)
+    new_control_inputs = consumer_op.control_inputs
     if tensor.op in new_control_inputs:
       new_control_inputs.remove(tensor.op)
     new_control_inputs.append(out.op)
@@ -159,6 +156,7 @@ def _subscribe_extend(tensor, side_effects):
   Args:
     tensor: A `tf.Tensor` as returned by subscribe().
     side_effects: List of side_effect functions, see subscribe for details.
+
   Returns:
     The given subscribed tensor (for API consistency).
   """
@@ -174,7 +172,9 @@ def _subscribe_extend(tensor, side_effects):
     for s in side_effects:
       outs += s(source_tensor)
 
-  out_ops = [out.op if isinstance(out, ops.Tensor) else out for out in outs]
+  out_ops = [
+      out.op if isinstance(out, tensor_lib.Tensor) else out for out in outs
+  ]
   tensor.op._add_control_inputs(out_ops)  # pylint: disable=protected-access
 
   return tensor
@@ -185,8 +185,9 @@ def _is_subscribed_identity(tensor):
 
   Args:
     tensor: A `tf.Tensor` to check.
+
   Returns:
-    True if the given tensor matches the criteria for subscription identies:
+    True if the given tensor matches the criteria for subscription identities:
     its op type is `Identity`, its name matches the name of its input and
     conforms to the convention for subscribed nodes.
     False otherwise.
@@ -197,8 +198,8 @@ def _is_subscribed_identity(tensor):
 
   # Check that the tensor name matches the convention in place for identity ops
   # created by subscribe().
-  match = re.match(
-      r'(?P<prefix_name>^.*?)/subscription/Identity[^/]+', tensor.name)
+  match = re.match(r'(?P<prefix_name>^.*?)/subscription/Identity[^/]+',
+                   tensor.name)
   if match is None or len(match.groups()) != 1:
     return False
   prefix_name = match.group('prefix_name')
@@ -225,6 +226,7 @@ def _subscribe(tensor, side_effects, control_cache):
     tensor: The `tf.Tensor` to be subscribed.
     side_effects: List of side_effect functions, see subscribe for details.
     control_cache: `_ControlOutputCache` helper to get control_outputs faster.
+
   Returns:
     The modified replacement to the passed in tensor which triggers the side
     effects or the given tensor, if it was already been subscribed.
@@ -296,6 +298,7 @@ def _scoped_subscribe(tensor, side_effects, control_cache):
     tensor: The `tf.Tensor` to be subscribed.
     side_effects: List of side_effect functions, see subscribe for details.
     control_cache: `_ControlOutputCache` helper to get control_outputs faster.
+
   Returns:
     The modified replacement to the passed in tensor which triggers the side
     effects or the given tensor, if it was already been subscribed.
@@ -334,6 +337,7 @@ def subscribe(tensors, side_effects):
     side_effects: Function(s) that takes a `Tensor`, construct a subgraph, and
       return a nonempty list of control dependencies. This can be a single
       function or list of functions.
+
   Returns:
     Subscribed tensors, which are identity copies of the passed in tensors
       in the same passed in structure, but the graph has been modified

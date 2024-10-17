@@ -23,7 +23,7 @@ limitations under the License.
 #include "tensorflow/core/grappler/costs/robust_stats.h"
 #include "tensorflow/core/grappler/grappler_item.h"
 #include "tensorflow/core/kernels/ops_util.h"
-#include "tensorflow/core/lib/core/blocking_counter.h"
+#include "tensorflow/core/platform/blocking_counter.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/public/session.h"
 
@@ -51,8 +51,12 @@ Status MeasuringCostEstimator::Initialize(const GrapplerItem& item) {
 }
 
 Status MeasuringCostEstimator::PredictCosts(const GraphDef& optimized_graph,
-                                            CostGraphDef* cost_graph,
+                                            RunMetadata* run_metadata,
                                             Costs* costs) const {
+  CostGraphDef* cost_graph = nullptr;
+  if (run_metadata) {
+    cost_graph = run_metadata->mutable_cost_graph();
+  }
   const bool running_simulation = (cluster_->type() == "virtual");
 
   std::vector<double> times(measurement_steps_);
@@ -111,8 +115,7 @@ Status MeasuringCostEstimator::PredictCosts(const GraphDef& optimized_graph,
   measurement_fn(-1);
 
   if (!status.ok()) {
-    LOG(ERROR) << "Failed to run start measurements: "
-               << status.error_message();
+    LOG(ERROR) << "Failed to run start measurements: " << status.message();
     costs->execution_time = Costs::Duration::max();
     return status;
   }
@@ -131,8 +134,7 @@ Status MeasuringCostEstimator::PredictCosts(const GraphDef& optimized_graph,
   }
 
   if (!status.ok()) {
-    LOG(ERROR) << "Failed to measure graph performance: "
-               << status.error_message();
+    LOG(ERROR) << "Failed to measure graph performance: " << status.message();
     costs->execution_time = Costs::Duration::max();
     return status;
   }
@@ -142,7 +144,7 @@ Status MeasuringCostEstimator::PredictCosts(const GraphDef& optimized_graph,
   RobustStats stats(times);
   costs->execution_time = Costs::Duration(stats.mean());
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 }  // end namespace grappler
 }  // end namespace tensorflow

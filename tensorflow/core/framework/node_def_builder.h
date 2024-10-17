@@ -13,17 +13,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_FRAMEWORK_NODE_DEF_BUILDER_H_
-#define TENSORFLOW_FRAMEWORK_NODE_DEF_BUILDER_H_
+#ifndef TENSORFLOW_CORE_FRAMEWORK_NODE_DEF_BUILDER_H_
+#define TENSORFLOW_CORE_FRAMEWORK_NODE_DEF_BUILDER_H_
 
 #include <functional>
 #include <vector>
+
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/graph/graph.h"
+#include "tensorflow/core/graph/graph_node_util.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
 #include "tensorflow/core/lib/strings/strcat.h"
@@ -63,7 +66,10 @@ class NodeDefBuilder {
   // specified by calling the methods below.
   // REQUIRES: The OpDef must satisfy ValidateOpDef().
   NodeDefBuilder(StringPiece name, StringPiece op_name,
-                 const OpRegistryInterface* op_registry = OpRegistry::Global());
+                 const OpRegistryInterface* op_registry = OpRegistry::Global(),
+                 const NodeDebugInfo* debug = nullptr);
+  NodeDefBuilder(StringPiece name, StringPiece op_name,
+                 const NodeDebugInfo& debug);
   // REQUIRES: in addition, *op_def must outlive *this.
   NodeDefBuilder(StringPiece name, const OpDef* op_def);
 
@@ -75,7 +81,7 @@ class NodeDefBuilder {
   NodeDefBuilder& Input(const NodeOut& src);
 
   // For inputs that take a list of tensors.
-  NodeDefBuilder& Input(gtl::ArraySlice<NodeOut> src_list);
+  NodeDefBuilder& Input(absl::Span<const NodeOut> src_list);
 
   // To create inputs in tests, see fake_input.h.
   NodeDefBuilder& Input(FakeInputFunctor fake_input);
@@ -89,10 +95,11 @@ class NodeDefBuilder {
   // Sets the attr, if not already set.  If already set with a different
   // value, an error will be returned from Finalize().
   NodeDefBuilder& Attr(StringPiece name, const AttrValue& value);
+  NodeDefBuilder& Attr(StringPiece name, AttrValue&& value);
   NodeDefBuilder& Attr(StringPiece name, StringPiece value);
   NodeDefBuilder& Attr(StringPiece name, const char* value);
-  NodeDefBuilder& Attr(StringPiece name, int32 value);
-  NodeDefBuilder& Attr(StringPiece name, int64 value);
+  NodeDefBuilder& Attr(StringPiece name, int32_t value);
+  NodeDefBuilder& Attr(StringPiece name, int64_t value);
   NodeDefBuilder& Attr(StringPiece name, float value);
   NodeDefBuilder& Attr(StringPiece name, double value);
   NodeDefBuilder& Attr(StringPiece name, bool value);
@@ -101,22 +108,23 @@ class NodeDefBuilder {
   NodeDefBuilder& Attr(StringPiece name, const Tensor& value);
   NodeDefBuilder& Attr(StringPiece name, const TensorProto& value);
   NodeDefBuilder& Attr(StringPiece name, const NameAttrList& value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<StringPiece> value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<const char*> value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<string> value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<int32> value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<int64> value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<float> value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<bool> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const StringPiece> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const char* const> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const string> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const tstring> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const int32> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const int64_t> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const float> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const bool> value);
   NodeDefBuilder& Attr(StringPiece name, const std::vector<bool>& value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<DataType> value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<TensorShape> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const DataType> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const TensorShape> value);
   NodeDefBuilder& Attr(StringPiece name,
-                       gtl::ArraySlice<PartialTensorShape> value);
+                       absl::Span<const PartialTensorShape> value);
   NodeDefBuilder& Attr(StringPiece name,
-                       gtl::ArraySlice<TensorShapeProto> value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<Tensor> value);
-  NodeDefBuilder& Attr(StringPiece name, gtl::ArraySlice<NameAttrList> value);
+                       absl::Span<const TensorShapeProto> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const Tensor> value);
+  NodeDefBuilder& Attr(StringPiece name, absl::Span<const NameAttrList> value);
 
   template <class T>
   NodeDefBuilder& Attr(StringPiece name, std::initializer_list<T> value) {
@@ -125,9 +133,11 @@ class NodeDefBuilder {
 
   // Finish building the NodeDef, returning any errors or setting
   // *node_def if none.
+  // If `consume` is true, the builder state will be moved into `node_def`,
+  // and the builder will be left in an undefined state.
   // WARNING: Not all problems are detected!  The resulting NodeDef may
   // not be valid!  Call ValidateNodeDef() from node_def_utils to be sure.
-  Status Finalize(NodeDef* node_def) const;
+  Status Finalize(NodeDef* node_def, bool consume = false);
 
   // Accessors for the values set in the constructor.
   const string& node_name() const { return node_def_.name(); }
@@ -149,7 +159,7 @@ class NodeDefBuilder {
   void SingleInput(const OpDef::ArgDef* input_arg, StringPiece src_node,
                    int src_index, DataType dt);
   void ListInput(const OpDef::ArgDef* input_arg,
-                 gtl::ArraySlice<NodeOut> src_list);
+                 absl::Span<const NodeOut> src_list);
 
   // Add "src_node:src_index" to the list of inputs in the node_def_.
   void AddInput(StringPiece src_node, int src_index);
@@ -166,6 +176,11 @@ class NodeDefBuilder {
     return input_arg->is_ref() ? MakeRefType(dt) : dt;
   }
 
+  // Returns true if an attr named `name` is already present in the node_def_.
+  // If such an attr is already present and `value` is not equal to the present
+  // value, an error is generated.
+  bool AttrValueAlreadyPresent(StringPiece name, const AttrValue& value);
+
   const OpDef* op_def_;
   NodeDef node_def_;
   int inputs_specified_;
@@ -175,4 +190,4 @@ class NodeDefBuilder {
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_FRAMEWORK_NODE_DEF_BUILDER_H_
+#endif  // TENSORFLOW_CORE_FRAMEWORK_NODE_DEF_BUILDER_H_

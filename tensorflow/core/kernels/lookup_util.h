@@ -21,19 +21,29 @@ limitations under the License.
 #include "tensorflow/core/kernels/initializable_lookup_table.h"
 
 namespace tensorflow {
+namespace data {
+class DatasetBase;
+}  // namespace data
+}  // namespace tensorflow
+
+namespace tensorflow {
 namespace lookup {
 
 // Gets the LookupTable stored in the ctx->resource_manager() with key
 // passed by attribute with name input_name, returns null if the table
-// doesn't exist.
-Status GetLookupTable(const string& input_name, OpKernelContext* ctx,
+// doesn't exist. Use GetResourceLookupTable() or GetReferenceLookupTable() if
+// the input dtype is known.
+Status GetLookupTable(StringPiece input_name, OpKernelContext* ctx,
                       LookupInterface** table);
+Status GetResourceLookupTable(StringPiece input_name, OpKernelContext* ctx,
+                              LookupInterface** table);
+Status GetReferenceLookupTable(StringPiece input_name, OpKernelContext* ctx,
+                               LookupInterface** table);
 
 // Gets the InitializableLookupTable stored in the
 // ctx->resource_manager() with key passed by attribute with name
 // input_name, returns null if the table doesn't exist.
-Status GetInitializableLookupTable(const string& input_name,
-                                   OpKernelContext* ctx,
+Status GetInitializableLookupTable(StringPiece input_name, OpKernelContext* ctx,
                                    InitializableLookupTable** table);
 
 // Verify that the given key_dtype and value_dtype matches the corresponding
@@ -41,61 +51,19 @@ Status GetInitializableLookupTable(const string& input_name,
 Status CheckTableDataTypes(const LookupInterface& table, DataType key_dtype,
                            DataType value_dtype, const string& table_name);
 
-Status InitializeTableFromTextFile(const string& filename, int64 vocab_size,
-                                   char delimiter, int32 key_index,
-                                   int32 value_index, Env* env,
-                                   InitializableLookupTable* table);
+// Initializes `table` from `filename`.
+Status InitializeTableFromTextFile(const string& filename, int64_t vocab_size,
+                                   char delimiter, int32_t key_index,
+                                   int32_t value_index, int64_t offset,
+                                   Env* env, InitializableLookupTable* table);
 
-// Iterator to initialize tables given 'keys' and 'values' tensors.
-//
-// The two tensors are returned in the first iteration. It doesn't loop
-// over each element of the tensor since insertions in the lookup table can
-// process batches.
-class KeyValueTensorIterator
-    : public InitializableLookupTable::InitTableIterator {
- public:
-  // keys and values are not owned by the iterator.
-  explicit KeyValueTensorIterator(const Tensor* keys, const Tensor* values)
-      : keys_(keys), values_(values), valid_(true), status_(Status::OK()) {
-    TensorShape key_shape = keys_->shape();
-    if (!key_shape.IsSameSize(values_->shape())) {
-      valid_ = false;
-      status_ = errors::InvalidArgument(
-          "keys and values should have the same dimension.",
-          key_shape.DebugString(), " vs ", values_->shape().DebugString());
-    }
-    if (key_shape.num_elements() == 0) {
-      valid_ = false;
-      status_ =
-          errors::InvalidArgument("keys and values cannot be empty tensors.");
-    }
-  }
-
-  bool Valid() const override { return valid_; }
-
-  void Next() override {
-    valid_ = false;
-    status_ = errors::OutOfRange("No more data.");
-  }
-
-  const Tensor& keys() const override { return *keys_; }
-
-  const Tensor& values() const override { return *values_; }
-
-  Status status() const override { return status_; }
-
-  int64 total_size() const override {
-    return keys_ == nullptr ? -1 : keys_->NumElements();
-  }
-
- private:
-  TF_DISALLOW_COPY_AND_ASSIGN(KeyValueTensorIterator);
-
-  const Tensor* keys_;    // Doesn't own it.
-  const Tensor* values_;  // Doesn't own it.
-  bool valid_;            // true if the iterator points to an existing range.
-  Status status_;
-};
+// Initializes `table` from `filename`. `func` may specify how to represent the
+// initializer as a graphdef, so that the table can be serialized as metadata.
+Status InitializeTableFromTextFile(
+    const string& filename, int64_t vocab_size, char delimiter,
+    int32_t key_index, int32_t value_index, int64_t offset, Env* env,
+    std::unique_ptr<InitializableLookupTable::InitializerSerializer> serializer,
+    InitializableLookupTable* table);
 
 }  // namespace lookup
 }  // namespace tensorflow

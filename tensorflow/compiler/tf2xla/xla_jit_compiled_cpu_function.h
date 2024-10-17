@@ -19,11 +19,13 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "tensorflow/compiler/tf2xla/tf2xla.pb.h"
 #include "tensorflow/compiler/tf2xla/xla_compiled_cpu_function.h"
-#include "tensorflow/compiler/xla/client/local_client.h"
-#include "tensorflow/compiler/xla/statusor.h"
+#include "xla/client/local_client.h"
+#include "xla/cpu_function_runtime.h"
 #include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -42,7 +44,7 @@ class XlaJitCompiledCpuFunction {
   // `config` specifies the portion of the graph to compile, via feeds and
   // fetches. Each feed is a positional input argument for the compiled
   // function, while each fetch is a positional output argument.
-  static xla::StatusOr<std::unique_ptr<XlaJitCompiledCpuFunction>> Compile(
+  static absl::StatusOr<std::unique_ptr<XlaJitCompiledCpuFunction>> Compile(
       const GraphDef& graph_def, const tf2xla::Config& config,
       const xla::ExecutableBuildOptions& build_options);
 
@@ -57,6 +59,11 @@ class XlaJitCompiledCpuFunction {
     return static_data_;
   }
 
+  const xla::LocalExecutable& LocalExecutable() const {
+    CHECK(executable_);  // Crash ok
+    return *executable_;
+  }
+
  private:
   XlaJitCompiledCpuFunction() {}
 
@@ -66,20 +73,26 @@ class XlaJitCompiledCpuFunction {
   // The static data is backed by the rest of the state in this class.
   XlaCompiledCpuFunction::StaticData static_data_;
 
-  // The backing arrays of arg and temp buffer sizes.
-  std::vector<intptr_t> arg_sizes_;
-  std::vector<intptr_t> temp_sizes_;
+  // The backing array for buffer infos.
+  std::vector<xla::cpu_function_runtime::BufferInfo> buffer_infos_;
+
+  // The backing array for the arg index table.
+  std::vector<int32> arg_index_table_;
 
   // The backing arrays of arg and result names. We hold the actual strings in
   // nonempty_*_names_, and hold arrays of pointers in *_names_ for the static
   // data to refer to.
   std::vector<string> nonempty_arg_names_;
+  std::vector<string> nonempty_variable_names_;
   std::vector<string> nonempty_result_names_;
   std::vector<const char*> arg_names_;
+  std::vector<const char*> variable_names_;
   std::vector<const char*> result_names_;
 
-  // The backing data for the program shape.
-  std::unique_ptr<const xla::ProgramShape> program_shape_;
+  // The backing data for the program shape. The proto form of program shape is
+  // used because the program shape is serialized and embedded in the object
+  // file.
+  std::unique_ptr<const xla::ProgramShapeProto> program_shape_;
 };
 
 }  // namespace tensorflow

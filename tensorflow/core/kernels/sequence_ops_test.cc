@@ -23,6 +23,7 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
 #include "tensorflow/core/kernels/ops_util.h"
+#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -67,6 +68,21 @@ TEST_F(RangeOpTest, Simple_D32) {
   test::ExpectTensorEqual<int32>(expected, *GetOutput(0));
 }
 
+TEST_F(RangeOpTest, Simple_Half) {
+  MakeOp(DT_HALF);
+
+  // Feed and run
+  AddInputFromList<Eigen::half, float>(TensorShape({}), {0.5});
+  AddInputFromList<Eigen::half, float>(TensorShape({}), {2});
+  AddInputFromList<Eigen::half, float>(TensorShape({}), {0.3});
+  TF_ASSERT_OK(RunOpKernel());
+
+  // Check the output
+  Tensor expected(allocator(), DT_HALF, TensorShape({5}));
+  test::FillValues<Eigen::half, float>(&expected, {0.5, 0.8, 1.1, 1.4, 1.7});
+  test::ExpectTensorEqual<Eigen::half>(expected, *GetOutput(0));
+}
+
 TEST_F(RangeOpTest, Simple_Float) {
   MakeOp(DT_FLOAT);
 
@@ -94,8 +110,8 @@ TEST_F(RangeOpTest, Large_Double) {
   // Check the output
   Tensor expected(allocator(), DT_DOUBLE, TensorShape({20000}));
   std::vector<double> result;
-  for (int32 i = 0; i < 20000; ++i) result.push_back(i * 0.5);
-  test::FillValues<double>(&expected, gtl::ArraySlice<double>(result));
+  for (int32_t i = 0; i < 20000; ++i) result.push_back(i * 0.5);
+  test::FillValues<double>(&expected, absl::Span<const double>(result));
   test::ExpectTensorEqual<double>(expected, *GetOutput(0));
 }
 
@@ -114,13 +130,34 @@ TEST_F(LinSpaceOpTest, Simple_D32) {
   test::ExpectTensorEqual<float>(expected, *GetOutput(0));
 }
 
+TEST_F(LinSpaceOpTest, Exact_Endpoints) {
+  MakeOp(DT_FLOAT, DT_INT32);
+
+  // Feed and run. The particular values 0., 1., and 42 are chosen to test that
+  // the last value is not calculated via an intermediate delta as (1./41)*41,
+  // because for IEEE 32-bit floats that returns 0.99999994 != 1.0.
+  AddInputFromArray<float>(TensorShape({}), {0.0});
+  AddInputFromArray<float>(TensorShape({}), {1.0});
+  AddInputFromArray<int32>(TensorShape({}), {42});
+  TF_ASSERT_OK(RunOpKernel());
+
+  // Check the output
+  Tensor output = *GetOutput(0);
+  float expected_start = 0.0;
+  float start = output.flat<float>()(0);
+  EXPECT_EQ(expected_start, start) << expected_start << " vs. " << start;
+  float expected_stop = 1.0;
+  float stop = output.flat<float>()(output.NumElements() - 1);
+  EXPECT_EQ(expected_stop, stop) << expected_stop << " vs. " << stop;
+}
+
 TEST_F(LinSpaceOpTest, Single_D64) {
   MakeOp(DT_FLOAT, DT_INT64);
 
   // Feed and run
   AddInputFromArray<float>(TensorShape({}), {9.0});
   AddInputFromArray<float>(TensorShape({}), {100.0});
-  AddInputFromArray<int64>(TensorShape({}), {1});
+  AddInputFromArray<int64_t>(TensorShape({}), {1});
   TF_ASSERT_OK(RunOpKernel());
 
   // Check the output

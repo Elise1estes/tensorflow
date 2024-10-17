@@ -13,13 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for tfdbg module debug_data."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import platform
-import shutil
 import tempfile
 
 import numpy as np
@@ -28,6 +23,7 @@ from tensorflow.core.framework import graph_pb2
 from tensorflow.core.framework import tensor_pb2
 from tensorflow.python.debug.lib import debug_data
 from tensorflow.python.framework import test_util
+from tensorflow.python.lib.io import file_io
 from tensorflow.python.platform import gfile
 from tensorflow.python.platform import googletest
 from tensorflow.python.platform import test
@@ -151,12 +147,11 @@ class DebugTensorDatumTest(test_util.TensorFlowTestCase):
 class DebugDumpDirTest(test_util.TensorFlowTestCase):
 
   def setUp(self):
-    self._dump_root = tempfile.mktemp()
-    os.mkdir(self._dump_root)
+    self._dump_root = tempfile.mkdtemp()
 
   def tearDown(self):
     # Tear down temporary dump directory.
-    shutil.rmtree(self._dump_root)
+    file_io.delete_recursively(self._dump_root)
 
   def _makeDataDirWithMultipleDevicesAndDuplicateNodeNames(self):
     cpu_0_dir = os.path.join(
@@ -182,8 +177,8 @@ class DebugDumpDirTest(test_util.TensorFlowTestCase):
         gpu_1_dir, "node_foo_1_2_DebugIdentity_1472563253536387"), "wb")
 
   def testDebugDumpDir_nonexistentDumpRoot(self):
-    with self.assertRaisesRegexp(IOError, "does not exist"):
-      debug_data.DebugDumpDir(tempfile.mktemp() + "_foo")
+    with self.assertRaisesRegex(IOError, "does not exist"):
+      debug_data.DebugDumpDir(tempfile.mkdtemp() + "_foo")
 
   def testDebugDumpDir_invalidFileNamingPattern(self):
     # File name with too few underscores should lead to an exception.
@@ -194,8 +189,8 @@ class DebugDumpDirTest(test_util.TensorFlowTestCase):
     os.makedirs(device_dir)
     open(os.path.join(device_dir, "node1_DebugIdentity_1234"), "wb")
 
-    with self.assertRaisesRegexp(ValueError,
-                                 "does not conform to the naming pattern"):
+    with self.assertRaisesRegex(ValueError,
+                                "does not conform to the naming pattern"):
       debug_data.DebugDumpDir(self._dump_root)
 
   def testDebugDumpDir_validDuplicateNodeNamesWithMultipleDevices(self):
@@ -228,8 +223,7 @@ class DebugDumpDirTest(test_util.TensorFlowTestCase):
     self.assertEqual(1472563253536385, dump_dir.t0)
     self.assertEqual(3, dump_dir.size)
 
-    with self.assertRaisesRegexp(
-        ValueError, r"Invalid device name: "):
+    with self.assertRaisesRegex(ValueError, r"Invalid device name: "):
       dump_dir.nodes("/job:localhost/replica:0/task:0/device:GPU:2")
     self.assertItemsEqual(["node_foo_1", "node_foo_1", "node_foo_1"],
                           dump_dir.nodes())
@@ -259,8 +253,7 @@ class DebugDumpDirTest(test_util.TensorFlowTestCase):
     node.op = "FooOp"
     node.device = "/job:localhost/replica:0/task:0/device:GPU:1"
 
-    with self.assertRaisesRegexp(
-        ValueError, r"Duplicate node name on device "):
+    with self.assertRaisesRegex(ValueError, r"Duplicate node name on device "):
       debug_data.DebugDumpDir(
           self._dump_root,
           partition_graphs=[graph_cpu_0, graph_gpu_0, graph_gpu_1])

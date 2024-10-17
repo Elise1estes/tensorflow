@@ -104,8 +104,8 @@ class GrpcSessionDebugTest : public ::testing::Test {
 
   void DeleteDumpDir() {
     if (Env::Default()->IsDirectory(dump_dir_).ok()) {
-      int64 undeleted_files = 0;
-      int64 undeleted_dirs = 0;
+      int64_t undeleted_files = 0;
+      int64_t undeleted_dirs = 0;
       ASSERT_TRUE(
           Env::Default()
               ->DeleteRecursively(dump_dir_, &undeleted_files, &undeleted_dirs)
@@ -154,7 +154,11 @@ TEST_F(GrpcSessionDebugTest, FileDebugURL) {
   CreateGraphDef(&graph, node_names);
 
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 2, &cluster));
+  TF_CHECK_OK(test::TestCluster::MakeTestCluster(
+      test::TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({test::TestJob{/*name=*/"localhost", /*num_tasks=*/2}}),
+      &cluster));
 
   auto session = NewRemote(Options(cluster->targets()[0], 1));
   TF_CHECK_OK(session->Create(graph));
@@ -224,14 +228,18 @@ void SetDevice(GraphDef* graph, const string& name, const string& dev) {
 
 TEST_F(GrpcSessionDebugTest, MultiDevices_String) {
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 1), 2, &cluster));
+  TF_CHECK_OK(test::TestCluster::MakeTestCluster(
+      test::TestClusterConfig()
+          .Options(Devices(1, 1))
+          .Jobs({test::TestJob{/*name=*/"localhost", /*num_tasks=*/2}}),
+      &cluster));
   auto session = NewRemote(Options(cluster->targets()[0], 1000));
 
   // b = a
   Graph graph(OpRegistry::Global());
   Tensor a_tensor(DT_STRING, TensorShape({2, 2}));
   for (size_t i = 0; i < 4; ++i) {
-    a_tensor.flat<string>()(i) = "hello, world";
+    a_tensor.flat<tstring>()(i) = "hello, world";
   }
   Node* a = test::graph::Constant(&graph, a_tensor);
   Node* b = test::graph::Identity(&graph, a);
@@ -247,7 +255,7 @@ TEST_F(GrpcSessionDebugTest, MultiDevices_String) {
       SetDevice(&def, a->name(), a_dev.name());
       SetDevice(&def, b->name(), b_dev.name());
 
-      Status s = session->Create(def);
+      absl::Status s = session->Create(def);
       if (s.ok()) {
         std::vector<Tensor> outputs;
 
@@ -266,7 +274,7 @@ TEST_F(GrpcSessionDebugTest, MultiDevices_String) {
         ASSERT_EQ(outputs[0].dtype(), DT_STRING);
         ASSERT_EQ(outputs[0].NumElements(), 4);
         for (size_t i = 0; i < outputs[0].NumElements(); ++i) {
-          EXPECT_EQ(outputs[0].flat<string>()(i), "hello, world");
+          EXPECT_EQ(outputs[0].flat<tstring>()(i), "hello, world");
         }
         TF_CHECK_OK(session->Close());
 
@@ -278,17 +286,15 @@ TEST_F(GrpcSessionDebugTest, MultiDevices_String) {
         ASSERT_EQ(1, dumped_tensors.size());
         ASSERT_EQ(TensorShape({2, 2}), dumped_tensors[0].shape());
         for (size_t i = 0; i < 4; ++i) {
-          ASSERT_EQ("hello, world", dumped_tensors[0].flat<string>()(i));
+          ASSERT_EQ("hello, world", dumped_tensors[0].flat<tstring>()(i));
         }
 
         DeleteDumpDir();
       } else {
-        // CUDA and SYCL devices do not have an Identity op for strings
+        // The CUDA device does not have an Identity op for strings
         LOG(ERROR) << "Error: " << s;
         ASSERT_TRUE((a_dev.device_type() == DEVICE_GPU) ||
-                    (a_dev.device_type() == DEVICE_SYCL) ||
-                    (b_dev.device_type() == DEVICE_GPU) ||
-                    (b_dev.device_type() == DEVICE_SYCL));
+                    (b_dev.device_type() == DEVICE_GPU));
         ASSERT_FALSE(s.ok());
       }
     }

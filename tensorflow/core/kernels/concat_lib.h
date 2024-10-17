@@ -13,13 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_CONCAT_LIB_H_
-#define TENSORFLOW_KERNELS_CONCAT_LIB_H_
+#ifndef TENSORFLOW_CORE_KERNELS_CONCAT_LIB_H_
+#define TENSORFLOW_CORE_KERNELS_CONCAT_LIB_H_
 
 #include <vector>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/device_base.h"
+#include "tensorflow/core/framework/register_types.h"
 
 namespace tensorflow {
 
@@ -39,14 +40,16 @@ namespace tensorflow {
 // {1, Numelements} and reshape the result matrix to have shape
 // {1, N * NumElements} before passing it to this functor.
 
-// Assumes all inputs are nonempty
+// Assumes all elements of inputs are nonempty.
+// Assumes output is nonempty.
 template <typename T>
 void ConcatCPU(
     DeviceBase* d,
     const std::vector<std::unique_ptr<typename TTypes<T, 2>::ConstMatrix>>&
         inputs,
     typename TTypes<T, 2>::Matrix* output);
-#if GOOGLE_CUDA
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA) || \
+    (defined(TENSORFLOW_USE_ROCM) && TENSORFLOW_USE_ROCM)
 template <typename T>
 void ConcatGPU(
     OpKernelContext* c,
@@ -54,16 +57,19 @@ void ConcatGPU(
         inputs_flat,
     Tensor* output, typename TTypes<T, 2>::Tensor* output_flat);
 
-#endif  // GOOGLE_CUDA
+// Explicit instantiations in concat_lib_gpu.cc.
+#define REGISTER(T)                                                           \
+  extern template void ConcatGPU<T>(                                          \
+      OpKernelContext * c,                                                    \
+      const std::vector<std::unique_ptr<typename TTypes<T, 2>::ConstMatrix>>& \
+          inputs_flat,                                                        \
+      Tensor* output, typename TTypes<T, 2>::Tensor* output_flat);
 
-#ifdef TENSORFLOW_USE_SYCL
-template <typename T>
-void ConcatSYCL(
-    const Eigen::SyclDevice& d,
-    const std::vector<std::unique_ptr<typename TTypes<T, 2>::ConstMatrix>>&
-        inputs,
-    typename TTypes<T, 2>::Matrix* output);
-#endif  // TENSORFLOW_USE_SYCL
+TF_CALL_INTEGRAL_TYPES(REGISTER);  // int32 Needed for TensorLists.
+TF_CALL_GPU_ALL_TYPES(REGISTER);
+#undef REGISTER
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_CONCAT_LIB_H_
+#endif  // TENSORFLOW_CORE_KERNELS_CONCAT_LIB_H_

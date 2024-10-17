@@ -19,11 +19,11 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/transpose_op.h"
 
+#include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/kernels/bounds_check.h"
 #include "tensorflow/core/kernels/transpose_functor.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/str_util.h"
@@ -75,41 +75,26 @@ REGISTER_KERNEL_BUILDER(
     Name("InvertPermutation").Device(DEVICE_CPU).TypeConstraint<int32>("T"),
     InvertPermutationOp<int32>);
 REGISTER_KERNEL_BUILDER(
-    Name("InvertPermutation").Device(DEVICE_CPU).TypeConstraint<int64>("T"),
-    InvertPermutationOp<int64>);
+    Name("InvertPermutation").Device(DEVICE_CPU).TypeConstraint<int64_t>("T"),
+    InvertPermutationOp<int64_t>);
 
 REGISTER_KERNEL_BUILDER(Name("InvertPermutation")
-                            .Device(DEVICE_GPU)
+                            .Device(DEVICE_DEFAULT)
                             .TypeConstraint<int32>("T")
                             .HostMemory("x")
                             .HostMemory("y"),
                         InvertPermutationOp<int32>);
 REGISTER_KERNEL_BUILDER(Name("InvertPermutation")
-                            .Device(DEVICE_GPU)
-                            .TypeConstraint<int64>("T")
+                            .Device(DEVICE_DEFAULT)
+                            .TypeConstraint<int64_t>("T")
                             .HostMemory("x")
                             .HostMemory("y"),
-                        InvertPermutationOp<int64>);
-
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER_KERNEL_BUILDER(Name("InvertPermutation")
-                            .Device(DEVICE_SYCL)
-                            .TypeConstraint<int32>("T")
-                            .HostMemory("x")
-                            .HostMemory("y"),
-                        InvertPermutationOp<int32>);
-REGISTER_KERNEL_BUILDER(Name("InvertPermutation")
-                            .Device(DEVICE_SYCL)
-                            .TypeConstraint<int64>("T")
-                            .HostMemory("x")
-                            .HostMemory("y"),
-                        InvertPermutationOp<int64>);
-#endif  // TENSORFLOW_USE_SYCL
+                        InvertPermutationOp<int64_t>);
 
 namespace {
 template <typename Tperm>
-Status PermutationHelper(const Tensor& perm, const int dims,
-                         std::vector<int32>* permutation) {
+absl::Status PermutationHelper(const Tensor& perm, const int dims,
+                               std::vector<int32>* permutation) {
   auto Vperm = perm.vec<Tperm>();
   if (dims != Vperm.size()) {
     return errors::InvalidArgument("transpose expects a vector of size ", dims,
@@ -122,7 +107,7 @@ Status PermutationHelper(const Tensor& perm, const int dims,
       reinterpret_cast<const volatile Tperm*>(Vperm.data());
   *permutation = std::vector<int32>(perm_begin, perm_begin + dims);
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 }  // namespace
 
@@ -146,7 +131,7 @@ void TransposeOp::Compute(OpKernelContext* ctx) {
   const Tensor& perm = ctx->input(1);
   // Preliminary validation of sizes.
   OP_REQUIRES(ctx, TensorShapeUtils::IsVector(perm.shape()),
-              errors::InvalidArgument("perm must be a vector, not ",
+              errors::InvalidArgument("perm must be rank 1, got shape ",
                                       perm.shape().DebugString()));
 
   // Although Tperm may be an int64 type, an int32 is sufficient to hold
@@ -156,30 +141,30 @@ void TransposeOp::Compute(OpKernelContext* ctx) {
   if (perm.dtype() == DT_INT32) {
     OP_REQUIRES_OK(ctx, PermutationHelper<int32>(perm, dims, &permutation));
   } else {
-    OP_REQUIRES_OK(ctx, PermutationHelper<int64>(perm, dims, &permutation));
+    OP_REQUIRES_OK(ctx, PermutationHelper<int64_t>(perm, dims, &permutation));
   }
   TensorShape shape;
 
   // Check whether permutation is a permutation of integers of [0 .. dims).
-  gtl::InlinedVector<bool, 8> bits(dims);
+  absl::InlinedVector<bool, 8UL> bits(dims);
   bool is_identity = true;
   for (int i = 0; i < dims; ++i) {
-    const int32 d = permutation[i];
+    int32_t d = permutation[i];
+    if (d < 0) d += dims;
     OP_REQUIRES(
         ctx, 0 <= d && d < dims,
         errors::InvalidArgument(d, " is out of range [0 .. ", dims, ")"));
     bits[d] = true;
     const auto dim_size = input.dim_size(d);
-    shape.AddDim(dim_size);
+    OP_REQUIRES_OK(ctx, shape.AddDimWithStatus(dim_size));
     if (d != i) {
       is_identity = false;
     }
   }
   for (int i = 0; i < dims; ++i) {
-    OP_REQUIRES(
-        ctx, bits[i],
-        errors::InvalidArgument(i, " is missing from {",
-                                str_util::Join(permutation, ","), "}."));
+    OP_REQUIRES(ctx, bits[i],
+                errors::InvalidArgument(i, " is missing from {",
+                                        absl::StrJoin(permutation, ","), "}."));
   }
 
   // 0-D, 1-D, and identity transposes do nothing.
@@ -202,38 +187,22 @@ void TransposeOp::Compute(OpKernelContext* ctx) {
   }
 }
 
-Status TransposeCpuOp::DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                                   gtl::ArraySlice<int32> perm, Tensor* out) {
+absl::Status TransposeCpuOp::DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                                         absl::Span<const int32> perm,
+                                         Tensor* out) {
   typedef Eigen::ThreadPoolDevice CPUDevice;
   return ::tensorflow::DoTranspose(ctx->eigen_device<CPUDevice>(), in, perm,
                                    out);
 }
 
-Status ConjugateTransposeCpuOp::DoTranspose(OpKernelContext* ctx,
-                                            const Tensor& in,
-                                            gtl::ArraySlice<int32> perm,
-                                            Tensor* out) {
+absl::Status ConjugateTransposeCpuOp::DoTranspose(OpKernelContext* ctx,
+                                                  const Tensor& in,
+                                                  absl::Span<const int32> perm,
+                                                  Tensor* out) {
   typedef Eigen::ThreadPoolDevice CPUDevice;
   return ::tensorflow::DoConjugateTranspose(ctx->eigen_device<CPUDevice>(), in,
                                             perm, out);
 }
-
-#ifdef INTEL_MKL
-#define REGISTER(T)                                   \
-  REGISTER_KERNEL_BUILDER(Name("Transpose")           \
-                              .Device(DEVICE_CPU)     \
-                              .TypeConstraint<T>("T") \
-                              .HostMemory("perm"),    \
-                          MklTransposeCpuOp);         \
-  REGISTER_KERNEL_BUILDER(Name("ConjugateTranspose")  \
-                              .Device(DEVICE_CPU)     \
-                              .TypeConstraint<T>("T") \
-                              .HostMemory("perm"),    \
-                          MklConjugateTransposeCpuOp);
-TF_CALL_ALL_TYPES(REGISTER);
-#undef REGISTER
-
-#else  // INTEL_MKL
 
 #define REGISTER(T)                                   \
   REGISTER_KERNEL_BUILDER(Name("Transpose")           \
@@ -246,13 +215,15 @@ TF_CALL_ALL_TYPES(REGISTER);
                               .TypeConstraint<T>("T") \
                               .HostMemory("perm"),    \
                           ConjugateTransposeCpuOp);
-TF_CALL_ALL_TYPES(REGISTER)
-#undef REGISTER
-#endif  // INTEL_MKL
 
-#if GOOGLE_CUDA
-Status TransposeGpuOp::DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                                   gtl::ArraySlice<int32> perm, Tensor* out) {
+TF_CALL_ALL_TYPES(REGISTER)
+TF_CALL_float8_e5m2(REGISTER) TF_CALL_float8_e4m3fn(REGISTER)
+#undef REGISTER
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+    Status TransposeGpuOp::DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                                       gtl::ArraySlice<int32> perm,
+                                       Tensor* out) {
   typedef Eigen::GpuDevice GPUDevice;
   return ::tensorflow::DoTranspose(ctx->eigen_device<GPUDevice>(), in, perm,
                                    out);
@@ -278,36 +249,9 @@ Status ConjugateTransposeGpuOp::DoTranspose(OpKernelContext* ctx,
                               .HostMemory("perm"),    \
                           ConjugateTransposeGpuOp);
 TF_CALL_POD_TYPES(REGISTER);
+TF_CALL_float8_e5m2(REGISTER);
+TF_CALL_float8_e4m3fn(REGISTER);
 #undef REGISTER
 #endif
 
-#ifdef TENSORFLOW_USE_SYCL
-Status TransposeSyclOp::DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                                    gtl::ArraySlice<int32> perm, Tensor* out) {
-  typedef Eigen::SyclDevice SYCLDevice;
-  return ::tensorflow::DoTranspose(ctx->eigen_device<SYCLDevice>(), in, perm,
-                                   out);
-}
-Status ConjugateTransposeSyclOp::DoTranspose(OpKernelContext* ctx,
-                                             const Tensor& in,
-                                             gtl::ArraySlice<int32> perm,
-                                             Tensor* out) {
-  typedef Eigen::SyclDevice SYCLDevice;
-  return ::tensorflow::DoConjugateTranspose(ctx->eigen_device<SYCLDevice>(), in,
-                                            perm, out);
-}
-#define REGISTER(T)                                   \
-  REGISTER_KERNEL_BUILDER(Name("Transpose")           \
-                              .Device(DEVICE_SYCL)    \
-                              .TypeConstraint<T>("T") \
-                              .HostMemory("perm"),    \
-                          TransposeSyclOp);           \
-  REGISTER_KERNEL_BUILDER(Name("ConjugateTranspose")  \
-                              .Device(DEVICE_SYCL)    \
-                              .TypeConstraint<T>("T") \
-                              .HostMemory("perm"),    \
-                          ConjugateTransposeSyclOp);
-TF_CALL_POD_TYPES(REGISTER);
-#undef REGISTER
-#endif
 }  // namespace tensorflow

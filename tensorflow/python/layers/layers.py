@@ -14,60 +14,12 @@
 # ==============================================================================
 
 # pylint: disable=line-too-long
-"""This library provides a set of high-level neural networks layers.
-
-@@Dense
-@@Dropout
-@@Flatten
-@@Conv1D
-@@Conv2D
-@@Conv3D
-@@SeparableConv1D
-@@SeparableConv2D
-@@Conv2DTranspose
-@@Conv3DTranspose
-@@AveragePooling1D
-@@MaxPooling1D
-@@AveragePooling2D
-@@MaxPooling2D
-@@AveragePooling3D
-@@MaxPooling3D
-@@BatchNormalization
-
-@@Layer
-@@Input
-@@InputSpec
-
-@@dense
-@@dropout
-@@flatten
-@@conv1d
-@@conv2d
-@@conv3d
-@@separable_conv1d
-@@separable_conv2d
-@@conv2d_transpose
-@@conv3d_transpose
-@@average_pooling1d
-@@max_pooling1d
-@@average_pooling2d
-@@max_pooling2d
-@@average_pooling3d
-@@max_pooling3d
-@@batch_normalization
-"""
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from tensorflow.python.util.all_util import remove_undocumented
+"""This library provides a set of high-level neural networks layers."""
 
 # pylint: disable=g-bad-import-order,unused-import
 
 # Base objects.
 from tensorflow.python.layers.base import Layer
-from tensorflow.python.layers.base import InputSpec
 
 # Core layers.
 from tensorflow.python.layers.core import Dense
@@ -116,13 +68,4 @@ from tensorflow.python.layers.pooling import max_pooling2d
 from tensorflow.python.layers.pooling import average_pooling3d
 from tensorflow.python.layers.pooling import max_pooling3d
 
-# Normalization layers.
-from tensorflow.python.layers.normalization import BatchNormalization
-
-from tensorflow.python.layers.normalization import batch_normalization
-
 # pylint: enable=g-bad-import-order,unused-import
-
-_allowed_symbols = []
-
-remove_undocumented(__name__, _allowed_symbols)

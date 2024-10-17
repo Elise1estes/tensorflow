@@ -23,7 +23,7 @@ limitations under the License.
 #include <cmath>
 #include <memory>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -53,6 +53,20 @@ struct MultinomialFunctor {
                   typename TTypes<OutputType>::Matrix output);
 };
 
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+extern template struct MultinomialFunctor<GPUDevice, Eigen::half, int32>;
+extern template struct MultinomialFunctor<GPUDevice, float, int32>;
+extern template struct MultinomialFunctor<GPUDevice, double, int32>;
+extern template struct MultinomialFunctor<GPUDevice, int32, int32>;
+extern template struct MultinomialFunctor<GPUDevice, int64_t, int32>;
+
+extern template struct MultinomialFunctor<GPUDevice, Eigen::half, int64_t>;
+extern template struct MultinomialFunctor<GPUDevice, float, int64_t>;
+extern template struct MultinomialFunctor<GPUDevice, double, int64_t>;
+extern template struct MultinomialFunctor<GPUDevice, int32, int64_t>;
+extern template struct MultinomialFunctor<GPUDevice, int64_t, int64_t>;
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
 template <typename T, typename OutputType>
 struct MultinomialFunctor<CPUDevice, T, OutputType> {
   void operator()(OpKernelContext* ctx, const CPUDevice& d,
@@ -70,12 +84,12 @@ struct MultinomialFunctor<CPUDevice, T, OutputType> {
     // This takes O(BatchSize * NumSamples * log(NumClasses) + NumClasses) CPU
     // time.
     auto DoWork = [ctx, num_samples, num_classes, &gen, &output, &logits](
-                      int64 start_row, int64 limit_row) {
+                      int64_t start_row, int64_t limit_row) {
       // Capturing "gen" by-value would only make a copy for the _shared_
       // lambda.  Since we want to let each worker have its own copy, we pass
       // "gen" by reference and explicitly do a copy assignment here.
       random::PhiloxRandom gen_copy = gen;
-      // Skip takes units of 128 bytes.  +3 is so rounding doesn't lead to
+      // Skip takes units of 128 bits.  +3 is so rounding doesn't lead to
       // us using the same state in different batches.
       gen_copy.Skip(start_row * (num_samples + 3) / 4);
       random::SimplePhilox simple_philox(&gen_copy);
@@ -85,12 +99,12 @@ struct MultinomialFunctor<CPUDevice, T, OutputType> {
                      ctx->allocate_temp(DT_DOUBLE, TensorShape({num_classes}),
                                         &cdf_tensor));
       auto cdf = cdf_tensor.flat<double>();
-      for (int64 b = start_row; b < limit_row; ++b) {
+      for (int64_t b = start_row; b < limit_row; ++b) {
         const auto* logits_row = &logits(b, 0);
 
         // Takes an along-class maximum (for numerical stability).
         T max = std::numeric_limits<T>::lowest();
-        for (int64 j = 0; j < num_classes; ++j) {
+        for (int64_t j = 0; j < num_classes; ++j) {
           if (Eigen::numext::isfinite(logits_row[j])) {
             max = std::max(max, logits_row[j]);
           }
@@ -102,7 +116,7 @@ struct MultinomialFunctor<CPUDevice, T, OutputType> {
         cdf = (logits.template chip<0>(b).template cast<double>() - max_logit)
                   .exp();
         double running_total = 0;
-        for (int64 j = 0; j < num_classes; ++j) {
+        for (int64_t j = 0; j < num_classes; ++j) {
           if (Eigen::numext::isfinite(logits_row[j])) {
             running_total += cdf(j);
           }
@@ -111,7 +125,7 @@ struct MultinomialFunctor<CPUDevice, T, OutputType> {
         // Generate each sample.
         const double* cdf_begin = cdf.data();
         const double* cdf_end = cdf.data() + num_classes;
-        for (int64 j = 0; j < num_samples; ++j) {
+        for (int64_t j = 0; j < num_samples; ++j) {
           const double to_find = simple_philox.RandDouble() * running_total;
           auto found_iter = std::upper_bound(cdf_begin, cdf_end, to_find);
           output(b, j) = std::distance(cdf_begin, found_iter);
@@ -119,7 +133,7 @@ struct MultinomialFunctor<CPUDevice, T, OutputType> {
       }
     };
     // Incredibly rough estimate of clock cycles for DoWork();
-    const int64 cost =
+    const int64_t cost =
         50 * (num_samples * std::log(num_classes) / std::log(2) + num_classes);
     Shard(worker_threads.num_threads, worker_threads.workers, batch_size, cost,
           DoWork);
@@ -152,7 +166,7 @@ class MultinomialOp : public OpKernel {
                     "num_samples should be nonnegative, got ", num_samples));
 
     for (int i = 0; i < 2; i++) {
-      const int64 dim = logits_t.dim_size(i);
+      const int64_t dim = logits_t.dim_size(i);
       OP_REQUIRES(ctx, static_cast<int>(dim) == dim,
                   errors::InvalidArgument(
                       "logits.shape = ", logits_t.shape().DebugString(),
@@ -235,11 +249,12 @@ class StatefulMultinomialOp : public MultinomialOp<Device, T, OutputType> {
                           StatefulMultinomialOp<CPUDevice, TYPE, int64>);
 
 TF_CALL_half(REGISTER);
+TF_CALL_bfloat16(REGISTER);
 TF_CALL_float(REGISTER);
 TF_CALL_double(REGISTER);
 #undef REGISTER
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define REGISTER(TYPE)                                                   \
   REGISTER_KERNEL_BUILDER(Name("Multinomial")                            \
                               .Device(DEVICE_GPU)                        \
@@ -259,7 +274,7 @@ TF_CALL_float(REGISTER);
 TF_CALL_double(REGISTER);
 #undef REGISTER
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 template <typename Device, typename T, typename OutputType>
 class StatelessMultinomialOp : public MultinomialOp<Device, T, OutputType> {
@@ -303,11 +318,12 @@ class StatelessMultinomialOp : public MultinomialOp<Device, T, OutputType> {
                           StatelessMultinomialOp<CPUDevice, TYPE, int64>);
 
 TF_CALL_half(REGISTER);
+TF_CALL_bfloat16(REGISTER);
 TF_CALL_float(REGISTER);
 TF_CALL_double(REGISTER);
 #undef REGISTER
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define REGISTER(TYPE)                                                    \
   REGISTER_KERNEL_BUILDER(Name("StatelessMultinomial")                    \
                               .Device(DEVICE_GPU)                         \
@@ -329,7 +345,7 @@ TF_CALL_float(REGISTER);
 TF_CALL_double(REGISTER);
 #undef REGISTER
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 }  // end namespace
 

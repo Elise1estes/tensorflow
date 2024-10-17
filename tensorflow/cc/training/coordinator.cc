@@ -15,6 +15,12 @@ limitations under the License.
 
 #include "tensorflow/cc/training/coordinator.h"
 
+#include "absl/status/status.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
+#include "tensorflow/core/framework/cost_graph.pb.h"
+#include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/status.h"
+
 namespace tensorflow {
 
 Coordinator::Coordinator() : Coordinator(std::vector<error::Code>()) {}
@@ -39,13 +45,13 @@ Status Coordinator::RegisterRunner(std::unique_ptr<RunnerInterface> runner) {
   {
     mutex_lock l(mu_);
     if (should_stop_) {
-      return Status(error::FAILED_PRECONDITION,
+      return Status(absl::StatusCode::kFailedPrecondition,
                     "The coordinator has been stopped.");
     }
   }
   mutex_lock l(runners_lock_);
   runners_.push_back(std::move(runner));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool Coordinator::AllRunnersStopped() {
@@ -61,12 +67,12 @@ bool Coordinator::AllRunnersStopped() {
 Status Coordinator::RequestStop() {
   mutex_lock l(mu_);
   if (should_stop_) {
-    return Status(error::FAILED_PRECONDITION,
+    return Status(absl::StatusCode::kFailedPrecondition,
                   "The Coordinator is not running.");
   }
   should_stop_ = true;
   wait_for_stop_.notify_all();
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool Coordinator::ShouldStop() {
@@ -79,7 +85,7 @@ Status Coordinator::Join() {
   {
     mutex_lock l(mu_);
     if (!should_stop_) {
-      return Status(error::FAILED_PRECONDITION,
+      return Status(absl::StatusCode::kFailedPrecondition,
                     "Joining coordinator without requesting to stop.");
     }
   }
@@ -123,7 +129,7 @@ Status Coordinator::ExportCostGraph(CostGraphDef* cost_graph) const {
       return s;
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

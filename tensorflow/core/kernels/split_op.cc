@@ -17,29 +17,27 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/bounds_check.h"
 #include "tensorflow/core/kernels/ops_util.h"
 #include "tensorflow/core/kernels/split_lib.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
 #include "tensorflow/core/util/work_sharder.h"
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
-#include "tensorflow/core/kernels/cuda_device_array.h"
+#include "tensorflow/core/kernels/gpu_device_array.h"
+#include "tensorflow/core/kernels/split_lib_gpu.h"
 #include "tensorflow/core/platform/stream_executor.h"
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 namespace tensorflow {
 
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
-#ifdef TENSORFLOW_USE_SYCL
-typedef Eigen::SyclDevice SYCLDevice;
-#endif  // TENSORFLOW_USE_SYCL
 
 template <typename Device, typename T>
 class SplitOpBase : public OpKernel {
@@ -49,10 +47,15 @@ class SplitOpBase : public OpKernel {
   void ComputeEasyCases(OpKernelContext* context, bool* done) {
     const Tensor& input = context->input(1);
     const TensorShape& input_shape = input.shape();
-    const int32 split_dim_orig = context->input(0).flat<int32>()(0);
-    const int32 split_dim =
+    const Tensor& split_dim_tensor = context->input(0);
+    OP_REQUIRES(
+        context, split_dim_tensor.shape().dims() == 0,
+        errors::InvalidArgument("split_dim must be a scalar but has rank ",
+                                split_dim_tensor.shape().dims()));
+    const int32_t split_dim_orig = split_dim_tensor.flat<int32>()(0);
+    const int32_t split_dim =
         split_dim_orig < 0 ? split_dim_orig + input.dims() : split_dim_orig;
-    const int32 num_split = num_outputs();
+    const int32_t num_split = num_outputs();
 
     OP_REQUIRES(
         context, 0 <= split_dim && split_dim < input_shape.dims(),
@@ -89,7 +92,7 @@ class SplitOpBase : public OpKernel {
     // the copying.
     if ((split_dim == 0) && IsInnerDimsSizeAligned<T>(input_shape)) {
       VLOG(1) << "Slice dim 0: " << input_shape.DebugString();
-      const int64 delta = input_shape.dim_size(0) / num_split;
+      const int64_t delta = input_shape.dim_size(0) / num_split;
       for (int i = 0; i < num_split; ++i) {
         context->set_output(i, input.Slice(i * delta, (i + 1) * delta));
       }
@@ -100,10 +103,10 @@ class SplitOpBase : public OpKernel {
 
   template <typename IndexType>
   std::tuple<IndexType, IndexType, IndexType> SetDims(
-      const TensorShape& input_shape, int32 split_dim) const {
+      const TensorShape& input_shape, int32_t split_dim) const {
     static_assert(std::is_integral<IndexType>::value,
                   "IndexType must be an integer type");
-    int32 prefix_dim_size = 1;
+    int32_t prefix_dim_size = 1;
     for (int i = 0; i < split_dim; ++i) {
       prefix_dim_size *= input_shape.dim_size(i);
     }
@@ -127,13 +130,13 @@ class SplitOpCPUImpl {
   template <typename MakeSizesType, typename ReshapeResultType>
   void operator()(OpKernelContext* context,
                   const InputReshapedType& input_reshaped,
-                  const TensorShape& input_shape, int32 split_dim,
+                  const TensorShape& input_shape, int32_t split_dim,
                   Eigen::DenseIndex prefix_dim_size,
                   Eigen::DenseIndex split_dim_size,
                   Eigen::DenseIndex suffix_dim_size,
                   const MakeSizesType& make_sizes,
-                  const ReshapeResultType& reshape_result, int32 num_split,
-                  int64 split_dim_output_size) const {
+                  const ReshapeResultType& reshape_result, int32_t num_split,
+                  int64_t split_dim_output_size) const {
     const auto num_threads =
         context->device()->tensorflow_cpu_worker_threads()->num_threads;
     // TODO(jewillco): Tune heuristic further.
@@ -153,8 +156,8 @@ class SplitOpCPUImpl {
     auto range_output_func = [&indices, context, &output_shape, prefix_dim_size,
                               split_dim_output_size, suffix_dim_size, &sizes,
                               use_parallelism_between_outputs, &input_reshaped,
-                              &reshape_result](int64 start, int64 limit) {
-      for (int64 i = start; i < limit; ++i) {
+                              &reshape_result](int64_t start, int64_t limit) {
+      for (int64_t i = start; i < limit; ++i) {
         Tensor* result = nullptr;
         OP_REQUIRES_OK(context,
                        context->allocate_output(i, output_shape, &result));
@@ -204,11 +207,11 @@ class SplitOpCPU : public SplitOpBase<CPUDevice, T> {
     if (!context->status().ok() || done) {
       return;
     }
-    const int32 num_split = Base::num_outputs();
+    const int32_t num_split = Base::num_outputs();
     const Tensor& input = context->input(1);
     const TensorShape& input_shape = input.shape();
-    const int32 split_dim_orig = context->input(0).flat<int32>()(0);
-    const int32 split_dim =
+    const int32_t split_dim_orig = context->input(0).flat<int32>()(0);
+    const int32_t split_dim =
         split_dim_orig < 0 ? split_dim_orig + input.dims() : split_dim_orig;
 
     // Android also uses int32 indexing, so check here also.
@@ -226,7 +229,7 @@ class SplitOpCPU : public SplitOpBase<CPUDevice, T> {
     std::tie(prefix_dim_size, split_dim_size, suffix_dim_size) =
         Base::template SetDims<Eigen::DenseIndex>(input_shape, split_dim);
 
-    const int64 split_dim_output_size = split_dim_size / num_split;
+    const int64_t split_dim_output_size = split_dim_size / num_split;
 
     if (prefix_dim_size == 1) {
       auto input_reshaped =
@@ -260,14 +263,7 @@ class SplitOpCPU : public SplitOpBase<CPUDevice, T> {
   }
 };
 
-#if GOOGLE_CUDA
-
-template <typename T>
-struct SplitOpGPULaunch {
-  void Run(const Eigen::GpuDevice& d, const T* input, int32 prefix_dim_size,
-           int32 split_dim_size, int32 suffix_dim_size,
-           const CudaDeviceArrayStruct<T*>& output_ptr_data);
-};
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 // Partial specialization for GPU
 template <typename T>
@@ -284,26 +280,26 @@ class SplitOpGPU : public SplitOpBase<GPUDevice, T> {
     }
     const Tensor& input = context->input(1);
     const TensorShape& input_shape = input.shape();
-    const int32 split_dim_orig = context->input(0).flat<int32>()(0);
-    const int32 split_dim =
+    const int32_t split_dim_orig = context->input(0).flat<int32>()(0);
+    const int32_t split_dim =
         split_dim_orig < 0 ? split_dim_orig + input.dims() : split_dim_orig;
-    const int32 num_split = Base::num_outputs();
+    const int32_t num_split = Base::num_outputs();
     OP_REQUIRES(
         context,
         FastBoundsCheck(input.NumElements(), std::numeric_limits<int32>::max()),
         errors::InvalidArgument("Split on GPU requires input size "
                                 "< max int32"));
-    int32 prefix_dim_size;
-    int32 split_dim_size;
-    int32 suffix_dim_size;
+    int32_t prefix_dim_size;
+    int32_t split_dim_size;
+    int32_t suffix_dim_size;
     std::tie(prefix_dim_size, split_dim_size, suffix_dim_size) =
         Base::template SetDims<int32>(input_shape, split_dim);
 
-    const int32 split_dim_output_size = split_dim_size / num_split;
+    const int32_t split_dim_output_size = split_dim_size / num_split;
     TensorShape output_shape(input_shape);
     output_shape.set_dim(split_dim, split_dim_output_size);
 
-    CudaDeviceArrayOnHost<T*> ptrs(context, num_split);
+    GpuDeviceArrayOnHost<T*> ptrs(context, num_split);
     OP_REQUIRES_OK(context, ptrs.Init());
 
     for (int i = 0; i < num_split; ++i) {
@@ -324,77 +320,7 @@ class SplitOpGPU : public SplitOpBase<GPUDevice, T> {
                 errors::Internal("Launch of gpu kernel for SplitOp failed"));
   }
 };
-#endif  // GOOGLE_CUDA
-
-#ifdef TENSORFLOW_USE_SYCL
-template <typename T>
-class SplitOpSYCL : public SplitOpBase<SYCLDevice, T> {
- public:
-  typedef SplitOpBase<SYCLDevice, T> Base;
-  explicit SplitOpSYCL(OpKernelConstruction* c) : Base(c) {}
-
-  void Compute(OpKernelContext* context) override {
-    bool done = false;
-    Base::ComputeEasyCases(context, &done);
-    if (!context->status().ok() || done) {
-      return;
-    }
-    const Tensor& input = context->input(1);
-    const TensorShape& input_shape = input.shape();
-    const int32 split_dim_orig = context->input(0).flat<int32>()(0);
-    const int32 split_dim =
-        split_dim_orig < 0 ? split_dim_orig + input.dims() : split_dim_orig;
-    const int32 num_split = Base::num_outputs();
-
-    // Android also uses int32 indexing, so check here also.
-    OP_REQUIRES(
-        context,
-        FastBoundsCheck(input.NumElements(),
-                        std::numeric_limits<Eigen::DenseIndex>::max()),
-        errors::InvalidArgument("Split requires input size < ",
-                                std::numeric_limits<Eigen::DenseIndex>::max()));
-
-    Eigen::DenseIndex prefix_dim_size;
-    Eigen::DenseIndex split_dim_size;
-    Eigen::DenseIndex suffix_dim_size;
-
-    std::tie(prefix_dim_size, split_dim_size, suffix_dim_size) =
-        Base::template SetDims<Eigen::DenseIndex>(input_shape, split_dim);
-    auto input_reshaped =
-        input.shaped<T, 3>({prefix_dim_size, split_dim_size, suffix_dim_size});
-
-    const int64 split_dim_output_size = split_dim_size / num_split;
-    TensorShape output_shape(input_shape);
-    output_shape.set_dim(split_dim, split_dim_output_size);
-
-    Eigen::DSizes<Eigen::DenseIndex, 3> indices{0, 0, 0};
-    Eigen::DSizes<Eigen::DenseIndex, 3> sizes{
-        prefix_dim_size, split_dim_output_size, suffix_dim_size};
-
-    for (int i = 0; i < num_split; ++i) {
-      Tensor* result = nullptr;
-      OP_REQUIRES_OK(context,
-                     context->allocate_output(i, output_shape, &result));
-      if (prefix_dim_size * split_dim_output_size * suffix_dim_size > 0) {
-        Eigen::DSizes<Eigen::DenseIndex, 3> slice_indices;
-        Eigen::DSizes<Eigen::DenseIndex, 3> slice_sizes;
-        for (int j = 0; j < 3; ++j) {
-          slice_indices[j] = indices[j];
-          slice_sizes[j] = sizes[j];
-        }
-
-        auto result_shaped = result->shaped<T, 3>(
-            {prefix_dim_size, split_dim_output_size, suffix_dim_size});
-
-        functor::Split<SYCLDevice, T>()(context->eigen_device<SYCLDevice>(),
-                                        result_shaped, input_reshaped,
-                                        slice_indices, slice_sizes);
-      }
-      indices[1] += split_dim_output_size;
-    }
-  }
-};
-#endif  // TENSORFLOW_USE_SYCL
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #define REGISTER_SPLIT(type)                             \
   REGISTER_KERNEL_BUILDER(Name("Split")                  \
@@ -404,11 +330,15 @@ class SplitOpSYCL : public SplitOpBase<SYCLDevice, T> {
                           SplitOpCPU<type>)
 
 TF_CALL_ALL_TYPES(REGISTER_SPLIT);
+TF_CALL_float8_e5m2(REGISTER_SPLIT);
+TF_CALL_float8_e4m3fn(REGISTER_SPLIT);
+TF_CALL_int4(REGISTER_SPLIT);
+TF_CALL_uint4(REGISTER_SPLIT);
 REGISTER_SPLIT(quint8);
 
 #undef REGISTER_SPLIT
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #define REGISTER_GPU(type)                               \
   REGISTER_KERNEL_BUILDER(Name("Split")                  \
@@ -418,24 +348,9 @@ REGISTER_SPLIT(quint8);
                           SplitOpGPU<type>)
 
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU);
-TF_CALL_complex64(REGISTER_GPU);
-TF_CALL_complex128(REGISTER_GPU);
-REGISTER_GPU(bfloat16);
+TF_CALL_COMPLEX_TYPES(REGISTER_GPU);
 #undef REGISTER_GPU
 
-#endif  // GOOGLE_CUDA
-
-#ifdef TENSORFLOW_USE_SYCL
-#define REGISTER_SYCL(type)                              \
-  REGISTER_KERNEL_BUILDER(Name("Split")                  \
-                              .Device(DEVICE_SYCL)       \
-                              .TypeConstraint<type>("T") \
-                              .HostMemory("split_dim"),  \
-                          SplitOpSYCL<type>)
-
-TF_CALL_GPU_NUMBER_TYPES_NO_HALF(REGISTER_SYCL);
-#undef REGISTER_SYCL
-
-#endif  // TENSORFLOW_USE_SYCL
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 }  // end namespace tensorflow

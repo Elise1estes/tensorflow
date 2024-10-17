@@ -13,12 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/core/framework/kernel_def_builder.h"
-#include "tensorflow/core/framework/register_types.h"
+#include "xla/hlo/builder/value_inference.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/literal.h"
+#include "xla/xla_data.pb.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
@@ -28,63 +34,109 @@ class PadOp : public XlaOpKernel {
   explicit PadOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {}
 
   void Compile(XlaOpKernelContext* ctx) override {
-    const TensorShape input_shape = ctx->InputShape(0);
-    const TensorShape pad_shape = ctx->InputShape(1);
+    const TensorShape input_shape = ctx->InputShape("input");
+    const TensorShape pad_shape = ctx->InputShape("paddings");
     const int dims = input_shape.dims();
     OP_REQUIRES(
         ctx,
         TensorShapeUtils::IsMatrix(pad_shape) && pad_shape.dim_size(1) == 2,
         errors::InvalidArgument("paddings must be a matrix with 2 columns: ",
                                 pad_shape.DebugString()));
-    const int fixed_dims =
-        (allow_legacy_scalars() && dims == 0 && pad_shape.dim_size(0) == 1)
-            ? 1
-            : dims;
     OP_REQUIRES(
-        ctx, fixed_dims == pad_shape.dim_size(0),
+        ctx, dims == pad_shape.dim_size(0),
         errors::InvalidArgument(
             "The first dimension of paddings must be the rank of inputs",
             pad_shape.DebugString(), " ", input_shape.DebugString()));
 
-    if (fixed_dims == 0) {
+    xla::XlaOp input = ctx->Input("input");
+    if (dims == 0) {
       // Tensor is rank 0. Return it unchanged.
-      ctx->SetOutput(0, ctx->Input(0));
+      ctx->SetOutput(0, input);
       return;
     }
 
-    // Evaluate the 'padding' constant input, reshaping to a matrix.
     xla::Literal pad_literal;
+    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsInt64Literal(
+                            "paddings", &pad_literal,
+                            xla::ValueInferenceMode::kUpperBound));
+
+    xla::Literal padding_dynamism_literal;
     OP_REQUIRES_OK(
-        ctx, ctx->ConstantInputReshaped(1, {fixed_dims, 2}, &pad_literal));
+        ctx, ctx->ResolveInputDynamism("paddings", &padding_dynamism_literal));
 
     xla::PaddingConfig config;
-    for (int i = 0; i < fixed_dims; ++i) {
+    for (int i = 0; i < dims; ++i) {
       auto* dim = config.add_dimensions();
-      int before = pad_literal.Get<int32>({i, 0});
-      int after = pad_literal.Get<int32>({i, 1});
+      int before = pad_literal.Get<int64_t>({i, 0});
+      int after = pad_literal.Get<int64_t>({i, 1});
       OP_REQUIRES(ctx, before >= 0 && after >= 0,
-                  errors::InvalidArgument("Paddings must be non-negative: ",
-                                          before, " ", after));
+                  errors::InvalidArgument(
+                      "Paddings must be non-negative: ", before, " ", after));
       dim->set_edge_padding_low(before);
       dim->set_edge_padding_high(after);
     }
 
     // PadV2 added a "constant_values" input that indicates the pad value.
-    xla::ComputationDataHandle constant_values;
+    xla::XlaOp constant_values;
+    xla::XlaOp pad;
     if (ctx->num_inputs() == 3) {
-      OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(ctx->InputShape(2)),
-                  errors::InvalidArgument("constant_values must be a scalar."));
-      ctx->SetOutput(0,
-                     ctx->builder()->Pad(ctx->Input(0), ctx->Input(2), config));
+      OP_REQUIRES(
+          ctx, TensorShapeUtils::IsScalar(ctx->InputShape("constant_values")),
+          errors::InvalidArgument("constant_values must be a scalar."));
+      pad = xla::Pad(input, ctx->Input("constant_values"), config);
     } else {
       auto zero = XlaHelpers::Zero(ctx->builder(), input_type(0));
-      ctx->SetOutput(0, ctx->builder()->Pad(ctx->Input(0), zero, config));
+      pad = xla::Pad(input, zero, config);
     }
+
+    for (int i = 0; i < dims; ++i) {
+      bool low_pad_is_dynamic = padding_dynamism_literal.Get<bool>({i, 0});
+
+      OP_REQUIRES(
+          ctx, !low_pad_is_dynamic,
+          errors::InvalidArgument("low_pad in Pad op has to be static."));
+      bool high_pad_is_dynamic = padding_dynamism_literal.Get<bool>({i, 1});
+      if (high_pad_is_dynamic) {
+        // When we have
+        // pad_width = MAX_WIDTH - size(t)
+        // op = pad(t, /*high_pad=*/pad_width)
+        // The bound of the result size should be MAX_WIDTH, instead of
+        // `bound(t) + bound(pad_width)`
+        //
+        // We do this by analyzing the expression
+        // size(op) = size(t) + MAX_WIDTH - size(t)
+        // and leave value inference to analyze it.
+        xla::XlaOp high_pad_size =
+            xla::Slice(ctx->Input("paddings"), {i, 1}, {i + 1, 2}, {1, 1});
+        high_pad_size = xla::Reshape(high_pad_size, {});
+        high_pad_size = xla::ConvertElementType(high_pad_size, xla::S32);
+        // Low pad has to be static.
+        xla::XlaOp low_pad_size = xla::ConstantR0<int32>(
+            ctx->builder(), pad_literal.Get<int64_t>({i, 0}));
+        xla::XlaOp input_size = xla::GetDimensionSize(input, i);
+        xla::XlaOp total_size = low_pad_size + input_size + high_pad_size;
+        auto size_upper_bound_status_or =
+            ctx->value_inference().AnalyzeConstant(
+                total_size, xla::ValueInferenceMode::kUpperBound);
+        OP_REQUIRES_OK(ctx, size_upper_bound_status_or.status());
+        auto size_upper_bound =
+            size_upper_bound_status_or.value().Get<int32>({});
+        OP_REQUIRES(
+            ctx, size_upper_bound.has_value(),
+            errors::InvalidArgument(
+                "Failed to infer upperbound of total size after padding."));
+        // If we know a tighter upperbound, trim the output with the new
+        // upperbound.
+        pad = xla::SliceInDim(pad, 0, size_upper_bound.value(), 1, i);
+        pad = xla::SetDimensionSize(pad, total_size, i);
+      }
+    }
+    ctx->SetOutput(0, pad);
   }
 };
 
-REGISTER_XLA_OP(Name("Pad").CompileTimeConstInput("paddings"), PadOp);
-REGISTER_XLA_OP(Name("PadV2").CompileTimeConstInput("paddings"), PadOp);
+REGISTER_XLA_OP(Name("Pad").CompileTimeConstantInput("paddings"), PadOp);
+REGISTER_XLA_OP(Name("PadV2").CompileTimeConstantInput("paddings"), PadOp);
 
 }  // namespace
 }  // namespace tensorflow

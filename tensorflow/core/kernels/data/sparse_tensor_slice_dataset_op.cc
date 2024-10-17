@@ -14,35 +14,35 @@ limitations under the License.
 ==============================================================================*/
 #include <numeric>
 
+#include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/dataset.h"
 #include "tensorflow/core/util/sparse/sparse_tensor.h"
 
 namespace tensorflow {
-
+namespace data {
 namespace {
 
-// See documentation in ../ops/dataset_ops.cc for a high-level
+// See documentation in ../../ops/dataset_ops.cc for a high-level
 // description of the following op.
 
 template <typename T>
-class Dataset : public GraphDatasetBase {
+class Dataset : public DatasetBase {
  public:
   explicit Dataset(OpKernelContext* ctx,
                    const sparse::SparseTensor& sparse_tensor)
-      : GraphDatasetBase(ctx),
+      : DatasetBase(DatasetContext(ctx)),
         sparse_tensor_(sparse_tensor),
         dtypes_({DT_INT64, sparse_tensor.dtype(), DT_INT64}),
         shapes_({{-1, sparse_tensor.dims() - 1},
                  {-1},
                  {sparse_tensor.dims() - 1}}) {}
 
-  std::unique_ptr<IteratorBase> MakeIterator(
+  std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return std::unique_ptr<IteratorBase>(
-        new Iterator({this, strings::StrCat(prefix, "::SparseTensorSlice")}));
+    return std::make_unique<Iterator>(typename Iterator::Params{
+        this, strings::StrCat(prefix, "::SparseTensorSlice")});
   }
 
   const DataTypeVector& output_dtypes() const override { return dtypes_; }
@@ -50,19 +50,30 @@ class Dataset : public GraphDatasetBase {
     return shapes_;
   }
 
-  string DebugString() override {
+  string DebugString() const override {
     return "SparseTensorSliceDatasetOp::Dataset";
   }
 
+  int64_t CardinalityInternal(CardinalityOptions options) const override {
+    return sparse_tensor_.shape()[0];
+  }
+
+  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+    return absl::OkStatus();
+  }
+
+  Status CheckExternalState() const override { return absl::OkStatus(); }
+
  protected:
-  Status AsGraphDefInternal(DatasetGraphDefBuilder* b,
+  Status AsGraphDefInternal(SerializationContext* ctx,
+                            DatasetGraphDefBuilder* b,
                             Node** output) const override {
     Node* indices_node;
     TF_RETURN_IF_ERROR(b->AddTensor(sparse_tensor_.indices(), &indices_node));
     Node* value_node;
     TF_RETURN_IF_ERROR(b->AddTensor(sparse_tensor_.values(), &value_node));
     Node* dense_shape_node;
-    std::vector<int64> dense_shape;
+    std::vector<int64_t> dense_shape;
     dense_shape.reserve(sparse_tensor_.shape().size());
     for (int i = 0; i < sparse_tensor_.shape().size(); i++)
       dense_shape.emplace_back(sparse_tensor_.shape()[i]);
@@ -72,7 +83,7 @@ class Dataset : public GraphDatasetBase {
     TF_RETURN_IF_ERROR(
         b->AddDataset(this, {indices_node, value_node, dense_shape_node},
                       {{"Tvalues", val_dtype}}, output));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
  private:
@@ -85,7 +96,7 @@ class Dataset : public GraphDatasetBase {
           group_iterable_(params.dataset->sparse_tensor_.group({0})),
           iter_(group_iterable_.begin()) {
       for (size_t i = 0; i < dense_shape_.NumElements(); ++i) {
-        dense_shape_.vec<int64>()(i) =
+        dense_shape_.vec<int64_t>()(i) =
             params.dataset->sparse_tensor_.shape()[i + 1];
       }
     }
@@ -96,7 +107,7 @@ class Dataset : public GraphDatasetBase {
       mutex_lock l(mu_);
       if (i_ == num_elements_) {
         *end_of_sequence = true;
-        return Status::OK();
+        return absl::OkStatus();
       }
 
       out_tensors->clear();
@@ -110,16 +121,16 @@ class Dataset : public GraphDatasetBase {
         sparse::Group group = *iter_;
         const auto indices = group.indices();
         const auto values = group.values<T>();
-        const int64 num_entries = values.size();
+        const int64_t num_entries = values.size();
         next_non_empty_i_ = indices(0, 0);
 
         next_indices_ = Tensor(DT_INT64, {num_entries, rank - 1});
         next_values_ = Tensor(DataTypeToEnum<T>::value, {num_entries});
 
-        auto next_indices_t = next_indices_.matrix<int64>();
+        auto next_indices_t = next_indices_.matrix<int64_t>();
         auto next_values_t = next_values_.vec<T>();
 
-        for (int64 i = 0; i < num_entries; ++i) {
+        for (int64_t i = 0; i < num_entries; ++i) {
           for (int d = 1; d < rank; ++d) {
             next_indices_t(i, d - 1) = indices(i, d);
           }
@@ -147,58 +158,64 @@ class Dataset : public GraphDatasetBase {
 
       ++i_;
       *end_of_sequence = false;
-      return Status::OK();
+      return absl::OkStatus();
     }
 
    protected:
-    Status SaveInternal(IteratorStateWriter* writer) override {
+    std::shared_ptr<model::Node> CreateNode(
+        IteratorContext* ctx, model::Node::Args args) const override {
+      return model::MakeSourceNode(std::move(args));
+    }
+
+    Status SaveInternal(SerializationContext* ctx,
+                        IteratorStateWriter* writer) override {
       mutex_lock l(mu_);
-      TF_RETURN_IF_ERROR(writer->WriteScalar(Iterator::full_name("i"), i_));
+      TF_RETURN_IF_ERROR(writer->WriteScalar(Iterator::prefix(), "i", i_));
       TF_RETURN_IF_ERROR(
-          writer->WriteScalar(Iterator::full_name("iter_loc"), iter_.loc()));
+          writer->WriteScalar(Iterator::prefix(), "iter_loc", iter_.loc()));
       TF_RETURN_IF_ERROR(writer->WriteScalar(
-          Iterator::full_name("next_non_empty_i_"), next_non_empty_i_));
+          Iterator::prefix(), "next_non_empty_i_", next_non_empty_i_));
       if (i_ <= next_non_empty_i_) {
-        TF_RETURN_IF_ERROR(writer->WriteTensor(
-            Iterator::full_name("next_indices_"), next_indices_));
-        TF_RETURN_IF_ERROR(writer->WriteTensor(
-            Iterator::full_name("next_values_"), next_values_));
+        TF_RETURN_IF_ERROR(writer->WriteTensor(Iterator::prefix(),
+                                               "next_indices_", next_indices_));
+        TF_RETURN_IF_ERROR(writer->WriteTensor(Iterator::prefix(),
+                                               "next_values_", next_values_));
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
     Status RestoreInternal(IteratorContext* ctx,
                            IteratorStateReader* reader) override {
       mutex_lock l(mu_);
-      TF_RETURN_IF_ERROR(reader->ReadScalar(Iterator::full_name("i"), &i_));
-      int64 iter_loc;
+      TF_RETURN_IF_ERROR(reader->ReadScalar(Iterator::prefix(), "i", &i_));
+      int64_t iter_loc;
       TF_RETURN_IF_ERROR(
-          reader->ReadScalar(Iterator::full_name("iter_loc"), &iter_loc));
+          reader->ReadScalar(Iterator::prefix(), "iter_loc", &iter_loc));
       iter_ = group_iterable_.at(iter_loc);
       TF_RETURN_IF_ERROR(reader->ReadScalar(
-          Iterator::full_name("next_non_empty_i_"), &next_non_empty_i_));
+          Iterator::prefix(), "next_non_empty_i_", &next_non_empty_i_));
       if (i_ <= next_non_empty_i_) {
-        TF_RETURN_IF_ERROR(reader->ReadTensor(
-            Iterator::full_name("next_indices_"), &next_indices_));
-        TF_RETURN_IF_ERROR(reader->ReadTensor(
-            Iterator::full_name("next_values_"), &next_values_));
+        TF_RETURN_IF_ERROR(reader->ReadTensor(Iterator::prefix(),
+                                              "next_indices_", &next_indices_));
+        TF_RETURN_IF_ERROR(reader->ReadTensor(Iterator::prefix(),
+                                              "next_values_", &next_values_));
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
    private:
-    const int64 num_elements_;
+    const int64_t num_elements_;
 
     Tensor dense_shape_;
 
     mutex mu_;
-    sparse::GroupIterable group_iterable_ GUARDED_BY(mu_);
-    sparse::GroupIterable::IteratorStep iter_ GUARDED_BY(mu_);
-    int64 i_ GUARDED_BY(mu_) = 0;
-    const int64 kNextNonEmptyUnknown = -1;
-    int64 next_non_empty_i_ GUARDED_BY(mu_) = kNextNonEmptyUnknown;
-    Tensor next_indices_ GUARDED_BY(mu_);
-    Tensor next_values_ GUARDED_BY(mu_);
+    sparse::GroupIterable group_iterable_ TF_GUARDED_BY(mu_);
+    sparse::GroupIterable::IteratorStep iter_ TF_GUARDED_BY(mu_);
+    int64_t i_ TF_GUARDED_BY(mu_) = 0;
+    const int64_t kNextNonEmptyUnknown = -1;
+    int64_t next_non_empty_i_ TF_GUARDED_BY(mu_) = kNextNonEmptyUnknown;
+    Tensor next_indices_ TF_GUARDED_BY(mu_);
+    Tensor next_values_ TF_GUARDED_BY(mu_);
   };
 
   const sparse::SparseTensor sparse_tensor_;
@@ -223,17 +240,29 @@ class SparseTensorSliceDatasetOp : public DatasetOpKernel {
     OP_REQUIRES_OK(ctx, ctx->input("dense_shape", &dense_shape));
 
     OP_REQUIRES(ctx, TensorShapeUtils::IsMatrix(indices->shape()),
-                errors::InvalidArgument(
-                    "Input indices should be a matrix but received shape ",
-                    indices->shape().DebugString()));
+                errors::InvalidArgument("Input indices must be a matrix. Got: ",
+                                        indices->shape().DebugString()));
     OP_REQUIRES(ctx, TensorShapeUtils::IsVector(values->shape()),
-                errors::InvalidArgument(
-                    "Input values should be a vector but received shape ",
-                    indices->shape().DebugString()));
+                errors::InvalidArgument("Input values must be a vector. Got: ",
+                                        values->shape().DebugString()));
     OP_REQUIRES(ctx, TensorShapeUtils::IsVector(dense_shape->shape()),
+                errors::InvalidArgument("Input shape must be a vector. Got: ",
+                                        dense_shape->shape().DebugString()));
+    OP_REQUIRES(
+        ctx, values->shape().dim_size(0) == indices->shape().dim_size(0),
+        errors::InvalidArgument(
+            "Number of values must match first dimension of indices. ", "Got ",
+            values->shape().dim_size(0),
+            " values, indices shape: ", indices->shape().DebugString()));
+    OP_REQUIRES(
+        ctx, dense_shape->shape().dim_size(0) == indices->shape().dim_size(1),
+        errors::InvalidArgument(
+            "Number of dimensions must match second dimension of indices. ",
+            "Got ", dense_shape->shape().dim_size(0),
+            " dimensions, indices shape: ", indices->shape().DebugString()));
+    OP_REQUIRES(ctx, dense_shape->NumElements() > 0,
                 errors::InvalidArgument(
-                    "Input shape should be a vector but received shape ",
-                    dense_shape->shape().DebugString()));
+                    "The shape argument requires at least one element."));
 
     // We currently ensure that `sparse_tensor` is ordered in the
     // batch dimension.
@@ -241,9 +270,9 @@ class SparseTensorSliceDatasetOp : public DatasetOpKernel {
     // if we can be sure that the sparse tensor was produced in an
     // appropriate order (e.g. by `tf.parse_example()` or a Dataset
     // that batches elements into rows of a SparseTensor).
-    int64 previous_batch_index = -1;
-    for (int64 i = 0; i < indices->dim_size(0); ++i) {
-      int64 next_batch_index = indices->matrix<int64>()(i, 0);
+    int64_t previous_batch_index = -1;
+    for (int64_t i = 0; i < indices->dim_size(0); ++i) {
+      int64_t next_batch_index = indices->matrix<int64_t>()(i, 0);
       OP_REQUIRES(
           ctx, next_batch_index >= previous_batch_index,
           errors::Unimplemented("The SparseTensor must be ordered in the batch "
@@ -251,11 +280,14 @@ class SparseTensorSliceDatasetOp : public DatasetOpKernel {
                                 "is not currently supported."));
       previous_batch_index = next_batch_index;
     }
-    gtl::InlinedVector<int64, 8> std_order(dense_shape->NumElements(), 0);
-    sparse::SparseTensor sparse_tensor(
-        *indices, *values, TensorShape(dense_shape->vec<int64>()), std_order);
-
-    *output = new Dataset<T>(ctx, sparse_tensor);
+    absl::InlinedVector<int64_t, 8UL> std_order(dense_shape->NumElements(), 0);
+    TensorShape shape;
+    OP_REQUIRES_OK(ctx, TensorShape::BuildTensorShape(
+                            dense_shape->vec<int64_t>(), &shape));
+    sparse::SparseTensor tensor;
+    OP_REQUIRES_OK(ctx, sparse::SparseTensor::Create(*indices, *values, shape,
+                                                     std_order, &tensor));
+    *output = new Dataset<T>(ctx, std::move(tensor));
   }
 
  private:
@@ -271,5 +303,5 @@ TF_CALL_DATASET_TYPES(REGISTER_DATASET_KERNEL);
 #undef REGISTER_DATASET_KERNEL
 
 }  // namespace
-
+}  // namespace data
 }  // namespace tensorflow

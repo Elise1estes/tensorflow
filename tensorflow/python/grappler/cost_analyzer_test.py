@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for the cost analyzer."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import re
 
 from tensorflow.python.framework import constant_op
@@ -38,6 +34,7 @@ from tensorflow.python.training import adam
 
 class CostAnalysisTest(test.TestCase):
 
+  @test_util.run_deprecated_v1
   def testBasicCost(self):
     """Make sure arguments can be passed correctly."""
     a = constant_op.constant(10, name="a")
@@ -62,6 +59,7 @@ class CostAnalysisTest(test.TestCase):
     # Also print the report to make it easier to debug
     print("{}".format(report))
 
+  @test_util.run_deprecated_v1
   def testVerbose(self):
     """Make sure the full report is generated with verbose=True."""
     a = constant_op.constant(10, name="a")
@@ -81,6 +79,7 @@ class CostAnalysisTest(test.TestCase):
     # Also print the report to make it easier to debug
     print("{}".format(report))
 
+  @test_util.run_deprecated_v1
   def testSmallNetworkCost(self):
     image = array_ops.placeholder(dtypes.float32, shape=[1, 28, 28, 1])
     label = array_ops.placeholder(dtypes.float32, shape=[1, 10])
@@ -96,8 +95,8 @@ class CostAnalysisTest(test.TestCase):
     b_fc = variables.Variable(random_ops.truncated_normal([10], stddev=0.1))
     y_conv = nn_ops.softmax(math_ops.matmul(h_conv_flat, w_fc) + b_fc)
 
-    cross_entropy = math_ops.reduce_mean(-math_ops.reduce_sum(
-        label * math_ops.log(y_conv), reduction_indices=[1]))
+    cross_entropy = math_ops.reduce_mean(
+        -math_ops.reduce_sum(label * math_ops.log(y_conv), axis=[1]))
     _ = adam.AdamOptimizer(1e-4).minimize(cross_entropy)
 
     mg = meta_graph.create_meta_graph_def(graph=ops.get_default_graph())
@@ -108,11 +107,21 @@ class CostAnalysisTest(test.TestCase):
 
     self.assertTrue(b"MatMul" in report)
     self.assertTrue(b"ApplyAdam" in report)
-    self.assertTrue(b"Conv2D" in report)
     self.assertTrue(b"Conv2DBackpropFilter" in report)
     self.assertTrue(b"Softmax" in report)
 
-    for op_type in [b"MatMul", b"Conv2D", b"Conv2DBackpropFilter"]:
+    # When mkl is enabled, Conv2D and MatMul op followed by
+    # 1-dimension Add in this graph will be fused, but not
+    # in the mkl disabled case.
+    expected_matmul_count = 2
+    op_types = [b"MatMul", b"Conv2DBackpropFilter"]
+
+    if not test_util.IsMklEnabled():
+      self.assertTrue(b"Conv2D" in report)
+      expected_matmul_count = 3
+      op_types.append(b"Conv2D")
+
+    for op_type in op_types:
       matcher = re.compile(
           br"\s+" + op_type + br",\s*(\d+),\s*(\d+),\s*([\d\.eE+-]+)%,\s*" +
           br"([\d\.eE+-]+)%,\s*(-?\d+),\s*(\d+),", re.MULTILINE)
@@ -121,14 +130,15 @@ class CostAnalysisTest(test.TestCase):
       op_count = int(m.group(1))
       # upper = int(m.group(5))
       lower = int(m.group(6))
-      if op_type is b"MatMul":
-        self.assertEqual(3, op_count)
+      if op_type == b"MatMul":
+        self.assertEqual(expected_matmul_count, op_count)
       else:
         self.assertEqual(1, op_count)
       self.assertTrue(0 <= lower)
       # self.assertTrue(0 < upper)
       # self.assertTrue(lower <= upper)
 
+  @test_util.run_deprecated_v1
   def testBasicMemory(self):
     """Make sure arguments can be passed correctly."""
     with test_util.device(use_gpu=False):

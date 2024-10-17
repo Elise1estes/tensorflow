@@ -14,23 +14,23 @@
 # ==============================================================================
 """`LinearOperator` acting like the identity matrix."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import check_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops.linalg import linalg_impl as linalg
 from tensorflow.python.ops.linalg import linear_operator
+from tensorflow.python.ops.linalg import linear_operator_diag
 from tensorflow.python.ops.linalg import linear_operator_util
+from tensorflow.python.ops.linalg import property_hint_util
 from tensorflow.python.util.tf_export import tf_export
 
 __all__ = [
@@ -76,8 +76,8 @@ class BaseLinearOperatorIdentity(linear_operator.LinearOperator):
 
   def _min_matrix_dim(self):
     """Minimum of domain/range dimension, if statically available, else None."""
-    domain_dim = self.domain_dimension.value
-    range_dim = self.range_dimension.value
+    domain_dim = tensor_shape.dimension_value(self.domain_dimension)
+    range_dim = tensor_shape.dimension_value(self.range_dimension)
     if domain_dim is None or range_dim is None:
       return None
     return min(domain_dim, range_dim)
@@ -99,6 +99,7 @@ class BaseLinearOperatorIdentity(linear_operator.LinearOperator):
 
 
 @tf_export("linalg.LinearOperatorIdentity")
+@linear_operator.make_composite_tensor
 class LinearOperatorIdentity(BaseLinearOperatorIdentity):
   """`LinearOperator` acting like a [batch] square identity matrix.
 
@@ -131,7 +132,7 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
   operator.matmul(x)
   ==> Shape [2, 4] Tensor, same as x.
 
-  y = tf.random_normal(shape=[3, 2, 4])
+  y = tf.random.normal(shape=[3, 2, 4])
   # Note that y.shape is compatible with operator.shape because operator.shape
   # is broadcast to [3, 2, 2].
   # This broadcast does NOT require copying data, since we can infer that y
@@ -250,7 +251,19 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
         negative.
       ValueError:  If any of the following is not `True`:
         `{is_self_adjoint, is_non_singular, is_positive_definite}`.
+      TypeError:  If `num_rows` or `batch_shape` is ref-type (e.g. Variable).
     """
+    parameters = dict(
+        num_rows=num_rows,
+        batch_shape=batch_shape,
+        dtype=dtype,
+        is_non_singular=is_non_singular,
+        is_self_adjoint=is_self_adjoint,
+        is_positive_definite=is_positive_definite,
+        is_square=is_square,
+        assert_proper_shapes=assert_proper_shapes,
+        name=name)
+
     dtype = dtype or dtypes.float32
     self._assert_proper_shapes = assert_proper_shapes
 
@@ -271,7 +284,11 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
           is_self_adjoint=is_self_adjoint,
           is_positive_definite=is_positive_definite,
           is_square=is_square,
+          parameters=parameters,
           name=name)
+
+      linear_operator_util.assert_not_ref_type(num_rows, "num_rows")
+      linear_operator_util.assert_not_ref_type(batch_shape, "batch_shape")
 
       self._num_rows = linear_operator_util.shape_tensor(
           num_rows, name="num_rows")
@@ -297,11 +314,44 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
     return batch_shape.concatenate(matrix_shape)
 
   def _shape_tensor(self):
-    matrix_shape = array_ops.stack((self._num_rows, self._num_rows), axis=0)
+    matrix_shape = array_ops_stack.stack(
+        (self._num_rows, self._num_rows), axis=0)
     if self._batch_shape_arg is None:
       return matrix_shape
 
     return array_ops.concat((self._batch_shape_arg, matrix_shape), 0)
+
+  def _linop_adjoint(self) -> "LinearOperatorIdentity":
+    return self
+
+  def _linop_cholesky(self) -> "LinearOperatorIdentity":
+    return LinearOperatorIdentity(
+        num_rows=self._num_rows,  # pylint: disable=protected-access
+        batch_shape=self.batch_shape,
+        dtype=self.dtype,
+        is_non_singular=True,
+        is_self_adjoint=True,
+        is_positive_definite=True,
+        is_square=True)
+
+  def _linop_inverse(self) -> "LinearOperatorIdentity":
+    return self
+
+  def _linop_matmul(
+      self,
+      left_operator: "LinearOperatorIdentity",
+      right_operator: linear_operator.LinearOperator,
+    ) -> "LinearOperatorIdentity":
+    del left_operator
+    return right_operator
+
+  def _linop_solve(
+      self,
+      left_operator: "LinearOperatorIdentity",
+      right_operator: linear_operator.LinearOperator,
+  ) -> linear_operator.LinearOperator:
+    del left_operator
+    return right_operator
 
   def _assert_non_singular(self):
     return control_flow_ops.no_op("assert_non_singular")
@@ -329,10 +379,10 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
     #   Also, the final dimension of 'x' can have any shape.
     #   Therefore, the final two dimensions of special_shape are 1's.
     special_shape = self.batch_shape.concatenate([1, 1])
-    bshape = array_ops.broadcast_static_shape(x.get_shape(), special_shape)
+    bshape = array_ops.broadcast_static_shape(x.shape, special_shape)
     if special_shape.is_fully_defined():
       # bshape.is_fully_defined iff special_shape.is_fully_defined.
-      if bshape == x.get_shape():
+      if bshape == x.shape:
         return x
       # Use the built in broadcasting of addition.
       zeros = array_ops.zeros(shape=special_shape, dtype=self.dtype)
@@ -389,11 +439,19 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
     Returns:
       A `Tensor` with broadcast shape and same `dtype` as `self`.
     """
-    with self._name_scope(name, values=[mat]):
-      mat = ops.convert_to_tensor(mat, name="mat")
+    with self._name_scope(name):  # pylint: disable=not-callable
+      mat = tensor_conversion.convert_to_tensor_v2_with_dispatch(
+          mat, name="mat"
+      )
       mat_diag = array_ops.matrix_diag_part(mat)
       new_diag = 1 + mat_diag
       return array_ops.matrix_set_diag(mat, new_diag)
+
+  def _eigvals(self):
+    return self._ones_diag()
+
+  def _cond(self):
+    return array_ops.ones(self.batch_shape_tensor(), dtype=self.dtype)
 
   def _check_num_rows_possibly_add_asserts(self):
     """Static check of init arg `num_rows`, possibly add asserts."""
@@ -460,8 +518,25 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
       raise ValueError("Argument batch_shape must be non-negative.  Found:"
                        "%s" % self._batch_shape_static)
 
+  @property
+  def _composite_tensor_prefer_static_fields(self):
+    return ("num_rows", "batch_shape")
+
+  @property
+  def _composite_tensor_fields(self):
+    return ("num_rows", "batch_shape", "dtype", "assert_proper_shapes")
+
+  def __getitem__(self, slices):
+    # Slice the batch shape and return a new LinearOperatorIdentity.
+    # Use a proxy shape and slice it. Use this as the new batch shape
+    new_batch_shape = array_ops.shape(
+        array_ops.ones(self._batch_shape_arg)[slices])
+    parameters = dict(self.parameters, batch_shape=new_batch_shape)
+    return LinearOperatorIdentity(**parameters)
+
 
 @tf_export("linalg.LinearOperatorScaledIdentity")
+@linear_operator.make_composite_tensor
 class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
   """`LinearOperator` acting like a scaled [batch] identity matrix `A = c I`.
 
@@ -492,7 +567,7 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
   operator.matmul(x)
   ==> 3 * x
 
-  y = tf.random_normal(shape=[3, 2, 4])
+  y = tf.random.normal(shape=[3, 2, 4])
   # Note that y.shape is compatible with operator.shape because operator.shape
   # is broadcast to [3, 2, 2].
   x = operator.solve(y)
@@ -586,27 +661,42 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
       ValueError:  If `num_rows` is determined statically to be non-scalar, or
         negative.
     """
+    parameters = dict(
+        num_rows=num_rows,
+        multiplier=multiplier,
+        is_non_singular=is_non_singular,
+        is_self_adjoint=is_self_adjoint,
+        is_positive_definite=is_positive_definite,
+        is_square=is_square,
+        assert_proper_shapes=assert_proper_shapes,
+        name=name)
+
     self._assert_proper_shapes = assert_proper_shapes
 
-    if not is_square:
-      raise ValueError("A ScaledIdentity operator is always square.")
-
     with ops.name_scope(name, values=[multiplier, num_rows]):
-      self._multiplier = ops.convert_to_tensor(multiplier, name="multiplier")
+      self._multiplier = linear_operator_util.convert_nonref_to_tensor(
+          multiplier, name="multiplier")
+
+      # Check and auto-set hints.
+      if not self._multiplier.dtype.is_complex:
+        if is_self_adjoint is False:  # pylint: disable=g-bool-id-comparison
+          raise ValueError("A real diagonal operator is always self adjoint.")
+        else:
+          is_self_adjoint = True
+
+      if not is_square:
+        raise ValueError("A ScaledIdentity operator is always square.")
+
+      linear_operator_util.assert_not_ref_type(num_rows, "num_rows")
 
       super(LinearOperatorScaledIdentity, self).__init__(
-          dtype=self._multiplier.dtype,
+          dtype=self._multiplier.dtype.base_dtype,
           is_non_singular=is_non_singular,
           is_self_adjoint=is_self_adjoint,
           is_positive_definite=is_positive_definite,
           is_square=is_square,
+          parameters=parameters,
           name=name)
-
-      # Shape [B1,...Bb, 1, 1]
-      self._multiplier_matrix = array_ops.expand_dims(
-          array_ops.expand_dims(self.multiplier, -1), -1)
-      self._multiplier_matrix_conj = math_ops.conj(self._multiplier_matrix)
-      self._abs_multiplier = math_ops.abs(self.multiplier)
 
       self._num_rows = linear_operator_util.shape_tensor(
           num_rows, name="num_rows")
@@ -620,11 +710,12 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
     matrix_shape = tensor_shape.TensorShape((self._num_rows_static,
                                              self._num_rows_static))
 
-    batch_shape = self.multiplier.get_shape()
+    batch_shape = self.multiplier.shape
     return batch_shape.concatenate(matrix_shape)
 
   def _shape_tensor(self):
-    matrix_shape = array_ops.stack((self._num_rows, self._num_rows), axis=0)
+    matrix_shape = array_ops_stack.stack(
+        (self._num_rows, self._num_rows), axis=0)
 
     batch_shape = array_ops.shape(self.multiplier)
     return array_ops.concat((batch_shape, matrix_shape), 0)
@@ -645,34 +736,125 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
         imag_multiplier,
         message="LinearOperator was not self-adjoint")
 
+  def _make_multiplier_matrix(self, conjugate=False):
+    # Shape [B1,...Bb, 1, 1]
+    multiplier_matrix = array_ops.expand_dims(
+        array_ops.expand_dims(self.multiplier, -1), -1)
+    if conjugate:
+      multiplier_matrix = math_ops.conj(multiplier_matrix)
+    return multiplier_matrix
+
+  def _linop_adjoint(self) -> "LinearOperatorScaledIdentity":
+    multiplier = self.multiplier
+    if multiplier.dtype.is_complex:
+      multiplier = math_ops.conj(multiplier)
+
+    return LinearOperatorScaledIdentity(
+        num_rows=self._num_rows,
+        multiplier=multiplier,
+        is_non_singular=self.is_non_singular,
+        is_self_adjoint=self.is_self_adjoint,
+        is_positive_definite=self.is_positive_definite,
+        is_square=True)
+
+  def _linop_cholesky(self) -> "LinearOperatorScaledIdentity":
+    return LinearOperatorScaledIdentity(
+        num_rows=self._num_rows,
+        multiplier=math_ops.sqrt(self.multiplier),
+        is_non_singular=True,
+        is_self_adjoint=True,
+        is_positive_definite=True,
+        is_square=True)
+
+  def _linop_inverse(self) -> "LinearOperatorScaledIdentity":
+    return LinearOperatorScaledIdentity(
+        num_rows=self._num_rows,
+        multiplier=1. / self.multiplier,
+        is_non_singular=self.is_non_singular,
+        is_self_adjoint=True,
+        is_positive_definite=self.is_positive_definite,
+        is_square=True)
+
+  def _linop_matmul(
+      self,
+      left_operator: "LinearOperatorScaledIdentity",
+      right_operator: linear_operator.LinearOperator,
+    ) -> "LinearOperatorScaledIdentity":
+    is_non_singular = property_hint_util.combined_non_singular_hint(
+        left_operator, right_operator)
+    is_self_adjoint = property_hint_util.combined_commuting_self_adjoint_hint(
+        left_operator, right_operator)
+    is_positive_definite = (
+        property_hint_util.combined_commuting_positive_definite_hint(
+            left_operator, right_operator))
+    if isinstance(right_operator, LinearOperatorScaledIdentity):
+      return LinearOperatorScaledIdentity(
+          num_rows=left_operator.domain_dimension_tensor(),
+          multiplier=left_operator.multiplier * right_operator.multiplier,
+          is_non_singular=is_non_singular,
+          is_self_adjoint=is_self_adjoint,
+          is_positive_definite=is_positive_definite,
+          is_square=True)
+    elif isinstance(right_operator, linear_operator_diag.LinearOperatorDiag):
+      return linear_operator_diag.LinearOperatorDiag(
+          diag=right_operator.diag * left_operator.multiplier,
+          is_non_singular=is_non_singular,
+          is_self_adjoint=is_self_adjoint,
+          is_positive_definite=is_positive_definite,
+          is_square=True)
+    else:
+      return super()._linop_matmul(left_operator, right_operator)
+
+  def _linop_solve(
+      self,
+      left_operator: "LinearOperatorScaledIdentity",
+      right_operator: linear_operator.LinearOperator,
+  ) -> linear_operator.LinearOperator:
+    is_non_singular = property_hint_util.combined_non_singular_hint(
+        left_operator, right_operator)
+    is_self_adjoint = property_hint_util.combined_commuting_self_adjoint_hint(
+        left_operator, right_operator)
+    is_positive_definite = (
+        property_hint_util.combined_commuting_positive_definite_hint(
+            left_operator, right_operator))
+    if isinstance(right_operator, LinearOperatorScaledIdentity):
+      return LinearOperatorScaledIdentity(
+          num_rows=left_operator.domain_dimension_tensor(),
+          multiplier=right_operator.multiplier / left_operator.multiplier,
+          is_non_singular=is_non_singular,
+          is_self_adjoint=is_self_adjoint,
+          is_positive_definite=is_positive_definite,
+          is_square=True)
+    elif isinstance(right_operator, linear_operator_diag.LinearOperatorDiag):
+      return linear_operator_diag.LinearOperatorDiag(
+          diag=right_operator.diag / left_operator.multiplier,
+          is_non_singular=is_non_singular,
+          is_self_adjoint=is_self_adjoint,
+          is_positive_definite=is_positive_definite,
+          is_square=True)
+    else:
+      return super()._linop_solve(left_operator, right_operator)
+
   def _matmul(self, x, adjoint=False, adjoint_arg=False):
     x = linalg.adjoint(x) if adjoint_arg else x
-    if adjoint:
-      matrix = self._multiplier_matrix_conj
-    else:
-      matrix = self._multiplier_matrix
     if self._assert_proper_shapes:
       aps = linear_operator_util.assert_compatible_matrix_dimensions(self, x)
       x = control_flow_ops.with_dependencies([aps], x)
-    return x * matrix
+    return x * self._make_multiplier_matrix(conjugate=adjoint)
 
   def _determinant(self):
     return self.multiplier**self._num_rows_cast_to_dtype
 
   def _log_abs_determinant(self):
     return self._num_rows_cast_to_real_dtype * math_ops.log(
-        self._abs_multiplier)
+        math_ops.abs(self.multiplier))
 
   def _solve(self, rhs, adjoint=False, adjoint_arg=False):
     rhs = linalg.adjoint(rhs) if adjoint_arg else rhs
-    if adjoint:
-      matrix = self._multiplier_matrix_conj
-    else:
-      matrix = self._multiplier_matrix
     if self._assert_proper_shapes:
       aps = linear_operator_util.assert_compatible_matrix_dimensions(self, rhs)
       rhs = control_flow_ops.with_dependencies([aps], rhs)
-    return rhs / matrix
+    return rhs / self._make_multiplier_matrix(conjugate=adjoint)
 
   def _trace(self):
     # Get Tensor of all ones of same shape as self.batch_shape.
@@ -701,12 +883,14 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
     Returns:
       A `Tensor` with broadcast shape and same `dtype` as `self`.
     """
-    with self._name_scope(name, values=[mat]):
+    with self._name_scope(name):  # pylint: disable=not-callable
       # Shape [B1,...,Bb, 1]
       multiplier_vector = array_ops.expand_dims(self.multiplier, -1)
 
       # Shape [C1,...,Cc, M, M]
-      mat = ops.convert_to_tensor(mat, name="mat")
+      mat = tensor_conversion.convert_to_tensor_v2_with_dispatch(
+          mat, name="mat"
+      )
 
       # Shape [C1,...,Cc, M]
       mat_diag = array_ops.matrix_diag_part(mat)
@@ -716,7 +900,30 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
 
       return array_ops.matrix_set_diag(mat, new_diag)
 
+  def _eigvals(self):
+    return self._ones_diag() * self.multiplier[..., array_ops.newaxis]
+
+  def _cond(self):
+    # Condition number for a scalar time identity matrix is one, except when the
+    # scalar is zero.
+    return array_ops.where_v2(
+        math_ops.equal(self._multiplier, 0.),
+        math_ops.cast(np.nan, dtype=self.dtype),
+        math_ops.cast(1., dtype=self.dtype))
+
   @property
   def multiplier(self):
     """The [batch] scalar `Tensor`, `c` in `cI`."""
     return self._multiplier
+
+  @property
+  def _composite_tensor_prefer_static_fields(self):
+    return ("num_rows",)
+
+  @property
+  def _composite_tensor_fields(self):
+    return ("num_rows", "multiplier", "assert_proper_shapes")
+
+  @property
+  def _experimental_parameter_ndims_to_matrix_ndims(self):
+    return {"multiplier": 0}

@@ -14,15 +14,12 @@
 # ==============================================================================
 """Utilities for testing tfe code."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import ops as _ops
 from tensorflow.python.platform import test as _test
 from tensorflow.python.platform.test import *  # pylint: disable=wildcard-import
 
 
-def main(argv=None):
+# TODO(akshayka): Do away with this file.
+def main(argv=None):  # pylint: disable=function-redefined
   _ops.enable_eager_execution()
   _test.main(argv)

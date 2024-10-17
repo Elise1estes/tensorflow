@@ -16,6 +16,8 @@ limitations under the License.
 // See docs in ../ops/io_ops.cc.
 
 #include <memory>
+
+#include "absl/strings/escaping.h"
 #include "tensorflow/core/framework/reader_base.h"
 #include "tensorflow/core/framework/reader_base.pb.h"
 #include "tensorflow/core/framework/reader_op_kernel.h"
@@ -31,32 +33,32 @@ class IdentityReader : public ReaderBase {
   explicit IdentityReader(const string& node_name)
       : ReaderBase(strings::StrCat("IdentityReader '", node_name, "'")) {}
 
-  Status ReadLocked(string* key, string* value, bool* produced,
+  Status ReadLocked(tstring* key, tstring* value, bool* produced,
                     bool* at_end) override {
     *key = current_work();
     *value = current_work();
     *produced = true;
     *at_end = true;
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Stores state in a ReaderBaseState proto, since IdentityReader has
   // no additional state beyond ReaderBase.
-  Status SerializeStateLocked(string* state) override {
+  Status SerializeStateLocked(tstring* state) override {
     ReaderBaseState base_state;
     SaveBaseState(&base_state);
-    base_state.SerializeToString(state);
-    return Status::OK();
+    SerializeToTString(base_state, state);
+    return absl::OkStatus();
   }
 
-  Status RestoreStateLocked(const string& state) override {
+  Status RestoreStateLocked(const tstring& state) override {
     ReaderBaseState base_state;
     if (!ParseProtoUnlimited(&base_state, state)) {
       return errors::InvalidArgument("Could not parse state for ", name(), ": ",
-                                     str_util::CEscape(state));
+                                     absl::CEscape(state));
     }
     TF_RETURN_IF_ERROR(RestoreBaseState(base_state));
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 

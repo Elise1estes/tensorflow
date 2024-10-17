@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-// Master implements the service MasterSerivce.
+// Master implements the service MasterService.
 //
 // A Master maintains the state of live graph computation
 // sessions, each session orchestrates both local and remote devices
@@ -31,9 +31,11 @@ limitations under the License.
 
 #include "tensorflow/core/distributed_runtime/master.h"
 
+#include <memory>
 #include <unordered_set>
 #include <vector>
 
+#include "xla/tsl/protobuf/rpc_options.pb.h"
 #include "tensorflow/core/common_runtime/device_set.h"
 #include "tensorflow/core/common_runtime/process_util.h"
 #include "tensorflow/core/distributed_runtime/remote_device.h"
@@ -48,26 +50,30 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/regexp.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/protobuf/cluster.pb.h"
 #include "tensorflow/core/protobuf/master.pb.h"
 #include "tensorflow/core/protobuf/worker.pb.h"
 #include "tensorflow/core/public/session_options.h"
+#include "tensorflow/core/util/device_name_utils.h"
 
 namespace tensorflow {
 
 namespace {
-const char* const kGrpcProtocol = "grpc://";
+constexpr char kGrpcPrefixRegex[] = "^grpc.*://";
 }  // namespace
 
 Master::Master(MasterEnv* env, double session_gc_seconds)
     : env_(env),
       last_1000_steps_(1000),
       step_count_(0),
-      session_gc_seconds_(session_gc_seconds) {
+      session_gc_seconds_(session_gc_seconds),
+      recent_request_ids_(10000, env_->experimental_num_shards) {
   // Right now, a master service must be co-located with a device.
   // Otherwise, fetches do not work.
   CHECK(!env->local_devices.empty());
+  DCHECK_GT(env_->experimental_num_shards, 0);
 
   if (session_gc_seconds_ > 0.0) {
     gc_thread_ = env_->env->StartThread(ThreadOptions(), "TF_master_GC",
@@ -96,10 +102,11 @@ void Master::GC() {
       break;
     }
     std::vector<string> handles;
-    const int64 num_micros = static_cast<int64>(session_gc_seconds_ * 1000000);
+    const int64_t num_micros =
+        static_cast<int64_t>(session_gc_seconds_ * 1000000);
     for (const auto& entry : sessions_) {
-      int64 lat = entry.second->last_access_time_usec();
-      if (static_cast<int64>(env->NowMicros()) - lat > num_micros) {
+      int64_t lat = entry.second->last_access_time_usec();
+      if (static_cast<int64_t>(env->NowMicros()) - lat > num_micros) {
         handles.push_back(entry.first);
         auto* sess = entry.second;
         SchedClosure([this, sess]() {
@@ -138,7 +145,7 @@ class DeviceFinder {
     finder.Start();
     TF_RETURN_IF_ERROR(finder.Wait());
     finder.GetRemoteDevices(env->local_devices, out_remote);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   static void GetRemoteWorkers(
@@ -167,13 +174,55 @@ class DeviceFinder {
     }
     // Enumerates all known workers' target. A target name is a
     // prefix of a device name. E.g., /job:mnist/replica:0/task:10.
-    CHECK_GT(env_->local_devices.size(), 0) << "No local devices provided.";
-    const string& local_device_name = env_->local_devices[0]->name();
-    std::vector<string> workers;
-    worker_cache->ListWorkers(&workers);
     if (filters_.empty()) {
+      // If no filters were specified, we list all known workers in
+      // `worker_cache`.
+      std::vector<string> workers;
+      worker_cache->ListWorkers(&workers);
       std::swap(workers, targets_);
     } else {
+      // When applying filters, we must include the local worker, even if it
+      // does not match any of the filters.
+      CHECK_GT(env_->local_devices.size(), 0) << "No local devices provided.";
+      const string& local_device_name = env_->local_devices[0]->name();
+      DeviceNameUtils::ParsedName local_parsed_name;
+      CHECK(DeviceNameUtils::ParseFullName(local_device_name,
+                                           &local_parsed_name));
+      bool all_filters_have_job = true;
+      std::unordered_set<string> filter_job_names({local_parsed_name.job});
+      for (const DeviceNameUtils::ParsedName& filter : filters_) {
+        all_filters_have_job = all_filters_have_job && filter.has_job;
+        if (filter.has_job) {
+          filter_job_names.insert(filter.job);
+        }
+      }
+
+      std::vector<string> workers;
+      if (all_filters_have_job) {
+        // If all of the device filters have a job specified, then we only need
+        // to list the workers in the jobs named in the filter, because a worker
+        // in any other job would not match any filter.
+        for (const string& job_name : filter_job_names) {
+          VLOG(2) << "Selectively listing workers in job: " << job_name;
+          std::vector<string> workers_in_job;
+          worker_cache->ListWorkersInJob(job_name, &workers_in_job);
+          workers.insert(workers.end(), workers_in_job.begin(),
+                         workers_in_job.end());
+        }
+      } else {
+        // If any of the device filters does not have a job specified, then we
+        // must list the workers from all jobs.
+        VLOG(2) << "Listing workers in all jobs because some device "
+                << "filter has no job specified. Filters were:";
+        if (device_filters.empty()) {
+          VLOG(2) << "- <NO FILTERS>";
+        } else {
+          for (const string& filter : device_filters) {
+            VLOG(2) << "- " << filter;
+          }
+        }
+        worker_cache->ListWorkers(&workers);
+      }
       for (const string& name : workers) {
         if (MatchFilters(name) ||
             DeviceNameUtils::IsSameAddressSpace(name, local_device_name)) {
@@ -189,6 +238,8 @@ class DeviceFinder {
   }
 
   void Start() {
+    LOG(INFO) << "Scanning workers for devices: " << targets_.size()
+              << " total workers";
     {
       mutex_lock l(mu_);
       num_pending_ = targets_.size();
@@ -197,13 +248,14 @@ class DeviceFinder {
       }
     }
     // Talk to all workers to get the list of available devices.
-    using std::placeholders::_1;
-    using std::placeholders::_2;
     for (size_t i = 0; i < targets_.size(); ++i) {
       // TODO(mrry): Propagate a timeout here, since `this->WhenFound()` may
       // never be called.
-      NewRemoteDevices(env_->env, worker_cache_, targets_[i],
-                       std::bind(&ME::WhenFound, this, i, _1, _2));
+      NewRemoteDevices(
+          env_->env, worker_cache_, targets_[i],
+          [this, i](const Status& s, std::vector<Device*>* devices) {
+            WhenFound(i, s, devices);
+          });
     }
   }
 
@@ -254,14 +306,14 @@ class DeviceFinder {
   std::vector<DeviceNameUtils::ParsedName> filters_;
 
   mutex mu_;
-  int num_pending_ GUARDED_BY(mu_);
+  int num_pending_ TF_GUARDED_BY(mu_);
   condition_variable pending_zero_;
-  std::vector<Device*> found_ GUARDED_BY(mu_);
+  std::vector<Device*> found_ TF_GUARDED_BY(mu_);
   // List of targets to be contacted by this DeviceFinder. The
   // respective `bool` in `seen_targets_` indicates whether we have
   // heard from this target or not.
   std::vector<string> targets_;
-  std::vector<bool> seen_targets_ GUARDED_BY(mu_);
+  std::vector<bool> seen_targets_ TF_GUARDED_BY(mu_);
   Status status_;
 
   void WhenFound(int target_index, const Status& s,
@@ -269,7 +321,8 @@ class DeviceFinder {
     mutex_lock l(mu_);
     seen_targets_[target_index] = true;
     if (!s.ok()) {
-      LOG(ERROR) << "Master init: " << s;
+      LOG(ERROR) << "CreateSession failed because worker "
+                 << targets_[target_index] << " returned error: " << s;
       status_.Update(s);
     } else {
       found_.insert(found_.end(), devices->begin(), devices->end());
@@ -304,7 +357,8 @@ class DeviceFinder {
     return false;
   }
 
-  TF_DISALLOW_COPY_AND_ASSIGN(DeviceFinder);
+  DeviceFinder(const DeviceFinder&) = delete;
+  void operator=(const DeviceFinder&) = delete;
 };
 
 void Master::CreateSession(const CreateSessionRequest* req,
@@ -312,8 +366,6 @@ void Master::CreateSession(const CreateSessionRequest* req,
   SchedClosure([this, req, resp, done]() {
     Status status;
     WorkerCacheFactoryOptions worker_cache_factory_options;
-    string grpc_protocol("grpc");
-    worker_cache_factory_options.protocol = &grpc_protocol;
     auto call_done = gtl::MakeCleanup([&status, &done] { done(status); });
     status = ValidateExternalGraphDefSyntax(req->graph_def());
     if (!status.ok()) return;
@@ -329,28 +381,23 @@ void Master::CreateSession(const CreateSessionRequest* req,
     std::unique_ptr<std::vector<std::unique_ptr<Device>>> remote_devices(
         new std::vector<std::unique_ptr<Device>>());
 
-    if (req->config().has_cluster_def()) {
-      worker_cache_factory_options.cluster_def = &req->config().cluster_def();
+    const ClusterDef& cluster_def = req->config().cluster_def();
+    if (!cluster_def.job().empty()) {
+      worker_cache_factory_options.cluster_def = cluster_def;
+      // If the target starts with gRPC protocol prefix, remove the prefix
+      string normalized_string(req->target());
+      RE2::Replace(&normalized_string, kGrpcPrefixRegex, "");
 
       // Set the server_def's job_name and task_index fields.
-      string normalized_string;
-      string grpc_protocol(kGrpcProtocol);
-      if (req->target().compare(0, grpc_protocol.length(), grpc_protocol) ==
-          0) {
-        normalized_string =
-            req->target().substr(grpc_protocol.length(), string::npos);
-      } else {
-        normalized_string = req->target();
-      }
-      for (auto&& job : req->config().cluster_def().job()) {
+      for (auto&& job : cluster_def.job()) {
         for (auto&& task : job.tasks()) {
           if (task.second == normalized_string) {
-            if (worker_cache_factory_options.job_name != nullptr) {
+            if (!worker_cache_factory_options.job_name.empty()) {
               status = errors::InvalidArgument(
                   "Found multiple matching tasks that correspond to "
                   "to the master. Master target: '",
-                  req->target(), "'. ClusterDef: ",
-                  req->config().cluster_def().ShortDebugString());
+                  req->target(),
+                  "'. ClusterDef: ", cluster_def.ShortDebugString());
               LOG(ERROR) << status;
               return;
             }
@@ -364,12 +411,12 @@ void Master::CreateSession(const CreateSessionRequest* req,
                   job.name(), ", task index: ", task.first);
               return;
             }
-            worker_cache_factory_options.job_name = &job.name();
+            worker_cache_factory_options.job_name = job.name();
             worker_cache_factory_options.task_index = task.first;
           }
         }
       }
-
+      worker_cache_factory_options.rpc_options = req->config().rpc_options();
       // Create the worker cache from the computed server_def.
       status = env_->worker_cache_factory(worker_cache_factory_options,
                                           &worker_cache);
@@ -381,11 +428,11 @@ void Master::CreateSession(const CreateSessionRequest* req,
           DeviceFinder::GetRemoteDevices(req->config().device_filters(), env_,
                                          worker_cache, remote_devices.get());
       if (!status.ok()) return;
-      device_set.reset(new DeviceSet);
+      device_set = std::make_unique<DeviceSet>();
       for (auto&& d : *remote_devices) {
         device_set->AddDevice(d.get());
         DeviceNameUtils::ParsedName name = d->parsed_name();
-        if (name.job == *worker_cache_factory_options.job_name &&
+        if (name.job == worker_cache_factory_options.job_name &&
             name.task == worker_cache_factory_options.task_index &&
             name.type == "CPU" && name.id == 0) {
           device_set->set_client_device(d.get());
@@ -399,7 +446,7 @@ void Master::CreateSession(const CreateSessionRequest* req,
           DeviceFinder::GetRemoteDevices(req->config().device_filters(), env_,
                                          worker_cache, remote_devices.get());
       if (!status.ok()) return;
-      device_set.reset(new DeviceSet);
+      device_set = std::make_unique<DeviceSet>();
       for (auto&& d : *remote_devices) {
         device_set->AddDevice(d.get());
       }
@@ -418,7 +465,11 @@ void Master::CreateSession(const CreateSessionRequest* req,
                                        << "CPU:0 device?";
 
     SessionOptions options;
+    options.target = req->target();
     options.config = req->config();
+    // Disable optimizations for static graph to allow calls to Session::Extend.
+    options.config.mutable_experimental()
+        ->set_disable_optimize_for_static_graph(true);
 
     std::vector<string> filtered_worker_list;
     DeviceFinder::GetRemoteWorkers(req->config().device_filters(), env_,
@@ -431,7 +482,7 @@ void Master::CreateSession(const CreateSessionRequest* req,
     GraphDef* gdef =
         const_cast<CreateSessionRequest*>(req)->mutable_graph_def();
 
-    status = session->Create(gdef, worker_cache_factory_options);
+    status = session->Create(std::move(*gdef), cluster_def);
     if (!status.ok()) {
       session->Close().IgnoreError();
       session->Unref();
@@ -466,13 +517,19 @@ void Master::ExtendSession(const ExtendSessionRequest* req,
 
 void Master::PartialRunSetup(const PartialRunSetupRequest* req,
                              PartialRunSetupResponse* resp, MyClosure done) {
+  Status s = recent_request_ids_.TrackUnique(req->request_id(),
+                                             "PartialRunSetup (Master)", *req);
+  if (!s.ok()) {
+    done(s);
+    return;
+  }
   auto session = FindMasterSession(req->session_handle());
   if (session == nullptr) {
     done(errors::Aborted("Session ", req->session_handle(), " is not found."));
     return;
   }
 
-  SchedClosure([this, session, req, resp, done]() {
+  SchedClosure([session, req, resp, done]() {
     Status s = session->PartialRunSetup(req, resp);
     session->Unref();
     done(s);
@@ -481,6 +538,12 @@ void Master::PartialRunSetup(const PartialRunSetupRequest* req,
 
 void Master::RunStep(CallOptions* opts, const RunStepRequestWrapper* req,
                      MutableRunStepResponseWrapper* resp, MyClosure done) {
+  Status s = recent_request_ids_.TrackUnique(req->request_id(),
+                                             "RunStep (Master)", req);
+  if (!s.ok()) {
+    done(s);
+    return;
+  }
   auto start_time = env_->env->NowMicros();
   auto session = FindMasterSession(req->session_handle());
   if (session == nullptr) {
@@ -572,11 +635,13 @@ void Master::CleanupWorkers(const ResetRequest& reset) {
     int c = 0;
     for (int i = 0; i < num_workers; ++i) {
       const string& worker_name = worker_names[i];
-      auto worker = env_->worker_cache->CreateWorker(worker_name);
+      auto worker = env_->worker_cache->GetOrCreateWorker(worker_name);
       if (worker) {
         worker->CleanupAllAsync(
             &req, &resp[i], [this, &n, worker_name, worker, c](Status s) {
-              TF_CHECK_OK(s);
+              if (!s.ok()) {
+                LOG(ERROR) << "Worker CleanupAll failed: " << s;
+              }
               env_->worker_cache->ReleaseWorker(worker_name, worker);
               n[c].Notify();
             });
@@ -620,36 +685,44 @@ void Master::Reset(const ResetRequest* req, ResetResponse* resp,
 
 void Master::MakeCallable(const MakeCallableRequest* req,
                           MakeCallableResponse* resp, MyClosure done) {
+  Status s = recent_request_ids_.TrackUnique(req->request_id(),
+                                             "MakeCallable (Master)", *req);
+  if (!s.ok()) {
+    done(s);
+    return;
+  }
   auto session = FindMasterSession(req->session_handle());
   if (session == nullptr) {
     done(errors::Aborted("Session ", req->session_handle(), " is not found."));
     return;
   }
 
-  SchedClosure(std::bind(
-      [this, session, req, resp](MyClosure done) {
-        Status s = session->MakeCallable(*req, resp);
-        session->Unref();
-        done(s);
-      },
-      std::move(done)));
+  SchedClosure([session, req, resp, done = std::move(done)]() {
+    Status s = session->MakeCallable(*req, resp);
+    session->Unref();
+    done(s);
+  });
 }
 
 void Master::RunCallable(CallOptions* opts, const RunCallableRequest* req,
                          RunCallableResponse* resp, MyClosure done) {
+  Status s = recent_request_ids_.TrackUnique(req->request_id(),
+                                             "RunCallable (Master)", *req);
+  if (!s.ok()) {
+    done(s);
+    return;
+  }
   auto session = FindMasterSession(req->session_handle());
   if (session == nullptr) {
     done(errors::Aborted("Session ", req->session_handle(), " is not found."));
     return;
   }
 
-  SchedClosure(std::bind(
-      [this, session, opts, req, resp](MyClosure done) {
-        Status s = session->RunCallable(opts, *req, resp);
-        session->Unref();
-        done(s);
-      },
-      std::move(done)));
+  SchedClosure([session, opts, req, resp, done = std::move(done)]() {
+    Status s = session->RunCallable(opts, *req, resp);
+    session->Unref();
+    done(s);
+  });
 }
 
 void Master::ReleaseCallable(const ReleaseCallableRequest* req,
@@ -660,13 +733,11 @@ void Master::ReleaseCallable(const ReleaseCallableRequest* req,
     return;
   }
 
-  SchedClosure(std::bind(
-      [this, session, req, resp](MyClosure done) {
-        Status s = session->ReleaseCallable(*req, resp);
-        session->Unref();
-        done(s);
-      },
-      std::move(done)));
+  SchedClosure([session, req, resp, done = std::move(done)]() {
+    Status s = session->ReleaseCallable(*req, resp);
+    session->Unref();
+    done(s);
+  });
 }
 
 }  // end namespace tensorflow

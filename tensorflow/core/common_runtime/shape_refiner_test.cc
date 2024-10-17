@@ -59,7 +59,42 @@ class ShapeRefinerTest : public ::testing::Test {
     return ShapeRefiner::IsUpdatedShapesOrTypes(c, existing, updated);
   }
 
-  static constexpr int64 kMaxTensorSize = ShapeRefiner::kMaxTensorSize;
+  static constexpr int64_t kMaxTensorSize = ShapeRefiner::kMaxTensorSize;
+
+  void TestStridedSlice(const PartialTensorShape& input_shape, int begin,
+                        int end, int stride, const char* expected,
+                        int begin_mask = 0, int end_mask = 0,
+                        int ellipsis_mask = 0, int shrink_axis_mask = 0,
+                        StringPiece test_op = "TensorAsShapeInt32") {
+    Scope root = Scope::DisabledShapeInferenceScope();
+    auto placeholder =
+        ops::Placeholder(root, DT_INT32, ops::Placeholder::Shape(input_shape));
+    auto input = ops::Shape(root, placeholder);
+    auto begin_op = ops::Const(root, {begin});
+    auto end_op = ops::Const(root, {end});
+    auto stride_op = ops::Const(root, {stride});
+    auto slice = ops::StridedSlice(root, input, begin_op, end_op, stride_op,
+                                   ops::StridedSlice::BeginMask(begin_mask)
+                                       .EndMask(end_mask)
+                                       .EllipsisMask(ellipsis_mask)
+                                       .ShrinkAxisMask(shrink_axis_mask));
+    Node* result;
+    TF_ASSERT_OK(NodeBuilder("test", test_op)
+                     .Input(slice.node())
+                     .Finalize(root.graph(), &result));
+
+    ShapeRefiner m(TF_GRAPH_DEF_VERSION, OpRegistry::Global());
+    TF_ASSERT_OK(m.AddNode(placeholder.node()));
+    TF_ASSERT_OK(m.AddNode(input.node()));
+    TF_ASSERT_OK(m.AddNode(begin_op.node()));
+    TF_ASSERT_OK(m.AddNode(end_op.node()));
+    TF_ASSERT_OK(m.AddNode(stride_op.node()));
+    TF_ASSERT_OK(m.AddNode(slice.node()));
+    TF_ASSERT_OK(m.AddNode(result));
+
+    shape_inference::InferenceContext* ctx = m.GetContext(result);
+    EXPECT_EQ(ctx->DebugString(ctx->output(0)), expected);
+  }
 };
 
 namespace {
@@ -116,21 +151,6 @@ TEST_F(ShapeRefinerTest, MatMul) {
   EXPECT_SHAPE("[2,2]", m, mm, 0);
 }
 
-TEST_F(ShapeRefinerTest, InvalidOrder) {
-  ShapeRefiner m(TF_GRAPH_DEF_VERSION, OpRegistry::Global());
-  Scope root = Scope::NewRootScope();
-  auto a = ops::Const(root, {{1.0f}, {2.0f}});
-  auto b = ops::Const(root, {{1.0f, 2.0f}});
-  auto mm = ops::MatMul(root, a, b);
-
-  Status s = m.AddNode(mm.node());
-  ASSERT_FALSE(s.ok());
-  ASSERT_EQ(
-      "Input 0 ('Const') for 'MatMul' was not previously added to "
-      "ShapeRefiner.",
-      s.error_message());
-}
-
 TEST_F(ShapeRefinerTest, BadShapes) {
   ShapeRefiner m(TF_GRAPH_DEF_VERSION, OpRegistry::Global());
   Scope root = Scope::NewRootScope();
@@ -144,8 +164,8 @@ TEST_F(ShapeRefinerTest, BadShapes) {
   // an error.
   Status s = m.AddNode(mm.node());
   ASSERT_FALSE(s.ok());
-  ASSERT_TRUE(str_util::StrContains(
-      s.error_message(), "Dimensions must be equal, but are 1 and 2"));
+  ASSERT_TRUE(absl::StrContains(s.message(),
+                                "Dimensions must be equal, but are 1 and 2"));
 }
 
 TEST_F(ShapeRefinerTest, SetShape) {
@@ -310,7 +330,7 @@ REGISTER_OP("TestOp")
       if (c->input_tensor(0)) {
         if (c->input_tensor(1)) {
           c->set_output(0, c->Matrix(10, 10));
-          return Status::OK();
+          return absl::OkStatus();
         }
         return shape_inference::ScalarShape(c);
       }
@@ -364,7 +384,7 @@ REGISTER_OP("ShapeData")
       }
 
       c->set_output(0, c->MakeShape(dims));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("ShapeDataInt64")
@@ -379,11 +399,11 @@ REGISTER_OP("ShapeDataInt64")
       std::vector<shape_inference::DimensionHandle> dims;
       dims.reserve(shape_data->NumElements());
       for (int i = 0; i < shape_data->NumElements(); ++i) {
-        dims.emplace_back(c->MakeDim(shape_data->flat<int64>()(i)));
+        dims.emplace_back(c->MakeDim(shape_data->flat<int64_t>()(i)));
       }
 
       c->set_output(0, c->MakeShape(dims));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 // An op with a shape function that looks at its input tensor
@@ -396,13 +416,13 @@ REGISTER_OP("ShapeVectorForAllElements")
       if (shape_data == nullptr) {
         return shape_inference::UnknownShape(c);
       }
-      int64 total = 0;
+      int64_t total = 0;
       for (int i = 0; i < shape_data->NumElements(); ++i) {
         total += shape_data->flat<int32>()(i);
       }
 
       c->set_output(0, c->Vector(total));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("MultiIdentity")
@@ -413,7 +433,7 @@ REGISTER_OP("MultiIdentity")
       for (int i = 0; i < c->num_inputs(); ++i) {
         c->set_output(i, c->input(i));
       }
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 class MultiIdentity : public OpKernel {
@@ -467,7 +487,7 @@ TEST_F(ShapeRefinerTest, PropagateShapeAcrossTensorContentInt64) {
 
   // Create variable 2x4 tensor.
   auto input = ops::Variable(
-      root, {2, 4, static_cast<int64>(std::numeric_limits<int32>::max()) * 2},
+      root, {2, 4, static_cast<int64_t>(std::numeric_limits<int32>::max()) * 2},
       DT_INT64);
 
   // Shape is a vector of 2 elements (2,4)
@@ -501,7 +521,7 @@ TEST_F(ShapeRefinerTest, PropagateShapeAcrossTensorContentInt32Overflow) {
 
   // Create variable 2x4 tensor.
   auto input = ops::Variable(
-      root, {2, 4, static_cast<int64>(std::numeric_limits<int32>::max()) * 2},
+      root, {2, 4, static_cast<int64_t>(std::numeric_limits<int32>::max()) * 2},
       DT_INT32);
 
   // Shape is a vector of 2 elements (2,4)
@@ -584,11 +604,11 @@ TEST_F(ShapeRefinerTest, PropagateSizeAcrossTensorContentInt64) {
   Scope root = Scope::NewRootScope();
 
   // Create variable.
-  auto input =
-      ops::Variable(root,
-                    {1, 2, 3, 4, 5,
-                     static_cast<int64>(std::numeric_limits<int32>::max()) * 2},
-                    DT_INT64);
+  auto input = ops::Variable(
+      root,
+      {1, 2, 3, 4, 5,
+       static_cast<int64_t>(std::numeric_limits<int32>::max()) * 2},
+      DT_INT64);
 
   // 5! * int32_max_value * 2.
   auto attrs = ops::Size::OutType(DT_INT64);
@@ -615,11 +635,11 @@ TEST_F(ShapeRefinerTest, PropagateSizeAcrossTensorContentInt32Overflow) {
   Scope root = Scope::NewRootScope();
 
   // Create variable.
-  auto input =
-      ops::Variable(root,
-                    {1, 2, 3, 4, 5,
-                     static_cast<int64>(std::numeric_limits<int32>::max()) * 2},
-                    DT_INT32);
+  auto input = ops::Variable(
+      root,
+      {1, 2, 3, 4, 5,
+       static_cast<int64_t>(std::numeric_limits<int32>::max()) * 2},
+      DT_INT32);
 
   // 5!.
   auto size = ops::Size(root, input);
@@ -814,10 +834,27 @@ Status TensorAsShapeShapeFn(shape_inference::InferenceContext* c) {
   shape_inference::ShapeHandle out;
   TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(0 /* input_idx */, &out));
   c->set_output(0, out);
-  return Status::OK();
+  return absl::OkStatus();
+}
+
+Status PartialTensorAsShapeShapeFn(shape_inference::InferenceContext* c) {
+  shape_inference::ShapeHandle out;
+  const Tensor* t = c->input_tensor(0);
+  if (t == nullptr || t->NumElements() != 1) {
+    c->set_output(0, c->UnknownShape());
+    return absl::OkStatus();
+  }
+  TF_RETURN_IF_ERROR(
+      c->MakeShapeFromTensorShape(TensorShape({t->flat<int32>()(0)}), &out));
+  c->set_output(0, out);
+  return absl::OkStatus();
 }
 
 // Register ops used by the ConstantValueAsShape* tests.
+REGISTER_OP("PartialTensorAsShapeInt32")
+    .Input("a: int32")
+    .Output("o: int32")
+    .SetShapeFn(PartialTensorAsShapeShapeFn);
 
 REGISTER_OP("TensorAsShapeInt32")
     .Input("a: int32")
@@ -831,48 +868,48 @@ REGISTER_OP("TensorAsShapeInt64")
 
 REGISTER_OP("NonConstScalarInt32")
     .Output("o: int32")
-    .SetIsStateful()  // prevents constant folding
+    .SetDoNotOptimize()
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("NonConstScalarInt64")
     .Output("o: int64")
-    .SetIsStateful()  // prevents constant folding
+    .SetDoNotOptimize()
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("WithEmptyVectorShape")
     .Output("o: int32")
-    .SetIsStateful()  // prevents constant folding
+    .SetDoNotOptimize()
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(0, c->Vector(0));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("WithPartialShape")
     .Output("o: int32")
-    .SetIsStateful()  // prevents constant folding
+    .SetDoNotOptimize()
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(
           0, c->MakeShape({1, shape_inference::InferenceContext::kUnknownDim, 3,
                            shape_inference::InferenceContext::kUnknownDim, 5}));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("WithPartialShape2")
     .Output("o: int32")
-    .SetIsStateful()  // prevents constant folding
+    .SetDoNotOptimize()
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(
           0,
           c->MakeShape({6, shape_inference::InferenceContext::kUnknownDim, 8}));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("WithUnknownShape")
     .Output("o: int32")
-    .SetIsStateful()  // prevents constant folding
+    .SetDoNotOptimize()
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(0, c->UnknownShape());
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 }  // namespace
@@ -962,10 +999,10 @@ TEST_F(ShapeRefinerTest, ConstantValueAsShape_PackInt64) {
 
   InputList inputs{
       // clang-format off
-      Input(ops::Const<int64>(root, 10LL)),
-      Input(ops::Const<int64>(root, 20LL)),
+      Input(ops::Const<int64_t>(root, int64_t{10})),
+      Input(ops::Const<int64_t>(root, int64_t{20})),
       Input(Output(scalar_non_const)),
-      Input(ops::Const<int64>(root, 1LL << 40)),
+      Input(ops::Const<int64_t>(root, int64_t{1} << 40)),
   };  // clang-format on
   auto pack = ops::Stack(root, inputs);
   TF_ASSERT_OK(root.status());
@@ -990,8 +1027,8 @@ TEST_F(ShapeRefinerTest, ConstantValueAsShape_PackUnknownDim) {
   Scope root = Scope::NewRootScope();
 
   InputList inputs{
-      Input(ops::Const<int64>(root, 10LL)),
-      Input(ops::Const<int64>(root, -1LL)),
+      Input(ops::Const<int64_t>(root, int64_t{10})),
+      Input(ops::Const<int64_t>(root, int64_t{-1})),
   };
   auto pack = ops::Stack(root, inputs);
   TF_ASSERT_OK(root.status());
@@ -1017,8 +1054,8 @@ TEST_F(ShapeRefinerTest, ConstantValueAsShape_PackInvalidInput) {
 
   // Inputs are length 2 vectors instead of scalars.
   InputList inputs{
-      Input(ops::Const<int64>(root, {10LL, 20LL})),
-      Input(ops::Const<int64>(root, {10LL, 21LL})),
+      Input(ops::Const<int64_t>(root, {int64_t{10}, int64_t{20}})),
+      Input(ops::Const<int64_t>(root, {int64_t{10}, int64_t{21}})),
   };
   auto pack = ops::Stack(root, inputs);
   TF_ASSERT_OK(root.status());
@@ -1033,8 +1070,7 @@ TEST_F(ShapeRefinerTest, ConstantValueAsShape_PackInvalidInput) {
     TF_ASSERT_OK(m.AddNode(input.node()));
   }
   TF_ASSERT_OK(m.AddNode(pack.node()));
-  EXPECT_TRUE(str_util::StrContains(m.AddNode(result).error_message(),
-                                    "but is rank 2"));
+  EXPECT_TRUE(absl::StrContains(m.AddNode(result).message(), "but is rank 2"));
 }
 
 TEST_F(ShapeRefinerTest, ConstantValueAsShape_Concat) {
@@ -1153,7 +1189,103 @@ TEST_F(ShapeRefinerTest, ConstantValueAsShape_ConcatInvalidDimValue) {
   TF_ASSERT_OK(m.AddNode(concat_dim.node()));
   TF_ASSERT_OK(m.AddNode(concat.node()));
   EXPECT_EQ("Invalid value in tensor used for shape: -2",
-            m.AddNode(result).error_message());
+            m.AddNode(result).message());
+}
+
+TEST_F(ShapeRefinerTest, ConstantValueAsShape_StridedSlice) {
+  TestStridedSlice(
+      /*input_shape=*/{1, -1, 3, -1, 5},
+      /*begin=*/2,
+      /*end=*/5,
+      /*stride=*/1,
+      /*expected=*/"[3,?,5]");
+}
+
+TEST_F(ShapeRefinerTest, ConstantValueAsShape_StridedSliceNegativeStride) {
+  // clang-format off
+  TestStridedSlice(
+      /*input_shape=*/{1, -1, 3, -1, 5},
+      /*begin=*/10,
+      /*end=*/0,
+      /*stride=*/-1,
+      /*expected=*/"[5,?,3,?]");
+  // clang-format on
+}
+
+TEST_F(ShapeRefinerTest, ConstantValueAsShape_StridedSliceMasks) {
+  TestStridedSlice(
+      /*input_shape=*/{1, -1, 3, -1, 5},
+      /*begin=*/3,
+      /*end=*/4,
+      /*stride=*/1,
+      /*expected=*/"[1,?,3,?,5]",
+      /*begin_mask=*/1,
+      /*end_mask=*/1);
+}
+
+TEST_F(ShapeRefinerTest, ConstantValueAsShape_StridedSliceInvalidMask) {
+  TestStridedSlice(
+      /*input_shape=*/{1, -1, 3},
+      /*begin=*/2,
+      /*end=*/3,
+      /*stride=*/1,
+      /*expected=*/"[?,?,?]",
+      /*begin_mask=*/0,
+      /*end_mask=*/0,
+      /*ellipsis_mask=*/1);
+}
+
+TEST_F(ShapeRefinerTest, ConstantValueAsShape_StridedSliceWithShrinkAxis) {
+  TestStridedSlice(
+      /*input_shape=*/{1, -1, 3, -1, 5},
+      /*begin=*/2,
+      /*end=*/3,
+      /*stride=*/1,
+      /*expected=*/"[3]",
+      /*begin_mask=*/0,
+      /*end_mask=*/0,
+      /*ellipsis_mask=*/0,
+      /*shrink_axis_mask=*/1,
+      /*test_op=*/"PartialTensorAsShapeInt32");
+}
+
+TEST_F(ShapeRefinerTest,
+       ConstantValueAsShape_StridedSliceWithShrinkAxisOnUnknownDim) {
+  TestStridedSlice(
+      /*input_shape=*/{1, -1, 3, -1, 5},
+      /*begin=*/1,
+      /*end=*/2,
+      /*stride=*/1,
+      /*expected=*/"?",
+      /*begin_mask=*/0,
+      /*end_mask=*/0,
+      /*ellipsis_mask=*/0,
+      /*shrink_axis_mask=*/1,
+      /*test_op=*/"PartialTensorAsShapeInt32");
+}
+
+TEST_F(ShapeRefinerTest, ConstantValueAsShape_StridedSliceMulti) {
+  Scope root = Scope::DisabledShapeInferenceScope();
+  auto input = ops::Placeholder(root, DT_INT32);
+  auto begin = ops::Const(root, {0, 0});
+  auto end = ops::Const(root, {2, 2});
+  auto stride = ops::Const(root, {1, 1});
+  auto slice = ops::StridedSlice(root, input, begin, end, stride);
+  Node* result;
+  TF_ASSERT_OK(NodeBuilder("test", "TensorAsShapeInt32")
+                   .Input(slice.node())
+                   .Finalize(root.graph(), &result));
+
+  ShapeRefiner m(TF_GRAPH_DEF_VERSION, OpRegistry::Global());
+  TF_ASSERT_OK(m.AddNode(input.node()));
+  TF_ASSERT_OK(m.AddNode(begin.node()));
+  TF_ASSERT_OK(m.AddNode(end.node()));
+  TF_ASSERT_OK(m.AddNode(stride.node()));
+  TF_ASSERT_OK(m.AddNode(slice.node()));
+  TF_ASSERT_OK(m.AddNode(result));
+
+  shape_inference::InferenceContext* ctx = m.GetContext(result);
+  EXPECT_EQ(ctx->DebugString(ctx->output(0)), "?");
 }
 
 namespace {
@@ -1295,8 +1427,7 @@ TEST_F(ShapeRefinerTest, IncrementalUpdates) {
   EXPECT_TRUE(SameHandle(ctx->Dim(shp, 0), ctx->Dim(shp2, 0)));
 }
 
-void TestSimpleFunctionInference(bool enable_function_inference,
-                                 bool keep_nested_inferences) {
+void TestSimpleFunctionInference(bool enable_function_inference) {
   FunctionDefLibrary f_lib_proto;
   *(f_lib_proto.add_function()) = test::function::XTimesTwo();
   FunctionLibraryDefinition f_lib(OpRegistry::Global(), f_lib_proto);
@@ -1310,7 +1441,6 @@ void TestSimpleFunctionInference(bool enable_function_inference,
   if (enable_function_inference) {
     m.set_function_library_for_shape_inference(&f_lib);
   }
-  if (keep_nested_inferences) m.set_keep_nested_shape_inferences();
 
   TF_ASSERT_OK(m.AddNode(x.node()));
   TF_ASSERT_OK(m.AddNode(x2.node()));
@@ -1319,34 +1449,19 @@ void TestSimpleFunctionInference(bool enable_function_inference,
 
   if (enable_function_inference) {
     EXPECT_SHAPE("[1,2]", m, x2, 0);
-
-    if (keep_nested_inferences) {
-      EXPECT_EQ(m.GetExtendedContext(x2.node())->nested_inferences().size(),
-                test::function::XTimesTwo().node_def_size());
-    } else {
-      EXPECT_EQ(m.GetExtendedContext(x2.node())->nested_inferences().size(), 0);
-    }
   } else {
     // Default inference behavior: functions output shapes are unknown.
     EXPECT_SHAPE("?", m, x2, 0);
-    EXPECT_EQ(m.GetExtendedContext(x2.node())->nested_inferences().size(), 0);
   }
 }
 
 TEST_F(ShapeRefinerTest, SimpleFunctionShapeInference_Disabled) {
   // Nesting flag doesn't matter, when function inference is disabled.
-  TestSimpleFunctionInference(false /* enable_function_inference */,
-                              false /* keep_nested_inferences */);
+  TestSimpleFunctionInference(false /* enable_function_inference */);
 }
 
-TEST_F(ShapeRefinerTest, SimpleFunctionShapeInference_NoNesting) {
-  TestSimpleFunctionInference(true /* enable_function_inference */,
-                              false /* keep_nested_inferences */);
-}
-
-TEST_F(ShapeRefinerTest, SimpleFunctionShapeInference_WithNesting) {
-  TestSimpleFunctionInference(true /* enable_function_inference */,
-                              true /* keep_nested_inferences */);
+TEST_F(ShapeRefinerTest, SimpleFunctionShapeInference) {
+  TestSimpleFunctionInference(true /* enable_function_inference */);
 }
 
 TEST_F(ShapeRefinerTest, FunctionShapeInferenceFallback) {
@@ -1368,7 +1483,6 @@ TEST_F(ShapeRefinerTest, FunctionShapeInferenceFallback) {
 
   ShapeRefiner m(TF_GRAPH_DEF_VERSION, &f_lib);
   m.set_function_library_for_shape_inference(&empty_f_lib);
-  m.set_keep_nested_shape_inferences();
 
   TF_ASSERT_OK(m.AddNode(x.node()));
   TF_ASSERT_OK(m.AddNode(x2.node()));
@@ -1377,43 +1491,6 @@ TEST_F(ShapeRefinerTest, FunctionShapeInferenceFallback) {
 
   // Default inference behavior: functions output shapes are unknown.
   EXPECT_SHAPE("?", m, x2, 0);
-  EXPECT_EQ(m.GetExtendedContext(x2.node())->nested_inferences().size(), 0);
-}
-
-TEST_F(ShapeRefinerTest, NestedFunctionShapeInference) {
-  FunctionDefLibrary f_lib_proto;
-  *(f_lib_proto.add_function()) = test::function::XTimesTwo();
-  *(f_lib_proto.add_function()) = test::function::XTimesFour();
-  // XTimes16 is defined with a bunch of nesting
-  *(f_lib_proto.add_function()) = test::function::XTimes16();
-  FunctionLibraryDefinition f_lib(OpRegistry::Global(), f_lib_proto);
-
-  Scope root = Scope::NewRootScope();
-  TF_ASSERT_OK(root.graph()->AddFunctionLibrary(f_lib_proto));
-  auto x = ops::Const(root, {{.0f, .0f}});
-  auto x16 = test::function::Call(&root, "x16", "XTimes16", {x});
-  auto x256 = test::function::Call(&root, "x256", "XTimes16", {x16});
-
-  ShapeRefiner m(TF_GRAPH_DEF_VERSION, &f_lib);
-  m.set_function_library_for_shape_inference(&f_lib);
-  m.set_keep_nested_shape_inferences();
-
-  TF_ASSERT_OK(m.AddNode(x.node()));
-  TF_ASSERT_OK(m.AddNode(x16.node()));
-  TF_ASSERT_OK(m.AddNode(x256.node()));
-
-  EXPECT_SHAPE("[1,2]", m, x, 0);
-  EXPECT_SHAPE("[1,2]", m, x16, 0);
-  EXPECT_SHAPE("[1,2]", m, x256, 0);
-
-  EXPECT_EQ(m.GetExtendedContext(x16.node())->nested_inferences().size(),
-            test::function::XTimesFour().node_def_size());
-  auto* x4 =
-      m.GetExtendedContext(x16.node())->nested_inferences().at("x4").get();
-  auto* x4c = x4->get_context();
-  EXPECT_EQ("[1,2]", x4c->DebugString(x4c->output(0)));
-  auto* x2c = x4->nested_inferences().at("x2")->get_context();
-  EXPECT_EQ("[1,2]", x2c->DebugString(x2c->output(0)));
 }
 
 TEST_F(ShapeRefinerTest, ChainedFunctionShapeInferenceWithMultipleInputs) {

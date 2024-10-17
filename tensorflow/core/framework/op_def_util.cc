@@ -15,23 +15,22 @@ limitations under the License.
 
 #include "tensorflow/core/framework/op_def_util.h"
 
-#include <set>
-#include <unordered_map>
-#include <unordered_set>
+#include <algorithm>
+#include <cstring>
+#include <vector>
+
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/attr_value_util.h"
-#include "tensorflow/core/framework/op_def.pb_text.h"
+#include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
-#include "tensorflow/core/lib/hash/hash.h"
 #include "tensorflow/core/lib/strings/proto_serialization.h"
 #include "tensorflow/core/lib/strings/scanner.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/mutex.h"
-#include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -46,7 +45,7 @@ Status AllowedTypeValue(DataType dt, const OpDef::AttrDef& attr) {
   const AttrValue& allowed_values(attr.allowed_values());
   for (auto allowed : allowed_values.list().type()) {
     if (dt == allowed) {
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
   string allowed_str;
@@ -66,7 +65,7 @@ Status AllowedStringValue(const string& str, const OpDef::AttrDef& attr) {
   const AttrValue& allowed_values(attr.allowed_values());
   for (const auto& allowed : allowed_values.list().s()) {
     if (str == allowed) {
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
   string allowed_str;
@@ -114,6 +113,8 @@ Status ValidateAttrValue(const AttrValue& attr_value,
         length = attr_value.list().shape_size();
       } else if (attr.type() == "list(tensor)") {
         length = attr_value.list().tensor_size();
+      } else if (attr.type() == "list(func)") {
+        length = attr_value.list().func_size();
       }
       if (length < attr.minimum()) {
         return errors::InvalidArgument(
@@ -142,7 +143,7 @@ Status ValidateAttrValue(const AttrValue& attr_value,
           "Support for allowed_values not implemented for type ", attr.type());
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 const OpDef::AttrDef* FindAttr(StringPiece name, const OpDef& op_def) {
@@ -172,20 +173,29 @@ const OpDef::ArgDef* FindInputArg(StringPiece name, const OpDef& op_def) {
   return nullptr;
 }
 
-#define VALIDATE(EXPR, ...)                                            \
-  do {                                                                 \
-    if (!(EXPR)) {                                                     \
-      return errors::InvalidArgument(                                  \
-          __VA_ARGS__, "; in OpDef: ", ProtoShortDebugString(op_def)); \
-    }                                                                  \
+const ApiDef::Arg* FindInputArg(StringPiece name, const ApiDef& api_def) {
+  for (int i = 0; i < api_def.in_arg_size(); ++i) {
+    if (api_def.in_arg(i).name() == name) {
+      return &api_def.in_arg(i);
+    }
+  }
+  return nullptr;
+}
+
+#define VALIDATE(EXPR, ...)                                        \
+  do {                                                             \
+    if (!(EXPR)) {                                                 \
+      return errors::InvalidArgument(                              \
+          __VA_ARGS__, "; in OpDef: ", op_def.ShortDebugString()); \
+    }                                                              \
   } while (false)
 
 static Status ValidateArg(const OpDef::ArgDef& arg, const OpDef& op_def,
-                          bool output, std::set<string>* names) {
+                          bool output,
+                          absl::flat_hash_set<StringPiece>* names) {
   const string suffix = strings::StrCat(
       output ? " for output '" : " for input '", arg.name(), "'");
-  VALIDATE(gtl::InsertIfNotPresent(names, arg.name()),
-           "Duplicate name: ", arg.name());
+  VALIDATE(names->emplace(arg.name()).second, "Duplicate name: ", arg.name());
   VALIDATE(HasAttrStyleType(arg), "Missing type", suffix);
 
   if (!arg.number_attr().empty()) {
@@ -234,25 +244,38 @@ static Status ValidateArg(const OpDef::ArgDef& arg, const OpDef& op_def,
              DataTypeString(arg.type()), "'. Use 'Ref(type)' instead", suffix);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
+}
+
+bool IsValidOpName(StringPiece sp) {
+  using ::tensorflow::strings::Scanner;
+
+  Scanner scanner(sp);
+  scanner.One(Scanner::UPPERLETTER).Any(Scanner::LETTER_DIGIT_UNDERSCORE);
+
+  while (true) {
+    if (!scanner.GetResult())  // Some error in previous iteration.
+      return false;
+    if (scanner.empty())  // No error, but nothing left, good.
+      return true;
+
+    // Absorb another name/namespace, starting with a '>'
+    scanner.One(Scanner::RANGLE)
+        .One(Scanner::UPPERLETTER)
+        .Any(Scanner::LETTER_DIGIT_UNDERSCORE);
+  }
 }
 
 Status ValidateOpDef(const OpDef& op_def) {
-  using ::tensorflow::strings::Scanner;
-
-  if (!str_util::StartsWith(op_def.name(), "_")) {
-    VALIDATE(Scanner(op_def.name())
-                 .One(Scanner::UPPERLETTER)
-                 .Any(Scanner::LETTER_DIGIT)
-                 .Eos()
-                 .GetResult(),
-             "Invalid name: ", op_def.name(), " (Did you use CamelCase?)");
+  if (!absl::StartsWith(op_def.name(), "_")) {
+    VALIDATE(IsValidOpName(op_def.name()), "Invalid name: ", op_def.name(),
+             " (Did you use CamelCase?)");
   }
 
-  std::set<string> names;  // for detecting duplicate names
+  absl::flat_hash_set<StringPiece> names;  // for detecting duplicate names
   for (const auto& attr : op_def.attr()) {
     // Validate name
-    VALIDATE(gtl::InsertIfNotPresent(&names, attr.name()),
+    VALIDATE(names.emplace(attr.name()).second,
              "Duplicate name: ", attr.name());
     DataType dt;
     VALIDATE(!DataTypeFromString(attr.name(), &dt), "Attr can't have name ",
@@ -260,11 +283,11 @@ Status ValidateOpDef(const OpDef& op_def) {
 
     // Validate type
     StringPiece type(attr.type());
-    bool is_list = str_util::ConsumePrefix(&type, "list(");
+    bool is_list = absl::ConsumePrefix(&type, "list(");
     bool found = false;
     for (StringPiece valid : {"string", "int", "float", "bool", "type", "shape",
                               "tensor", "func"}) {
-      if (str_util::ConsumePrefix(&type, valid)) {
+      if (absl::ConsumePrefix(&type, valid)) {
         found = true;
         break;
       }
@@ -272,7 +295,7 @@ Status ValidateOpDef(const OpDef& op_def) {
     VALIDATE(found, "Unrecognized type '", type, "' in attr '", attr.name(),
              "'");
     if (is_list) {
-      VALIDATE(str_util::ConsumePrefix(&type, ")"),
+      VALIDATE(absl::ConsumePrefix(&type, ")"),
                "'list(' is missing ')' in attr ", attr.name(), "'s type ",
                attr.type());
     }
@@ -320,7 +343,7 @@ Status ValidateOpDef(const OpDef& op_def) {
     TF_RETURN_IF_ERROR(ValidateArg(arg, op_def, true, &names));
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #undef VALIDATE
@@ -336,11 +359,11 @@ Status CheckOpDeprecation(const OpDef& op_def, int graph_def_version) {
     } else {
       // Warn only once for each op name, and do it in a threadsafe manner.
       static mutex mu(LINKER_INITIALIZED);
-      static std::unordered_set<string> warned;
+      static auto* warned = new absl::flat_hash_set<string>();
       bool warn;
       {
         mutex_lock lock(mu);
-        warn = warned.insert(op_def.name()).second;
+        warn = warned->insert(op_def.name()).second;
       }
       if (warn) {
         LOG(WARNING) << "Op " << op_def.name() << " is deprecated."
@@ -349,7 +372,7 @@ Status CheckOpDeprecation(const OpDef& op_def, int graph_def_version) {
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 namespace {
@@ -405,6 +428,9 @@ string SummarizeOpDef(const OpDef& op_def) {
   }
   if (op_def.allows_uninitialized_input()) {
     strings::StrAppend(&ret, "; allows_uninitialized_input=true");
+  }
+  if (op_def.is_distributed_communication()) {
+    strings::StrAppend(&ret, "; is_distributed_communication=true");
   }
   strings::StrAppend(&ret, ">");
   return ret;
@@ -473,7 +499,7 @@ string MinStr(const OpDef::AttrDef& attr) {
   return strings::StrCat(attr.minimum());
 }
 
-typedef std::unordered_map<string, const OpDef::AttrDef*> AttrMap;
+typedef absl::flat_hash_map<StringPiece, const OpDef::AttrDef*> AttrMap;
 void FillAttrMap(const OpDef& op_def, AttrMap* attr_map) {
   for (const auto& attr : op_def.attr()) {
     (*attr_map)[attr.name()] = &attr;
@@ -636,7 +662,7 @@ Status OpDefCompatible(const OpDef& old_op, const OpDef& new_op) {
            "' vs. '", new_in_sig, "'");
   VALIDATE(old_in_ref.size() == new_in_ref.size(),  // Should not happen
            "Unexpected change in input ref lists.");
-  for (int i = 0; i < old_in_ref.size(); ++i) {
+  for (int i = 0, end = old_in_ref.size(); i < end; ++i) {
     // Allowed to remove "ref" from an input (or leave it unchanged).
     VALIDATE(old_in_ref[i] || !new_in_ref[i], "Input ", i,
              " changed from non-ref to ref");
@@ -652,13 +678,13 @@ Status OpDefCompatible(const OpDef& old_op, const OpDef& new_op) {
            old_out_sig, "' vs. '", new_out_sig, "'");
   VALIDATE(old_out_ref.size() == new_out_ref.size(),  // Should not happen
            "Unexpected change in output ref lists");
-  for (int i = 0; i < old_out_ref.size(); ++i) {
+  for (int i = 0, end = old_out_ref.size(); i < end; ++i) {
     // Allowed to add "ref" to an output (or leave it unchanged).
     VALIDATE(!old_out_ref[i] || new_out_ref[i], "Output ", i,
              " changed from ref to non-ref");
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 Status OpDefAddedDefaultsUnchanged(const OpDef& old_op,
@@ -697,7 +723,7 @@ Status OpDefAddedDefaultsUnchanged(const OpDef& old_op,
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 Status OpDefAttrDefaultsUnchanged(const OpDef& old_op, const OpDef& new_op) {
@@ -709,10 +735,13 @@ Status OpDefAttrDefaultsUnchanged(const OpDef& old_op, const OpDef& new_op) {
     const OpDef::AttrDef* new_attr =
         gtl::FindPtrOrNull(new_attrs, old_attr.name());
     if (new_attr == nullptr) continue;
-    if (old_attr.has_default_value() != new_attr->has_default_value()) {
+    if (new_attr->has_default_value() && !old_attr.has_default_value()) {
+      continue;  // Adding new default values is safe.
+    }
+    if (old_attr.has_default_value() && !new_attr->has_default_value()) {
       return errors::InvalidArgument(
-          "Attr '", old_attr.name(), "' has added/removed it's default; ",
-          "from ", DefaultAttrStr(old_attr), " to ", DefaultAttrStr(*new_attr));
+          "Attr '", old_attr.name(), "' has removed it's default; ", "from ",
+          DefaultAttrStr(old_attr), " to ", DefaultAttrStr(*new_attr));
     }
     if (old_attr.has_default_value() &&
         !AreAttrValuesEqual(old_attr.default_value(),
@@ -723,7 +752,7 @@ Status OpDefAttrDefaultsUnchanged(const OpDef& old_op, const OpDef& new_op) {
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void RemoveNonDeprecationDescriptionsFromOpDef(OpDef* op_def) {
@@ -755,11 +784,13 @@ void RemoveDescriptionsFromOpList(OpList* op_list) {
 }
 
 bool AttrDefEqual(const OpDef::AttrDef& a1, const OpDef::AttrDef& a2) {
-#ifndef TENSORFLOW_LITE_PROTOS
-  DCHECK_EQ(7, a1.GetDescriptor()->field_count())
-      << "Please modify these equality and hash functions to reflect the "
-         "changes to the AttrDef protobuf";
-#endif  // TENSORFLOW_LITE_PROTOS
+  if (std::is_base_of<protobuf::Message, OpDef::AttrDef>()) {
+    DCHECK_EQ(7, reinterpret_cast<const protobuf::Message*>(&a1)
+                     ->GetDescriptor()
+                     ->field_count())
+        << "Please modify these equality and hash functions to reflect the "
+           "changes to the AttrDef protobuf";
+  }
 
   if (a1.name() != a2.name()) return false;
   if (a1.type() != a2.type()) return false;
@@ -786,11 +817,12 @@ uint64 AttrDefHash(const OpDef::AttrDef& a) {
 bool RepeatedAttrDefEqual(
     const protobuf::RepeatedPtrField<OpDef::AttrDef>& a1,
     const protobuf::RepeatedPtrField<OpDef::AttrDef>& a2) {
-  std::unordered_map<string, const OpDef::AttrDef*> a1_set;
+  AttrMap a1_set;
   for (const OpDef::AttrDef& def : a1) {
-    DCHECK(a1_set.find(def.name()) == a1_set.end())
-        << "AttrDef names must be unique, but '" << def.name()
-        << "' appears more than once";
+    if (a1_set.find(def.name()) != a1_set.end()) {
+      LOG(ERROR) << "AttrDef names must be unique, but '" << def.name()
+                 << "' appears more than once";
+    }
     a1_set[def.name()] = &def;
   }
   for (const OpDef::AttrDef& def : a2) {
@@ -806,15 +838,20 @@ bool RepeatedAttrDefEqual(
 uint64 RepeatedAttrDefHash(
     const protobuf::RepeatedPtrField<OpDef::AttrDef>& a) {
   // Insert AttrDefs into map to deterministically sort by name
-  std::map<string, const OpDef::AttrDef*> a_set;
+  std::vector<const OpDef::AttrDef*> a_sorted;
+  a_sorted.reserve(a.size());
   for (const OpDef::AttrDef& def : a) {
-    a_set[def.name()] = &def;
+    a_sorted.push_back(&def);
   }
+  std::sort(a_sorted.begin(), a_sorted.end(),
+            [](const OpDef::AttrDef* lhs, const OpDef::AttrDef* rhs) {
+              return lhs->name() < rhs->name();
+            });
   // Iterate and combines hashes of keys and values
   uint64 h = 0xDECAFCAFFE;
-  for (const auto& pair : a_set) {
-    h = Hash64(pair.first.data(), pair.first.size(), h);
-    h = Hash64Combine(AttrDefHash(*pair.second), h);
+  for (const auto& def : a_sorted) {
+    h = Hash64(def->name().data(), def->name().size(), h);
+    h = Hash64Combine(AttrDefHash(*def), h);
   }
   return h;
 }
@@ -824,25 +861,46 @@ bool OpDefEqual(const OpDef& o1, const OpDef& o2) {
   // Compare it separately here instead of serializing below.
   if (!RepeatedAttrDefEqual(o1.attr(), o2.attr())) return false;
 
-  // Clear attr field, serialize, and compare serialized strings
+  // `control_output` order doesn't matter.
+  std::vector<StringPiece> control_output1(o1.control_output().begin(),
+                                           o1.control_output().end());
+  std::sort(control_output1.begin(), control_output1.end());
+  std::vector<StringPiece> control_output2(o2.control_output().begin(),
+                                           o2.control_output().end());
+  std::sort(control_output2.begin(), control_output2.end());
+  if (control_output1 != control_output2) return false;
+
+  // Clear `attr` and `control_output` fields, serialize, and compare serialized
+  // strings.
   OpDef o1_copy = o1;
   OpDef o2_copy = o2;
   o1_copy.clear_attr();
+  o1_copy.clear_control_output();
   o2_copy.clear_attr();
-  string s1, s2;
-  SerializeToStringDeterministic(o1_copy, &s1);
-  SerializeToStringDeterministic(o2_copy, &s2);
-  if (s1 != s2) return false;
-  return true;
+  o2_copy.clear_control_output();
+
+  return AreSerializedProtosEqual(o1_copy, o2_copy);
 }
 
 uint64 OpDefHash(const OpDef& o) {
   uint64 h = RepeatedAttrDefHash(o.attr());
+
+  // Compute deterministic order-independent control outputs hash.
+  std::vector<const char*> control_output;
+  control_output.reserve(o.control_output_size());
+  for (const auto& co : o.control_output()) {
+    control_output.push_back(co.c_str());
+  }
+  std::sort(control_output.begin(), control_output.end(),
+            [](const char* lhs, const char* rhs) {
+              return std::strcmp(lhs, rhs) < 0;
+            });
+  for (const auto& co : control_output) h = Hash64Combine(h, Hash64(co));
+
   OpDef o_copy = o;
   o_copy.clear_attr();
-  string s;
-  SerializeToStringDeterministic(o_copy, &s);
-  return Hash64(s.data(), s.size(), h);
+  o_copy.clear_control_output();
+  return DeterministicProtoHash64(o_copy, h);
 }
 
 }  // namespace tensorflow

@@ -13,11 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_PAD_OP_H_
-#define TENSORFLOW_KERNELS_PAD_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_PAD_OP_H_
+#define TENSORFLOW_CORE_KERNELS_PAD_OP_H_
 // Functor definition for PadOp, must be compilable by nvcc.
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/platform/types.h"
 
@@ -33,12 +33,11 @@ struct Pad {
                   typename TTypes<T, Dims>::ConstTensor input,
                   Eigen::array<Eigen::IndexPair<Tpadding>, Dims> paddings,
                   T pad_value) {
-    if (Eigen::internal::is_same<Device, Eigen::GpuDevice>::value &&
-        (output.size() <= std::numeric_limits<int32>::max())) {
-      To32Bit(output).device(d) = To32Bit(input).pad(paddings, pad_value);
-    } else {
-      output.device(d) = input.pad(paddings, pad_value);
-    }
+    MaybeWith32BitIndexing<Device>(
+        [&](auto output32, auto input32) {
+          output32.device(d) = input32.pad(paddings, pad_value);
+        },
+        output, input);
   }
 };
 
@@ -54,4 +53,4 @@ struct Pad<Device, T, Tpadding, 0> {
 }  // namespace functor
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_PAD_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_PAD_OP_H_

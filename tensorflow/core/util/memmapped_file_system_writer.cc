@@ -18,8 +18,8 @@ limitations under the License.
 
 namespace tensorflow {
 
-Status MemmappedFileSystemWriter::InitializeToFile(Env* env,
-                                                   const string& filename) {
+absl::Status MemmappedFileSystemWriter::InitializeToFile(
+    Env* env, const string& filename) {
   auto status = env->NewWritableFile(filename, &output_file_);
   if (status.ok()) {
     output_file_offset_ = 0;
@@ -27,8 +27,8 @@ Status MemmappedFileSystemWriter::InitializeToFile(Env* env,
   return status;
 }
 
-Status MemmappedFileSystemWriter::SaveTensor(const Tensor& tensor,
-                                             const string& element_name) {
+absl::Status MemmappedFileSystemWriter::SaveTensor(const Tensor& tensor,
+                                                   const string& element_name) {
   if (!output_file_) {
     return errors::FailedPrecondition(
         "MemmappedEnvWritter: saving tensor into not opened file");
@@ -47,7 +47,7 @@ Status MemmappedFileSystemWriter::SaveTensor(const Tensor& tensor,
   }
   // Adds pad for correct alignment after memmapping.
   TF_RETURN_IF_ERROR(AdjustAlignment(Allocator::kAllocatorAlignment));
-  AddToDirectoryElement(element_name);
+  AddToDirectoryElement(element_name, tensor_data.size());
   const auto result = output_file_->Append(tensor_data);
   if (result.ok()) {
     output_file_offset_ += tensor_data.size();
@@ -55,7 +55,7 @@ Status MemmappedFileSystemWriter::SaveTensor(const Tensor& tensor,
   return result;
 }
 
-Status MemmappedFileSystemWriter::SaveProtobuf(
+absl::Status MemmappedFileSystemWriter::SaveProtobuf(
     const protobuf::MessageLite& message, const string& element_name) {
   if (!output_file_) {
     return errors::FailedPrecondition(
@@ -69,8 +69,8 @@ Status MemmappedFileSystemWriter::SaveProtobuf(
         MemmappedFileSystem::kMemmappedPackagePrefix,
         " and include [A-Za-z0-9_.]");
   }
-  AddToDirectoryElement(element_name);
   const string encoded = message.SerializeAsString();
+  AddToDirectoryElement(element_name, encoded.size());
   const auto res = output_file_->Append(encoded);
   if (res.ok()) {
     output_file_offset_ += encoded.size();
@@ -89,7 +89,7 @@ StringPiece EncodeUint64LittleEndian(uint64 val, char* output_buffer) {
 
 }  // namespace
 
-Status MemmappedFileSystemWriter::FlushAndClose() {
+absl::Status MemmappedFileSystemWriter::FlushAndClose() {
   if (!output_file_) {
     return errors::FailedPrecondition(
         "MemmappedEnvWritter: flushing into not opened file");
@@ -106,10 +106,10 @@ Status MemmappedFileSystemWriter::FlushAndClose() {
   TF_RETURN_IF_ERROR(output_file_->Flush());
   TF_RETURN_IF_ERROR(output_file_->Close());
   output_file_.reset();
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status MemmappedFileSystemWriter::AdjustAlignment(uint64 alignment) {
+absl::Status MemmappedFileSystemWriter::AdjustAlignment(uint64 alignment) {
   const uint64 alignment_rest = output_file_offset_ % alignment;
   const uint64 to_write_for_alignment =
       (alignment_rest == 0) ? 0 : alignment - (output_file_offset_ % alignment);
@@ -121,14 +121,16 @@ Status MemmappedFileSystemWriter::AdjustAlignment(uint64 alignment) {
     rest -= sp.size();
     output_file_offset_ += sp.size();
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-void MemmappedFileSystemWriter::AddToDirectoryElement(const string& name) {
+void MemmappedFileSystemWriter::AddToDirectoryElement(const string& name,
+                                                      uint64 length) {
   MemmappedFileSystemDirectoryElement* new_directory_element =
       directory_.add_element();
   new_directory_element->set_offset(output_file_offset_);
   new_directory_element->set_name(name);
+  new_directory_element->set_length(length);
 }
 
 }  // namespace tensorflow

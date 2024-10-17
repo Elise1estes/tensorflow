@@ -16,6 +16,9 @@ limitations under the License.
 #ifndef TENSORFLOW_CC_OPS_WHILE_LOOP_H_
 #define TENSORFLOW_CC_OPS_WHILE_LOOP_H_
 
+#include <string>
+#include <vector>
+
 #include "tensorflow/cc/framework/ops.h"
 #include "tensorflow/cc/framework/scope.h"
 
@@ -24,14 +27,15 @@ namespace ops {
 
 // Function that takes cond graph inputs and returns cond graph boolean output.
 // 'output' need not be set if an error is returned.
-typedef std::function<Status(const Scope&, const std::vector<Output>& inputs,
-                             Output* output)>
+typedef std::function<absl::Status(
+    const Scope&, const std::vector<Output>& inputs, Output* output)>
     CondGraphBuilderFn;
 
 // Function that takes body graph inputs and returns body graph outputs.
 // 'outputs' need not be populated if an error is returned.
-typedef std::function<Status(const Scope&, const std::vector<Output>& inputs,
-                             std::vector<Output>* outputs)>
+typedef std::function<absl::Status(const Scope&,
+                                   const std::vector<Output>& inputs,
+                                   std::vector<Output>* outputs)>
     BodyGraphBuilderFn;
 
 // Constructs a while loop.
@@ -62,11 +66,13 @@ typedef std::function<Status(const Scope&, const std::vector<Output>& inputs,
 //
 // TODO(skyewm): clean up partially-constructed loop in error case
 // TODO(skyewm): create public interface to this method
-Status BuildWhileLoop(const Scope& scope, const std::vector<Output>& inputs,
-                      const CondGraphBuilderFn& cond,
-                      const BodyGraphBuilderFn& body, const string& frame_name,
-                      OutputList* outputs, bool create_while_ctx = true,
-                      Output* cond_output = nullptr);
+absl::Status BuildWhileLoop(const Scope& scope,
+                            const std::vector<Output>& inputs,
+                            const CondGraphBuilderFn& cond,
+                            const BodyGraphBuilderFn& body,
+                            const string& frame_name, OutputList* outputs,
+                            bool create_while_ctx = true,
+                            Output* cond_output = nullptr);
 
 }  // namespace ops
 }  // namespace tensorflow

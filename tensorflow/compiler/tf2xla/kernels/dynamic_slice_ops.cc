@@ -15,18 +15,27 @@ limitations under the License.
 
 #include <algorithm>
 
+#include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
-#include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
-#include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/computation_builder.h"
-#include "tensorflow/core/framework/op_kernel.h"
-
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
+#include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
+#include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
+#include "tensorflow/core/framework/op_kernel.h"
 
 namespace tensorflow {
 namespace {
+
+absl::InlinedVector<xla::XlaOp, 4> SliceVector(xla::XlaOp input, int64_t rank) {
+  absl::InlinedVector<xla::XlaOp, 4> scalar_indices;
+  scalar_indices.reserve(rank);
+  for (int i = 0; i < rank; i++)
+    scalar_indices.push_back(
+        xla::Reshape(xla::Slice(input, {i}, {i + 1}, {1}), {}));
+  return scalar_indices;
+}
 
 class DynamicUpdateSliceOp : public XlaOpKernel {
  public:
@@ -34,36 +43,39 @@ class DynamicUpdateSliceOp : public XlaOpKernel {
       : XlaOpKernel(context) {}
 
   void Compile(XlaOpKernelContext* ctx) override {
-    VLOG(3) << "DynamicUpdateSliceOp::Compile";
+    DataType index_type = ctx->InputType("indices");
+    CHECK(index_type == DT_INT32 || index_type == DT_INT64);
 
-    DataType index_type = input_type(2);
-    OP_REQUIRES(ctx, index_type == DT_INT32 || index_type == DT_INT64,
-                errors::InvalidArgument("index must be int32 or int64"));
+    const TensorShape input_shape = ctx->InputShape("input");
+    const TensorShape update_shape = ctx->InputShape("update");
+    const TensorShape index_shape = ctx->InputShape("indices");
 
-    const TensorShape input_shape = ctx->InputShape(0);
-    const TensorShape update_shape = ctx->InputShape(1);
-    const TensorShape index_shape = ctx->InputShape(2);
-
+    int64_t rank = input_shape.dims();
     OP_REQUIRES(
         ctx,
         TensorShapeUtils::IsVector(index_shape) &&
-            index_shape.num_elements() == input_shape.dims(),
+            index_shape.num_elements() == rank,
         errors::InvalidArgument("index must be a vector with length equal to "
                                 "the number of input dimensions"));
     OP_REQUIRES(
-        ctx, input_shape.dims() == update_shape.dims(),
+        ctx, rank == update_shape.dims(),
         errors::InvalidArgument("input and update must have the same rank,"
                                 " input shape is ",
                                 input_shape.DebugString(), "; update shape is ",
                                 update_shape.DebugString()));
 
-    xla::ComputationDataHandle result = ctx->builder()->DynamicUpdateSlice(
-        ctx->Input(0), ctx->Input(1), ctx->Input(2));
+    xla::XlaOp indices = ctx->Input("indices");
+    xla::XlaOp result = xla::DynamicUpdateSlice(
+        ctx->Input("input"), ctx->Input("update"), SliceVector(indices, rank));
     ctx->SetOutput(0, result);
   }
 };
 
 REGISTER_XLA_OP(Name("XlaDynamicUpdateSlice"), DynamicUpdateSliceOp);
+
+REGISTER_XLA_OP(
+    Name("XlaDynamicSlice").CompileTimeConstantInput("size_indices"),
+    MlirXlaOpKernel);
 
 }  // namespace
 }  // namespace tensorflow

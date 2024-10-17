@@ -13,13 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #define EIGEN_USE_GPU
 
-#include "tensorflow/core/kernels/dense_update_functor.h"
-
 #include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/kernels/dense_update_functor.h"
 
 namespace tensorflow {
 
@@ -57,16 +56,21 @@ struct DenseUpdate<GPUDevice, T, SUB> {
   template struct functor::DenseUpdate<GPUDevice, T, ADD>; \
   template struct functor::DenseUpdate<GPUDevice, T, SUB>;
 TF_CALL_GPU_NUMBER_TYPES(DEFINE_GPU_KERNELS);
-TF_CALL_int64(DEFINE_GPU_KERNELS);
+TF_CALL_INTEGRAL_TYPES(DEFINE_GPU_KERNELS);
+TF_CALL_float8_e5m2(DEFINE_GPU_KERNELS);
+TF_CALL_float8_e4m3fn(DEFINE_GPU_KERNELS);
 #undef DEFINE_GPU_KERNELS
 
 #define DEFINE_GPU_KERNELS(T) \
   template struct functor::DenseUpdate<GPUDevice, T, ASSIGN>;
 TF_CALL_GPU_ALL_TYPES(DEFINE_GPU_KERNELS);
-TF_CALL_int32(DEFINE_GPU_KERNELS);
-TF_CALL_int64(DEFINE_GPU_KERNELS);
+TF_CALL_INTEGRAL_TYPES(DEFINE_GPU_KERNELS);
+TF_CALL_float8_e5m2(DEFINE_GPU_KERNELS);
+TF_CALL_float8_e4m3fn(DEFINE_GPU_KERNELS);
+TF_CALL_int4(DEFINE_GPU_KERNELS);
+TF_CALL_uint4(DEFINE_GPU_KERNELS);
 #undef DEFINE_GPU_KERNELS
 
 }  // end namespace tensorflow
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM

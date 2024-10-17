@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMMON_RUNTIME_LOCAL_DEVICE_H_
-#define TENSORFLOW_COMMON_RUNTIME_LOCAL_DEVICE_H_
+#ifndef TENSORFLOW_CORE_COMMON_RUNTIME_LOCAL_DEVICE_H_
+#define TENSORFLOW_CORE_COMMON_RUNTIME_LOCAL_DEVICE_H_
 
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/framework/device_attributes.pb.h"
@@ -49,9 +49,10 @@ class LocalDevice : public Device {
 
   friend class test::Benchmark;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(LocalDevice);
+  LocalDevice(const LocalDevice&) = delete;
+  void operator=(const LocalDevice&) = delete;
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_COMMON_RUNTIME_LOCAL_DEVICE_H_
+#endif  // TENSORFLOW_CORE_COMMON_RUNTIME_LOCAL_DEVICE_H_

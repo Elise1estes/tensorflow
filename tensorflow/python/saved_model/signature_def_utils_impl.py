@@ -14,31 +14,39 @@
 # ==============================================================================
 """SignatureDef utility functions implementation."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 
 from tensorflow.core.framework import types_pb2
 from tensorflow.core.protobuf import meta_graph_pb2
-from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
-from tensorflow.python.framework import tensor_shape
+from tensorflow.python.framework import tensor as tensor_lib
+from tensorflow.python.framework import tensor_util
 from tensorflow.python.saved_model import signature_constants
-from tensorflow.python.saved_model import utils
+from tensorflow.python.saved_model import utils_impl as utils
+from tensorflow.python.util import deprecation
 from tensorflow.python.util.tf_export import tf_export
 
 
-@tf_export('saved_model.signature_def_utils.build_signature_def')
-def build_signature_def(inputs=None, outputs=None, method_name=None):
+@tf_export(
+    v1=[
+        'saved_model.build_signature_def',
+        'saved_model.signature_def_utils.build_signature_def'
+    ])
+@deprecation.deprecated_endpoints(
+    'saved_model.signature_def_utils.build_signature_def')
+def build_signature_def(
+    inputs=None, outputs=None, method_name=None, defaults=None
+):
   """Utility function to build a SignatureDef protocol buffer.
 
   Args:
     inputs: Inputs of the SignatureDef defined as a proto map of string to
-        tensor info.
+      tensor info.
     outputs: Outputs of the SignatureDef defined as a proto map of string to
-        tensor info.
+      tensor info.
     method_name: Method name of the SignatureDef as a string.
+    defaults: Defaults of the SignatureDef defined as a proto map of string to
+      TensorProto.
 
   Returns:
     A SignatureDef protocol buffer constructed based on the supplied arguments.
@@ -52,10 +60,32 @@ def build_signature_def(inputs=None, outputs=None, method_name=None):
       signature_def.outputs[item].CopyFrom(outputs[item])
   if method_name is not None:
     signature_def.method_name = method_name
+  if defaults is not None:
+    for arg_name, default in defaults.items():
+      if isinstance(default, ops.EagerTensor):
+        signature_def.defaults[arg_name].CopyFrom(
+            tensor_util.make_tensor_proto(default.numpy())
+        )
+      else:
+        if default.op.type == 'Const':
+          signature_def.defaults[arg_name].CopyFrom(
+              default.op.get_attr('value')
+          )
+        else:
+          raise ValueError(
+              f'Unable to convert object {str(default)} of type {type(default)}'
+              ' to TensorProto.'
+          )
   return signature_def
 
 
-@tf_export('saved_model.signature_def_utils.regression_signature_def')
+@tf_export(
+    v1=[
+        'saved_model.regression_signature_def',
+        'saved_model.signature_def_utils.regression_signature_def'
+    ])
+@deprecation.deprecated_endpoints(
+    'saved_model.signature_def_utils.regression_signature_def')
 def regression_signature_def(examples, predictions):
   """Creates regression signature from given examples and predictions.
 
@@ -74,20 +104,23 @@ def regression_signature_def(examples, predictions):
     ValueError: If examples is `None`.
   """
   if examples is None:
-    raise ValueError('Regression examples cannot be None.')
-  if not isinstance(examples, ops.Tensor):
-    raise ValueError('Regression examples must be a string Tensor.')
+    raise ValueError('Regression `examples` cannot be None.')
+  if not isinstance(examples, tensor_lib.Tensor):
+    raise ValueError('Expected regression `examples` to be of type Tensor. '
+                     f'Found `examples` of type {type(examples)}.')
   if predictions is None:
-    raise ValueError('Regression predictions cannot be None.')
+    raise ValueError('Regression `predictions` cannot be None.')
 
   input_tensor_info = utils.build_tensor_info(examples)
   if input_tensor_info.dtype != types_pb2.DT_STRING:
-    raise ValueError('Regression examples must be a string Tensor.')
+    raise ValueError('Regression input tensors must be of type string. '
+                     f'Found tensors with type {input_tensor_info.dtype}.')
   signature_inputs = {signature_constants.REGRESS_INPUTS: input_tensor_info}
 
   output_tensor_info = utils.build_tensor_info(predictions)
   if output_tensor_info.dtype != types_pb2.DT_FLOAT:
-    raise ValueError('Regression output must be a float Tensor.')
+    raise ValueError('Regression output tensors must be of type float. '
+                     f'Found tensors with type {output_tensor_info.dtype}.')
   signature_outputs = {signature_constants.REGRESS_OUTPUTS: output_tensor_info}
 
   signature_def = build_signature_def(
@@ -97,7 +130,13 @@ def regression_signature_def(examples, predictions):
   return signature_def
 
 
-@tf_export('saved_model.signature_def_utils.classification_signature_def')
+@tf_export(
+    v1=[
+        'saved_model.classification_signature_def',
+        'saved_model.signature_def_utils.classification_signature_def'
+    ])
+@deprecation.deprecated_endpoints(
+    'saved_model.signature_def_utils.classification_signature_def')
 def classification_signature_def(examples, classes, scores):
   """Creates classification signature from given examples and predictions.
 
@@ -118,22 +157,26 @@ def classification_signature_def(examples, classes, scores):
     ValueError: If examples is `None`.
   """
   if examples is None:
-    raise ValueError('Classification examples cannot be None.')
-  if not isinstance(examples, ops.Tensor):
-    raise ValueError('Classification examples must be a string Tensor.')
+    raise ValueError('Classification `examples` cannot be None.')
+  if not isinstance(examples, tensor_lib.Tensor):
+    raise ValueError('Classification `examples` must be a string Tensor. '
+                     f'Found `examples` of type {type(examples)}.')
   if classes is None and scores is None:
-    raise ValueError('Classification classes and scores cannot both be None.')
+    raise ValueError('Classification `classes` and `scores` cannot both be '
+                     'None.')
 
   input_tensor_info = utils.build_tensor_info(examples)
   if input_tensor_info.dtype != types_pb2.DT_STRING:
-    raise ValueError('Classification examples must be a string Tensor.')
+    raise ValueError('Classification input tensors must be of type string. '
+                     f'Found tensors of type {input_tensor_info.dtype}')
   signature_inputs = {signature_constants.CLASSIFY_INPUTS: input_tensor_info}
 
   signature_outputs = {}
   if classes is not None:
     classes_tensor_info = utils.build_tensor_info(classes)
     if classes_tensor_info.dtype != types_pb2.DT_STRING:
-      raise ValueError('Classification classes must be a string Tensor.')
+      raise ValueError('Classification classes must be of type string Tensor. '
+                       f'Found tensors of type {classes_tensor_info.dtype}.`')
     signature_outputs[signature_constants.CLASSIFY_OUTPUT_CLASSES] = (
         classes_tensor_info)
   if scores is not None:
@@ -150,7 +193,13 @@ def classification_signature_def(examples, classes, scores):
   return signature_def
 
 
-@tf_export('saved_model.signature_def_utils.predict_signature_def')
+@tf_export(
+    v1=[
+        'saved_model.predict_signature_def',
+        'saved_model.signature_def_utils.predict_signature_def'
+    ])
+@deprecation.deprecated_endpoints(
+    'saved_model.signature_def_utils.predict_signature_def')
 def predict_signature_def(inputs, outputs):
   """Creates prediction signature from given inputs and outputs.
 
@@ -169,9 +218,9 @@ def predict_signature_def(inputs, outputs):
     ValueError: If inputs or outputs is `None`.
   """
   if inputs is None or not inputs:
-    raise ValueError('Prediction inputs cannot be None or empty.')
+    raise ValueError('Prediction `inputs` cannot be None or empty.')
   if outputs is None or not outputs:
-    raise ValueError('Prediction outputs cannot be None or empty.')
+    raise ValueError('Prediction `outputs` cannot be None or empty.')
 
   signature_inputs = {key: utils.build_tensor_info(tensor)
                       for key, tensor in inputs.items()}
@@ -185,7 +234,69 @@ def predict_signature_def(inputs, outputs):
   return signature_def
 
 
-@tf_export('saved_model.signature_def_utils.is_valid_signature')
+def supervised_train_signature_def(
+    inputs, loss, predictions=None, metrics=None):
+  return _supervised_signature_def(
+      signature_constants.SUPERVISED_TRAIN_METHOD_NAME, inputs, loss=loss,
+      predictions=predictions, metrics=metrics)
+
+
+def supervised_eval_signature_def(
+    inputs, loss, predictions=None, metrics=None):
+  return _supervised_signature_def(
+      signature_constants.SUPERVISED_EVAL_METHOD_NAME, inputs, loss=loss,
+      predictions=predictions, metrics=metrics)
+
+
+def _supervised_signature_def(
+    method_name, inputs, loss=None, predictions=None,
+    metrics=None):
+  """Creates a signature for training and eval data.
+
+  This function produces signatures that describe the inputs and outputs
+  of a supervised process, such as training or evaluation, that
+  results in loss, metrics, and the like. Note that this function only requires
+  inputs to be not None.
+
+  Args:
+    method_name: Method name of the SignatureDef as a string.
+    inputs: dict of string to `Tensor`.
+    loss: dict of string to `Tensor` representing computed loss.
+    predictions: dict of string to `Tensor` representing the output predictions.
+    metrics: dict of string to `Tensor` representing metric ops.
+
+  Returns:
+    A train- or eval-flavored signature_def.
+
+  Raises:
+    ValueError: If inputs or outputs is `None`.
+  """
+  if inputs is None or not inputs:
+    raise ValueError(f'{method_name} `inputs` cannot be None or empty.')
+
+  signature_inputs = {key: utils.build_tensor_info(tensor)
+                      for key, tensor in inputs.items()}
+
+  signature_outputs = {}
+  for output_set in (loss, predictions, metrics):
+    if output_set is not None:
+      sig_out = {key: utils.build_tensor_info(tensor)
+                 for key, tensor in output_set.items()}
+      signature_outputs.update(sig_out)
+
+  signature_def = build_signature_def(
+      signature_inputs, signature_outputs, method_name)
+
+  return signature_def
+
+
+@tf_export(
+    v1=[
+        'saved_model.is_valid_signature',
+        'saved_model.signature_def_utils.is_valid_signature'
+    ])
+@deprecation.deprecated_endpoints(
+    'saved_model.signature_def_utils.is_valid_signature')
 def is_valid_signature(signature_def):
   """Determine whether a SignatureDef can be served by TensorFlow Serving."""
   if signature_def is None:
@@ -261,79 +372,49 @@ def _is_valid_classification_signature(signature_def):
   return True
 
 
-def _get_shapes_from_tensor_info_dict(tensor_info_dict):
-  """Returns a map of keys to TensorShape objects.
+def op_signature_def(op, key):
+  """Creates a signature def with the output pointing to an op.
+
+  Note that op isn't strictly enforced to be an Op object, and may be a Tensor.
+  It is recommended to use the build_signature_def() function for Tensors.
 
   Args:
-    tensor_info_dict: map with TensorInfo proto as values.
+    op: An Op (or possibly Tensor).
+    key: Key to graph element in the SignatureDef outputs.
 
   Returns:
-    Map with corresponding TensorShape objects as values.
+    A SignatureDef with a single output pointing to the op.
   """
-  return {
-      key: tensor_shape.TensorShape(tensor_info.tensor_shape)
-      for key, tensor_info in tensor_info_dict.items()
-  }
+  # Use build_tensor_info_from_op, which creates a TensorInfo from the element's
+  # name.
+  return build_signature_def(outputs={key: utils.build_tensor_info_from_op(op)})
 
 
-def _get_types_from_tensor_info_dict(tensor_info_dict):
-  """Returns a map of keys to DType objects.
+def load_op_from_signature_def(signature_def, key, import_scope=None):
+  """Load an Op from a SignatureDef created by op_signature_def().
 
   Args:
-    tensor_info_dict: map with TensorInfo proto as values.
+    signature_def: a SignatureDef proto
+    key: string key to op in the SignatureDef outputs.
+    import_scope: Scope used to import the op
 
   Returns:
-    Map with corresponding DType objects as values.
+    Op (or possibly Tensor) in the graph with the same name as saved in the
+      SignatureDef.
+
+  Raises:
+    NotFoundError: If the op could not be found in the graph.
   """
-  return {
-      key: dtypes.DType(tensor_info.dtype)
-      for key, tensor_info in tensor_info_dict.items()
-  }
-
-
-def get_signature_def_input_shapes(signature):
-  """Returns map of parameter names to their shapes.
-
-  Args:
-    signature: SignatureDef proto.
-
-  Returns:
-    Map from string to TensorShape objects.
-  """
-  return _get_shapes_from_tensor_info_dict(signature.inputs)
-
-
-def get_signature_def_input_types(signature):
-  """Returns map of output names to their types.
-
-  Args:
-    signature: SignatureDef proto.
-
-  Returns:
-    Map from string to DType objects.
-  """
-  return _get_types_from_tensor_info_dict(signature.inputs)
-
-
-def get_signature_def_output_shapes(signature):
-  """Returns map of output names to their shapes.
-
-  Args:
-    signature: SignatureDef proto.
-
-  Returns:
-    Map from string to TensorShape objects.
-  """
-  return _get_shapes_from_tensor_info_dict(signature.outputs)
-
-
-def get_signature_def_output_types(signature):
-  """Returns map of output names to their types.
-
-  Args:
-    signature: SignatureDef proto.
-
-  Returns:
-    Map from string to DType objects.
-  """
-  return _get_types_from_tensor_info_dict(signature.outputs)
+  tensor_info = signature_def.outputs[key]
+  try:
+    # The init and train ops are not strictly enforced to be operations, so
+    # retrieve any graph element (can be either op or tensor).
+    return utils.get_element_from_tensor_info(
+        tensor_info, import_scope=import_scope)
+  except KeyError:
+    raise errors.NotFoundError(
+        None, None,
+        f'The key "{key}" could not be found in the graph. Please make sure the'
+        ' SavedModel was created by the internal _SavedModelBuilder. If you '
+        'are using the public API, please make sure the SignatureDef in the '
+        f'SavedModel does not contain the key "{key}".')

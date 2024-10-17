@@ -51,7 +51,7 @@ void WorkerCachePartial::GetDeviceLocalityAsync(const string& device_name,
     });
     return;
   }
-  done(Status::OK());
+  done(absl::OkStatus());
 }
 
 Status WorkerCachePartial::RefreshDeviceStatus(const string& device_name) {
@@ -65,9 +65,9 @@ Status WorkerCachePartial::RefreshDeviceStatus(const string& device_name) {
   auto deleter = [this, &task](WorkerInterface* wi) {
     ReleaseWorker(task, wi);
   };
-  std::unique_ptr<WorkerInterface, decltype(deleter)> rwi(CreateWorker(task),
-                                                          deleter);
-  if (s.ok() && !rwi.get()) {
+  std::unique_ptr<WorkerInterface, decltype(deleter)> rwi(
+      GetOrCreateWorker(task), deleter);
+  if (s.ok() && !rwi) {
     s = errors::Internal("RefreshDeviceStatus, unknown worker task: ", task);
   }
 

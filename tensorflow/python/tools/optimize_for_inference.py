@@ -19,11 +19,15 @@ There are several common transformations that can be applied to GraphDefs
 created to train a model, that help reduce the amount of computation needed when
 the network is used only for inference. These include:
 
+ - Convert given PlaceholderWithDefault or Placeholder nodes to Constant
+
  - Removing training-only operations like checkpoint saving.
 
  - Stripping out parts of the graph that are never reached.
 
  - Removing debug operations like CheckNumerics.
+
+ - Fusing a group of primitive ops for batch normalization to FusedBatchNorm op.
 
  - Folding batch normalization ops into the pre-calculated weights.
 
@@ -51,20 +55,16 @@ bazel-bin/tensorflow/python/tools/optimize_for_inference \
 
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import argparse
 import os
 import sys
 
-from google.protobuf import text_format
+from absl import app
 
+from google.protobuf import text_format
 from tensorflow.core.framework import graph_pb2
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import graph_io
-from tensorflow.python.platform import app
 from tensorflow.python.platform import gfile
 from tensorflow.python.tools import optimize_for_inference_lib
 
@@ -88,17 +88,25 @@ def main(unused_args):
       input_graph_def,
       FLAGS.input_names.split(","),
       FLAGS.output_names.split(","),
-      FLAGS.placeholder_type_enum,
-      FLAGS.toco_compatible)
+      _parse_placeholder_types(FLAGS.placeholder_type_enum),
+      FLAGS.toco_compatible,
+      FLAGS.placeholder_to_const_names.split(","),
+  )
 
   if FLAGS.frozen_graph:
-    f = gfile.FastGFile(FLAGS.output, "w")
+    f = gfile.GFile(FLAGS.output, "w")
     f.write(output_graph_def.SerializeToString())
   else:
     graph_io.write_graph(output_graph_def,
                          os.path.dirname(FLAGS.output),
                          os.path.basename(FLAGS.output))
   return 0
+
+
+def _parse_placeholder_types(values):
+  """Extracts placeholder types from a comma separate list."""
+  values = [int(value) for value in values.split(",")]
+  return values if len(values) > 1 else values[0]
 
 
 def parse_args():
@@ -137,9 +145,12 @@ def parse_args():
       """)
   parser.add_argument(
       "--placeholder_type_enum",
-      type=int,
-      default=dtypes.float32.as_datatype_enum,
-      help="The AttrValue enum to use for placeholders.")
+      type=str,
+      default=str(dtypes.float32.as_datatype_enum),
+      help="""\
+      The AttrValue enum to use for placeholders.
+      Or a comma separated list, one value for each placeholder.\
+      """)
   parser.add_argument(
       "--toco_compatible",
       type=bool,
@@ -148,6 +159,16 @@ def parse_args():
       If true, only use ops compatible with Tensorflow
       Lite Optimizing Converter.\
       """)
+  parser.add_argument(
+      "--placeholder_to_const_names",
+      type=str,
+      default="",
+      help="""\
+      List of PlaceholderWithDefault or Placeholder node names and
+      their new value to be converted to Constant node, comma separated.
+      eg: --placeholder_to_const_names=phase_train=False\
+      """,
+  )
   return parser.parse_known_args()
 
 

@@ -22,7 +22,7 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/core/protobuf/config.pb_text.h"
+#include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/public/session_options.h"
 
 namespace tensorflow {
@@ -46,7 +46,7 @@ void SessionFactory::Register(const string& runtime_type,
   mutex_lock l(*get_session_factory_lock());
   if (!session_factories()->insert({runtime_type, factory}).second) {
     LOG(ERROR) << "Two session factories are being registered "
-               << "under" << runtime_type;
+               << "under " << runtime_type;
   }
 }
 
@@ -57,11 +57,11 @@ const string RegisteredFactoriesErrorMessageLocked() {
     factory_types.push_back(session_factory.first);
   }
   return strings::StrCat("Registered factories are {",
-                         str_util::Join(factory_types, ", "), "}.");
+                         absl::StrJoin(factory_types, ", "), "}.");
 }
 string SessionOptionsToString(const SessionOptions& options) {
   return strings::StrCat("target: \"", options.target,
-                         "\" config: ", ProtoShortDebugString(options.config));
+                         "\" config: ", options.config.ShortDebugString());
 }
 }  // namespace
 
@@ -83,7 +83,7 @@ Status SessionFactory::GetFactory(const SessionOptions& options,
 
   if (candidate_factories.size() == 1) {
     *out_factory = candidate_factories[0].second;
-    return Status::OK();
+    return absl::OkStatus();
   } else if (candidate_factories.size() > 1) {
     // NOTE(mrry): This implementation assumes that the domains (in
     // terms of acceptable SessionOptions) of the registered
@@ -102,7 +102,7 @@ Status SessionFactory::GetFactory(const SessionOptions& options,
         "Multiple session factories registered for the given session "
         "options: {",
         SessionOptionsToString(options), "} Candidate factories are {",
-        str_util::Join(factory_types, ", "), "}. ",
+        absl::StrJoin(factory_types, ", "), "}. ",
         RegisteredFactoriesErrorMessageLocked());
   } else {
     return errors::NotFound(

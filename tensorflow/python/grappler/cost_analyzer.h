@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_GRAPPLER_COSTS_COST_ANALYZER_H_
-#define TENSORFLOW_CORE_GRAPPLER_COSTS_COST_ANALYZER_H_
+#ifndef TENSORFLOW_PYTHON_GRAPPLER_COST_ANALYZER_H_
+#define TENSORFLOW_PYTHON_GRAPPLER_COST_ANALYZER_H_
 
 #include <iostream>
 #include "tensorflow/core/framework/cost_graph.pb.h"
@@ -36,13 +36,13 @@ struct GrapplerItem;
 // Aggregated perf summary for ops of the same type in a graph.
 struct OpPerfSummary {
   string name;
-  int64 count;
-  int64 time;
-  int64 compute_time;
-  int64 memory_time;
+  int64_t count;
+  int64_t time;
+  int64_t compute_time;
+  int64_t memory_time;
   // Upper and lower bound for estimated time.
-  int64 time_upper;
-  int64 time_lower;
+  int64_t time_upper;
+  int64_t time_lower;
 };
 
 // Generate op-level performance insights on compute/memory
@@ -55,7 +55,7 @@ class CostAnalyzer {
 
  private:
   void PredictCosts(CostEstimator* cost_estimator, CostGraphDef* cost_graph,
-                    int64* total_time);
+                    int64_t* total_time);
   void GatherCosts();
   void PreprocessCosts();
   void AnalyzeCosts();
@@ -68,16 +68,16 @@ class CostAnalyzer {
   AnalyticalCostEstimator analytical_estimator_;
   OpPerformanceList op_perf_;
   OpPerformanceList op_perf_analytical_;
-  int64 total_time_measured_;
-  int64 total_time_analytical_;
+  int64_t total_time_measured_;
+  int64_t total_time_analytical_;
   std::vector<OpPerfSummary> ops_;
-  int64 total_time_measured_serialized_;
-  int64 total_time_analytical_upper_;
-  int64 total_time_analytical_lower_;
+  int64_t total_time_measured_serialized_;
+  int64_t total_time_analytical_upper_;
+  int64_t total_time_analytical_lower_;
   string suffix_;
 };
 
 }  // end namespace grappler
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_GRAPPLER_COSTS_COST_ANALYZER_H_
+#endif  // TENSORFLOW_PYTHON_GRAPPLER_COST_ANALYZER_H_

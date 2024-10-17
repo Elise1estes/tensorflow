@@ -25,18 +25,19 @@ import (
 
 // Scope encapsulates common operation properties when building a Graph.
 //
-// A Scope object (and its derivates, e.g., obtained from Scope.SubScope)
+// A Scope object (and its derivatives, e.g., obtained from Scope.SubScope)
 // act as a builder for graphs. They allow common properties (such as
 // a name prefix) to be specified for multiple operations being added
 // to the graph.
 //
-// A Scope object and all its derivates (e.g., obtained from Scope.SubScope)
+// A Scope object and all its derivatives (e.g., obtained from Scope.SubScope)
 // are not safe for concurrent use by multiple goroutines.
 type Scope struct {
 	graph               *tf.Graph
 	namemap             map[string]int
 	namespace           string
 	controlDependencies []*tf.Operation
+	device              string
 	err                 *scopeErr
 }
 
@@ -82,6 +83,7 @@ func (s *Scope) AddOperation(args tf.OpSpec) *tf.Operation {
 		args.Name = s.namespace + "/" + args.Name
 	}
 	args.ControlDependencies = append(args.ControlDependencies, s.controlDependencies...)
+	args.Device = s.device
 	op, err := s.graph.AddOperation(args)
 	if err != nil {
 		s.UpdateErr(args.Type, err)
@@ -98,10 +100,12 @@ func (s *Scope) SubScope(namespace string) *Scope {
 		namespace = s.namespace + "/" + namespace
 	}
 	return &Scope{
-		graph:     s.graph,
-		namemap:   make(map[string]int),
-		namespace: namespace,
-		err:       s.err,
+		graph:               s.graph,
+		namemap:             make(map[string]int),
+		namespace:           namespace,
+		controlDependencies: s.controlDependencies,
+		device:              s.device,
+		err:                 s.err,
 	}
 }
 
@@ -123,6 +127,25 @@ func (s *Scope) WithControlDependencies(ops ...*tf.Operation) *Scope {
 		namemap:             s.namemap,
 		namespace:           s.namespace,
 		controlDependencies: deps,
+		device:              s.device,
+		err:                 s.err,
+	}
+}
+
+// WithDevice returns a new Scope which will cause all operations added to the
+// graph to execute on devices that match the provided device specification.
+//
+// For example, WithDevice("/device:GPU:0") will cause operations added to
+// the graph to execute on GPU #0.
+//
+// An empty string removes any device restrictions.
+func (s *Scope) WithDevice(device string) *Scope {
+	return &Scope{
+		graph:               s.graph,
+		namemap:             s.namemap,
+		namespace:           s.namespace,
+		controlDependencies: s.controlDependencies,
+		device:              device,
 		err:                 s.err,
 	}
 }

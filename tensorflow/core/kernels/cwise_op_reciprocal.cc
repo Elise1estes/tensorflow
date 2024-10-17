@@ -16,37 +16,37 @@ limitations under the License.
 #include "tensorflow/core/kernels/cwise_ops_common.h"
 
 namespace tensorflow {
-REGISTER5(UnaryOp, CPU, "Inv", functor::inverse, float, Eigen::half, double,
-          complex64, complex128);
-#if GOOGLE_CUDA
-REGISTER4(UnaryOp, GPU, "Inv", functor::inverse, float, Eigen::half, double,
-          int64);
+REGISTER6(UnaryOp, CPU, "Inv", functor::inverse, float, Eigen::half, double,
+          bfloat16, complex64, complex128);
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
+REGISTER6(UnaryOp, GPU, "Inv", functor::inverse, float, Eigen::half, double,
+          int64, complex64, complex128);
+#endif
+REGISTER(UnaryOp, GPU, "Inv", functor::inverse, bfloat16);
 #endif
 
-REGISTER5(SimpleBinaryOp, CPU, "InvGrad", functor::inverse_grad, float,
-          Eigen::half, double, complex64, complex128);
-#if GOOGLE_CUDA
-REGISTER3(SimpleBinaryOp, GPU, "InvGrad", functor::inverse_grad, float,
-          Eigen::half, double);
+REGISTER6(SimpleBinaryOp, CPU, "InvGrad", functor::inverse_grad, float,
+          Eigen::half, double, bfloat16, complex64, complex128);
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+REGISTER4(SimpleBinaryOp, GPU, "InvGrad", functor::inverse_grad, float,
+          Eigen::half, bfloat16, double);
 #endif
 
-REGISTER5(UnaryOp, CPU, "Reciprocal", functor::inverse, float, Eigen::half,
-          double, complex64, complex128);
-#if GOOGLE_CUDA
-REGISTER4(UnaryOp, GPU, "Reciprocal", functor::inverse, float, Eigen::half,
-          double, int64);
+REGISTER6(UnaryOp, CPU, "Reciprocal", functor::inverse, float, Eigen::half,
+          bfloat16, double, complex64, complex128);
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
+REGISTER6(UnaryOp, GPU, "Reciprocal", functor::inverse, float, Eigen::half,
+          double, int64, complex64, complex128);
 #endif
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER(UnaryOp, SYCL, "Reciprocal", functor::inverse, float);
-#endif  // TENSORFLOW_USE_SYCL
+REGISTER(UnaryOp, GPU, "Reciprocal", functor::inverse, bfloat16);
+#endif
 
-REGISTER5(SimpleBinaryOp, CPU, "ReciprocalGrad", functor::inverse_grad, float,
-          Eigen::half, double, complex64, complex128);
-#if GOOGLE_CUDA
-REGISTER3(SimpleBinaryOp, GPU, "ReciprocalGrad", functor::inverse_grad, float,
-          Eigen::half, double);
+REGISTER6(SimpleBinaryOp, CPU, "ReciprocalGrad", functor::inverse_grad, float,
+          Eigen::half, bfloat16, double, complex64, complex128);
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+REGISTER4(SimpleBinaryOp, GPU, "ReciprocalGrad", functor::inverse_grad, float,
+          Eigen::half, bfloat16, double);
 #endif
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER(SimpleBinaryOp, SYCL, "ReciprocalGrad", functor::inverse_grad, float);
-#endif  // TENSORFLOW_USE_SYCL
 }  // namespace tensorflow

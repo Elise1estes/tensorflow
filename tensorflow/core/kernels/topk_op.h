@@ -13,10 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_TOPK_OP_H_
-#define TENSORFLOW_TOPK_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_TOPK_OP_H_
+#define TENSORFLOW_CORE_KERNELS_TOPK_OP_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/framework/types.h"
@@ -26,17 +26,17 @@ namespace tensorflow {
 
 namespace functor {
 
-template <typename Device, typename T>
+template <typename Device, typename T, typename Tidx>
 struct TopKFunctor {
-  static Status Compute(OpKernelContext* context, bool sorted, int k,
-                        const typename TTypes<T, 2>::ConstTensor& input,
-                        const int64 num_rows, const int64 num_cols,
-                        typename TTypes<T, 2>::Tensor values,
-                        typename TTypes<int, 2>::Tensor indices);
+  static absl::Status Compute(OpKernelContext* context, bool sorted, int k,
+                              const typename TTypes<T, 2>::ConstTensor& input,
+                              const int64_t num_rows, const int64_t num_cols,
+                              typename TTypes<T, 2>::Tensor values,
+                              typename TTypes<Tidx, 2>::Tensor indices);
 };
 
 }  // end namespace functor
 
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_TOPK_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_TOPK_OP_H_

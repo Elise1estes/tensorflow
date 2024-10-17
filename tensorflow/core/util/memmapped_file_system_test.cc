@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/util/memmapped_file_system.h"
 
+#include <memory>
+
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/versions.pb.h"
 #include "tensorflow/core/graph/graph_def_builder.h"
@@ -21,6 +23,10 @@ limitations under the License.
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/util/memmapped_file_system_writer.h"
+
+#ifdef PLATFORM_WINDOWS
+#undef DeleteFile
+#endif
 
 namespace tensorflow {
 
@@ -32,8 +38,9 @@ constexpr char kTensor2FileName[] = "memmapped_package://t2";
 constexpr char kProtoFileName[] = "memmapped_package://b";
 constexpr int kTestGraphDefVersion = 666;
 
-Status CreateMemmappedFileSystemFile(const string& filename, bool corrupted,
-                                     Tensor* test_tensor) {
+absl::Status CreateMemmappedFileSystemFile(const string& filename,
+                                           bool corrupted,
+                                           Tensor* test_tensor) {
   Env* env = Env::Default();
   MemmappedFileSystemWriter writer;
   TF_RETURN_IF_ERROR(writer.InitializeToFile(env, filename));
@@ -59,7 +66,7 @@ Status CreateMemmappedFileSystemFile(const string& filename, bool corrupted,
     // Flush and close the file.
     TF_RETURN_IF_ERROR(writer.FlushAndClose());
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 TEST(MemmappedFileSystemTest, SimpleTest) {
@@ -132,7 +139,7 @@ TEST(MemmappedFileSystemTest, Corrupted) {
   TF_ASSERT_OK(CreateMemmappedFileSystemFile(filename, true, &test_tensor));
   MemmappedFileSystem memmapped_env;
   ASSERT_NE(memmapped_env.InitializeFromFile(Env::Default(), filename),
-            Status::OK());
+            absl::OkStatus());
 }
 
 TEST(MemmappedFileSystemTest, ProxyToDefault) {

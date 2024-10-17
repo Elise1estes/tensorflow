@@ -29,10 +29,10 @@ namespace tensorflow {
 namespace graph_transforms {
 
 // Declarations so we don't need a public header.
-Status SparsifyGather(const GraphDef& input_graph_def,
-                      const TransformFuncContext& context,
-                      GraphDef* output_graph_def);
-Status ReadTensorFromCheckpoint(
+absl::Status SparsifyGather(const GraphDef& input_graph_def,
+                            const TransformFuncContext& context,
+                            GraphDef* output_graph_def);
+absl::Status ReadTensorFromCheckpoint(
     const string& tensor_name, const std::unique_ptr<BundleReader>& ckpt_reader,
     const string& shape_and_slice, Tensor* tensor);
 
@@ -42,8 +42,8 @@ class SparsifyGatherTest : public ::testing::Test {
                       const std::vector<NodeDef*>& inputs, GraphDef* graph_def,
                       bool control_dep = false) {
     NodeDef* node_def = graph_def->add_node();
-    node_def->set_name(name.ToString());
-    node_def->set_op(op.ToString());
+    node_def->set_name(string(name));
+    node_def->set_op(string(op));
     if (!control_dep) {
       std::for_each(inputs.begin(), inputs.end(), [&node_def](NodeDef* input) {
         node_def->add_input(input->name());
@@ -107,7 +107,7 @@ class SparsifyGatherTest : public ::testing::Test {
           CreateNode("save/Const", "Const", {}, &graph_def);
 
       Tensor tensor_names_values(DT_STRING, TensorShape({1}));
-      test::FillValues<string>(&tensor_names_values, {"w"});
+      test::FillValues<tstring>(&tensor_names_values, {"w"});
       NodeDef* tensor_names_node =
           CreateNode("save/RestoreV2/tensor_names", "Const", {}, &graph_def);
       SetNodeTensorAttr<string>("value", tensor_names_values,
@@ -116,7 +116,7 @@ class SparsifyGatherTest : public ::testing::Test {
       NodeDef* tensor_shapes_slices_node = CreateNode(
           "save/RestoreV2/shape_and_slices", "Const", {}, &graph_def);
       Tensor shapes_slices_val(DT_STRING, TensorShape({1}));
-      shapes_slices_val.flat<string>()(0) = "4 1 0,4:0,1";
+      shapes_slices_val.flat<tstring>()(0) = "4 1 0,4:0,1";
       SetNodeTensorAttr<string>("value", shapes_slices_val,
                                 tensor_shapes_slices_node);
 
@@ -210,8 +210,8 @@ class SparsifyGatherTest : public ::testing::Test {
     EXPECT_EQ(1, node_lookup.count("w/part_1/indices"));
     EXPECT_EQ("Const", node_lookup.at("w/part_1/indices")->op());
     Tensor expected_indices_tensor(DT_INT64, TensorShape({3}));
-    test::FillValues<int64>(&expected_indices_tensor, {0, 2, 3});
-    test::ExpectTensorEqual<int64>(
+    test::FillValues<int64_t>(&expected_indices_tensor, {0, 2, 3});
+    test::ExpectTensorEqual<int64_t>(
         expected_indices_tensor,
         GetNodeTensorAttr(*(node_lookup.at("w/part_1/indices")), "value"));
 
@@ -320,15 +320,15 @@ class SparsifyGatherTest : public ::testing::Test {
       NodeDef* tensor_names_node =
           CreateNode("save/RestoreV2/tensor_names", "Const", {}, &graph_def);
       Tensor tensor_names_values(DT_STRING, TensorShape({2}));
-      test::FillValues<string>(&tensor_names_values, {"w1", "w2"});
+      test::FillValues<tstring>(&tensor_names_values, {"w1", "w2"});
       SetNodeTensorAttr<string>("value", tensor_names_values,
                                 tensor_names_node);
 
       NodeDef* tensor_shapes_slices_node = CreateNode(
           "save/RestoreV2/shape_and_slices", "Const", {}, &graph_def);
       Tensor shapes_slices_val(DT_STRING, TensorShape({2}));
-      shapes_slices_val.flat<string>()(0) = "4 1 0,4:0,1";
-      shapes_slices_val.flat<string>()(1) = "4 1 0,4:0,1";
+      shapes_slices_val.flat<tstring>()(0) = "4 1 0,4:0,1";
+      shapes_slices_val.flat<tstring>()(1) = "4 1 0,4:0,1";
       SetNodeTensorAttr<string>("value", shapes_slices_val,
                                 tensor_shapes_slices_node);
 
@@ -432,8 +432,8 @@ class SparsifyGatherTest : public ::testing::Test {
     EXPECT_EQ(1, node_lookup.count("w1/part_1/indices"));
     EXPECT_EQ("Const", node_lookup.at("w1/part_1/indices")->op());
     Tensor expected_indices_tensor1(DT_INT64, TensorShape({3}));
-    test::FillValues<int64>(&expected_indices_tensor1, {0, 2, 3});
-    test::ExpectTensorEqual<int64>(
+    test::FillValues<int64_t>(&expected_indices_tensor1, {0, 2, 3});
+    test::ExpectTensorEqual<int64_t>(
         expected_indices_tensor1,
         GetNodeTensorAttr(*(node_lookup.at("w1/part_1/indices")), "value"));
 
@@ -481,8 +481,8 @@ class SparsifyGatherTest : public ::testing::Test {
     EXPECT_EQ(1, node_lookup.count("w2/part_1/indices"));
     EXPECT_EQ("Const", node_lookup.at("w2/part_1/indices")->op());
     Tensor expected_indices_tensor2(DT_INT64, TensorShape({3}));
-    test::FillValues<int64>(&expected_indices_tensor2, {0, 2, 3});
-    test::ExpectTensorEqual<int64>(
+    test::FillValues<int64_t>(&expected_indices_tensor2, {0, 2, 3});
+    test::ExpectTensorEqual<int64_t>(
         expected_indices_tensor2,
         GetNodeTensorAttr(*(node_lookup.at("w2/part_1/indices")), "value"));
 

@@ -16,17 +16,19 @@ limitations under the License.
 // XLA-specific Tile Op.
 
 #include <vector>
-#include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/tf2xla/xla_helpers.h"
+
+#include "absl/algorithm/container.h"
+#include "absl/types/span.h"
+#include "tensorflow/compiler/tf2xla/lib/broadcast.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/core/framework/numeric_op.h"
+#include "xla/hlo/builder/value_inference.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/framework/type_index.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/gtl/array_slice.h"
-#include "tensorflow/core/platform/macros.h"
 
 namespace tensorflow {
 namespace {
@@ -37,11 +39,11 @@ class TileOp : public XlaOpKernel {
   explicit TileOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {}
 
   void Compile(XlaOpKernelContext* ctx) override {
-    const TensorShape input_shape = ctx->InputShape(0);
-    const TensorShape multiples_shape = ctx->InputShape(1);
+    const TensorShape input_shape = ctx->InputShape("input");
+    const TensorShape multiples_shape = ctx->InputShape("multiples");
 
     OP_REQUIRES(
-        ctx, IsLegacyVector(multiples_shape),
+        ctx, TensorShapeUtils::IsVector(multiples_shape),
         errors::InvalidArgument("Expected multiples to be 1-D, but got shape ",
                                 multiples_shape.DebugString()));
     OP_REQUIRES(ctx, input_shape.dims() == multiples_shape.num_elements(),
@@ -50,79 +52,74 @@ class TileOp : public XlaOpKernel {
                     input_shape.dims(), " but got length ",
                     multiples_shape.dim_size(0)));
     const int input_dims = input_shape.dims();
-
+    auto input = ctx->Input(0);
     // If input is a scalar then multiples has 0 elements and this is
     // a NoOp.
     if (input_dims == 0) {
-      ctx->SetOutput(0, ctx->Input(0));
-      return;
-    }
-
-    xla::Literal literal;
-    OP_REQUIRES_OK(ctx, ctx->ConstantInput(1, &literal));
-
-    // zero_element_result is true if the final shape has 0 elements,
-    // i.e. if any of the input dimensions or multiples is zero.
-    std::vector<int64> multiples_array(input_dims);
-    std::vector<int64> output_shape;
-    bool all_multiples_are_one = true;
-    bool one_dimension_is_broadcasted_without_multiple = true;
-    for (int i = 0; i < input_dims; ++i) {
-      int multiple = literal.Get<int>({i});
-      OP_REQUIRES(ctx, multiple,
-                  errors::InvalidArgument("Expected multiples[", i,
-                                          "] >= 0, but got ", multiple));
-      int64 new_dim = input_shape.dim_size(i) * multiple;
-      output_shape.push_back(new_dim);
-      multiples_array[i] = multiple;
-      all_multiples_are_one = all_multiples_are_one && multiple == 1;
-      // If the multiple of a non-one dimensions is not one, then binary
-      // operation broadcast semantics will not be sufficient to implement the
-      // tile operation.
-      one_dimension_is_broadcasted_without_multiple =
-          one_dimension_is_broadcasted_without_multiple &&
-          ((input_shape.dim_size(i) > 1 && multiple == 1) ||
-           input_shape.dim_size(i) == 1);
-    }
-    auto input = ctx->Input(0);
-    // If all multiples are 1, than the input is the same as the output.
-    if (all_multiples_are_one) {
       ctx->SetOutput(0, input);
       return;
     }
-    if (one_dimension_is_broadcasted_without_multiple) {
-      // Create a constant Zero the size of the output shape to leverage binary
-      // operation broadcast semantics.
-      auto broadcasted_zero = ctx->builder()->Broadcast(
-          XlaHelpers::Zero(ctx->builder(), ctx->input_type(0)), output_shape);
-      ctx->SetOutput(0, ctx->builder()->Add(broadcasted_zero, input));
-      return;
+
+    std::vector<int64_t> multiples_bounds;
+    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsIntVector(
+                            "multiples", &multiples_bounds,
+                            xla::ValueInferenceMode::kUpperBound));
+
+    std::vector<int64_t> output_dims(input_shape.dims());
+    for (int64_t i = 0; i < input_shape.dims(); ++i) {
+      OP_REQUIRES(ctx, multiples_bounds[i] >= 0,
+                  errors::InvalidArgument("Expected multiples[", i,
+                                          "] >= 0, but got ", output_dims[i]));
+      output_dims[i] = input_shape.dim_size(i) * multiples_bounds[i];
     }
 
-    // First broadcast the requisite number of multiples along each
-    // dimension. This prepends the broadcasted dimensions, so an
-    // input of shape [2,3,1] broadcast with multiples [5,4,3] will
-    // end up with shape [5,4,3,2,3,1].
-    auto broadcasted = ctx->builder()->Broadcast(input, multiples_array);
-    // Now flatten and reshape. The broadcasted dimensions are
-    // paired with the original dimensions so in the above example
-    // we flatten [0,3,1,4,2,5] then reshape to [10,12,3].
-    std::vector<int64> flattened;
-    for (int i = 0; i < output_shape.size(); ++i) {
-      flattened.push_back(i);
-      flattened.push_back(i + output_shape.size());
-    }
-    xla::ComputationDataHandle output =
-        ctx->builder()->Reshape(broadcasted, flattened, output_shape);
+    std::vector<bool> multiples_are_dynamic;
 
-    ctx->SetOutput(0, output);
+    OP_REQUIRES_OK(ctx, ctx->ResolveInputDynamismIntoPredVector(
+                            1, &multiples_are_dynamic));
+
+    bool all_multiples_are_static = absl::c_all_of(
+        multiples_are_dynamic, [](bool dynamic) { return !dynamic; });
+    // If a value is static, it means the upper bound is the value itself:
+    // constant_value = constant_upper_boudn = counstant_lower_bound
+    if (all_multiples_are_static) {
+      // If all multiples are 1, than the input is the same as the output.
+      if (absl::c_all_of(multiples_bounds,
+                         [](int64_t multiple) { return multiple == 1; })) {
+        ctx->SetOutput(0, input);
+        return;
+      }
+    }
+
+    auto result_or = BroadcastTo(ctx->Input("input"), output_dims);
+
+    OP_REQUIRES_OK(ctx, result_or.status());
+    auto result = result_or.value();
+    if (!all_multiples_are_static) {
+      // Some values of multiples are unknown at compile time, this is a dynamic
+      // tile op. We need to call set dimension size.
+      for (int64_t i = 0; i < multiples_are_dynamic.size(); ++i) {
+        if (!multiples_are_dynamic[i]) {
+          continue;
+        }
+        // If a dimension is dynamic, call set-dimension-size on the output.
+        auto dynamic_dim_size =
+            xla::Slice(ctx->Input("multiples"), {i}, {i + 1}, {1});
+        dynamic_dim_size = xla::Reshape(dynamic_dim_size, {});
+        dynamic_dim_size = xla::ConvertElementType(dynamic_dim_size, xla::S32);
+        result = xla::SetDimensionSize(result, dynamic_dim_size, i);
+      }
+    }
+
+    ctx->SetOutput(0, result);
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(TileOp);
+  TileOp(const TileOp&) = delete;
+  void operator=(const TileOp&) = delete;
 };
 
-REGISTER_XLA_OP(Name("Tile").CompileTimeConstInput("multiples"), TileOp);
+REGISTER_XLA_OP(Name("Tile").CompileTimeConstantInput("multiples"), TileOp);
 
 }  // namespace
 }  // namespace tensorflow

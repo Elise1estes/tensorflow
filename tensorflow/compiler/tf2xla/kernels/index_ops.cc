@@ -18,17 +18,16 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/kernels/index_ops.h"
 
 #include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/arithmetic.h"
-#include "tensorflow/compiler/xla/shape_util.h"
-#include "tensorflow/core/framework/kernel_def_builder.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/register_types.h"
-#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/kernels/bounds_check.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 XlaArgMinMaxOp::XlaArgMinMaxOp(OpKernelConstruction* ctx, bool is_min)
@@ -43,7 +42,7 @@ void XlaArgMinMaxOp::Compile(XlaOpKernelContext* ctx) {
                   "dim must be a scalar, but received tensor of shape: ",
                   dimension_shape.DebugString()));
 
-  int64 dim;
+  int64_t dim;
   OP_REQUIRES_OK(ctx, ctx->ConstantInputAsIntScalar(1, &dim));
 
   const int input_dims = input_shape.dims();
@@ -53,36 +52,26 @@ void XlaArgMinMaxOp::Compile(XlaOpKernelContext* ctx) {
       ctx, axis >= 0 && axis < input_dims,
       errors::InvalidArgument("Expected dimension in the range [", -input_dims,
                               ", ", input_dims, "), but got ", dim));
-  const int64 axis_size = input_shape.dim_size(axis);
+  const int64_t axis_size = input_shape.dim_size(axis);
   OP_REQUIRES(
       ctx, axis_size > 0,
       errors::InvalidArgument("Reduction axis ", dim, " is empty in shape ",
                               input_shape.DebugString()));
 
   DataType index_type = output_type(0);
+  xla::PrimitiveType index_xla_type;
+  OP_REQUIRES_OK(ctx, DataTypeToPrimitiveType(index_type, &index_xla_type));
 
-  xla::ComputationBuilder* b = ctx->builder();
-  xla::ComputationDataHandle input = ctx->Input(0);
-
-  xla::ComputationDataHandle output;
-  if (is_min_) {
-    OP_REQUIRES_OK(ctx,
-                   XlaHelpers::ArgMin(b, ctx, input, input_shape, input_type(0),
-                                      index_type, axis, &output));
-  } else {
-    OP_REQUIRES_OK(ctx,
-                   XlaHelpers::ArgMax(b, ctx, input, input_shape, input_type(0),
-                                      index_type, axis, &output));
-  }
+  xla::XlaOp input = ctx->Input(0);
+  xla::XlaOp output =
+      xla::ArgMinMax(input, index_xla_type, axis, /*is_min=*/is_min_);
 
   ctx->SetOutput(0, output);
 }
 
 XlaArgMaxOp::XlaArgMaxOp(OpKernelConstruction* ctx)
     : XlaArgMinMaxOp(ctx, /*is_min=*/false) {}
-REGISTER_XLA_OP(Name("ArgMax")
-                    .Device(DEVICE_GPU_XLA_JIT)
-                    .CompileTimeConstInput("dimension"),
+REGISTER_XLA_OP(Name("ArgMax").CompileTimeConstantInput("dimension"),
                 XlaArgMaxOp);
 
 namespace {
@@ -93,7 +82,8 @@ class XlaArgMinOp : public XlaArgMinMaxOp {
 };
 XlaArgMinOp::XlaArgMinOp(OpKernelConstruction* ctx)
     : XlaArgMinMaxOp(ctx, /*is_min=*/true) {}
-REGISTER_XLA_OP(Name("ArgMin").CompileTimeConstInput("dimension"), XlaArgMinOp);
+REGISTER_XLA_OP(Name("ArgMin").CompileTimeConstantInput("dimension"),
+                XlaArgMinOp);
 
 }  // namespace
 }  // namespace tensorflow

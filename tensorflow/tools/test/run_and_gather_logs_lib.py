@@ -14,10 +14,6 @@
 # ==============================================================================
 """Library for getting system information during TensorFlow tests."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import re
 import shlex
@@ -95,8 +91,11 @@ def process_benchmarks(log_files):
   return benchmarks
 
 
-def run_and_gather_logs(name, test_name, test_args,
-                        benchmark_type):
+def run_and_gather_logs(name,
+                        test_name,
+                        test_args,
+                        benchmark_type,
+                        skip_processing_logs=False):
   """Run the bazel test given by test_name.  Gather and return the logs.
 
   Args:
@@ -105,10 +104,13 @@ def run_and_gather_logs(name, test_name, test_args,
     test_args: A string containing all arguments to run the target with.
     benchmark_type: A string representing the BenchmarkType enum; the
       benchmark type for this target.
+    skip_processing_logs: Whether to skip processing test results from log
+      files.
 
   Returns:
     A tuple (test_results, mangled_test_name), where
-    test_results: A test_log_pb2.TestResults proto
+    test_results: A test_log_pb2.TestResults proto, or None if log processing
+      is skipped.
     test_adjusted_name: Unique benchmark name that consists of
       benchmark name optionally followed by GPU type.
 
@@ -136,20 +138,27 @@ def run_and_gather_logs(name, test_name, test_args,
   gpu_config = gpu_info_lib.gather_gpu_devices()
   if gpu_config:
     gpu_name = gpu_config[0].model
-    gpu_short_name_match = re.search(r"Tesla (K40|K80|P100|V100)", gpu_name)
+    gpu_short_name_match = re.search(
+        r"(Tesla|NVIDIA) (K40|K80|P100|V100|A100)", gpu_name
+    )
     if gpu_short_name_match:
       gpu_short_name = gpu_short_name_match.group(0)
       test_adjusted_name = name + "|" + gpu_short_name.replace(" ", "_")
 
   temp_directory = tempfile.mkdtemp(prefix="run_and_gather_logs")
-  mangled_test_name = (test_adjusted_name.strip("/")
-                       .replace("|", "_").replace("/", "_").replace(":", "_"))
+  mangled_test_name = (
+      test_adjusted_name.strip("/").replace("|",
+                                            "_").replace("/",
+                                                         "_").replace(":", "_"))
   test_file_prefix = os.path.join(temp_directory, mangled_test_name)
   test_file_prefix = "%s." % test_file_prefix
 
   try:
     if not gfile.Exists(test_executable):
-      raise ValueError("Executable does not exist: %s" % test_executable)
+      test_executable_py3 = test_executable + ".python3"
+      if not gfile.Exists(test_executable_py3):
+        raise ValueError("Executable does not exist: %s" % test_executable)
+      test_executable = test_executable_py3
     test_args = shlex.split(test_args)
 
     # This key is defined in tf/core/util/reporter.h as
@@ -157,6 +166,8 @@ def run_and_gather_logs(name, test_name, test_args,
     os.environ["TEST_REPORT_FILE_PREFIX"] = test_file_prefix
     start_time = time.time()
     subprocess.check_call([test_executable] + test_args)
+    if skip_processing_logs:
+      return None, test_adjusted_name
     run_time = time.time() - start_time
     log_files = gfile.Glob("{}*".format(test_file_prefix))
     if not log_files:

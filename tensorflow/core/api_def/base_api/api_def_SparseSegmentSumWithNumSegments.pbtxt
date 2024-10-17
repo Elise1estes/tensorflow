@@ -28,10 +28,11 @@ END
   summary: "Computes the sum along sparse segments of a tensor."
   description: <<END
 Like `SparseSegmentSum`, but allows missing ids in `segment_ids`. If an id is
-misisng, the `output` tensor at that position will be zeroed.
+missing, the `output` tensor at that position will be zeroed.
 
-Read @{$math_ops#Segmentation$the section on segmentation} for an explanation of
-segments.
+Read
+[the section on segmentation](https://tensorflow.org/api_docs/python/tf/sparse#Segmentation)
+for an explanation of segments.
 
 For example:
 

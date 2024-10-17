@@ -68,20 +68,20 @@ Status TensorResponse::InitFrom(RecvTensorResponse* response) {
   return s;
 }
 
-void TensorResponse::InitPartial(const RecvTensorResponse& response) {
+void TensorResponse::InitPartial(const RecvTensorResponse& response,
+                                 const AllocationAttributes& allocation_attr) {
   // Everything except content is present in *response.  Content will
   // arrive later; allocate a Tensor with appropriate storage for that
   // content.
   meta_ = response;
   TensorShape shape(meta_.tensor().tensor_shape());
-  Tensor t(allocator_, meta_.tensor().dtype(), shape);
+  Tensor t(allocator_, meta_.tensor().dtype(), shape, allocation_attr);
   tensor_ = std::move(t);
 }
 
 Status TensorResponse::ParseFrom(Source* source) {
   if (!on_host_) {
     protobuf::io::CodedInputStream input(source->contents());
-    input.SetTotalBytesLimit(INT_MAX, INT_MAX);  // Unlimited
 
     // Pre-parse into local storage, then delegate to device.
     if (!meta_.ParseFromCodedStream(&input) || !input.ConsumedEntireMessage()) {
@@ -101,9 +101,9 @@ Status TensorResponse::ParseFrom(Source* source) {
     ClearTensor();
   }
   already_used_ = true;
-  if (ParseFast(source)) return Status::OK();
+  if (ParseFast(source)) return absl::OkStatus();
   meta_.Clear();
-  if (ParseSlow(source)) return Status::OK();
+  if (ParseSlow(source)) return absl::OkStatus();
   return errors::InvalidArgument("Cannot parse tensor from response");
 }
 
@@ -217,7 +217,6 @@ bool TensorResponse::ParseTensorSubmessage(
 
 bool TensorResponse::ParseFast(Source* source) {
   protobuf::io::CodedInputStream input(source->contents());
-  input.SetTotalBytesLimit(INT_MAX, INT_MAX);  // Unlimited
   while (true) {
     auto p = input.ReadTagWithCutoff(127);
     int tag = GetTagFieldNumber(p.first);
@@ -245,19 +244,25 @@ bool TensorResponse::ParseFast(Source* source) {
       case RecvTensorResponse::kIsDeadFieldNumber: {
         uint32 v;
         if ((wt != WIRETYPE_VARINT) || !input.ReadVarint32(&v)) return false;
-        meta_.set_is_dead((v != 0) ? true : false);
+        meta_.set_is_dead(v != 0);
         break;
       }
       case RecvTensorResponse::kSendStartMicrosFieldNumber: {
         protobuf_uint64 v;
         if ((wt != WIRETYPE_VARINT) || !input.ReadVarint64(&v)) return false;
-        meta_.set_send_start_micros(static_cast<int64>(v));
+        meta_.set_send_start_micros(static_cast<int64_t>(v));
         break;
       }
       case RecvTensorResponse::kTransportOptionsFieldNumber: {
         if ((wt != WIRETYPE_LENGTH_DELIMITED) ||
             !ReadNestedMessage(&input, meta_.mutable_transport_options()))
           return false;
+        break;
+      }
+      case RecvTensorResponse::kRequireAckFieldNumber: {
+        uint32 v;
+        if ((wt != WIRETYPE_VARINT) || !input.ReadVarint32(&v)) return false;
+        meta_.set_require_ack(v != 0);
         break;
       }
       default: {

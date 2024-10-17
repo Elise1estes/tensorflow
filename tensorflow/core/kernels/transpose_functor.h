@@ -19,6 +19,7 @@ limitations under the License.
 #include <numeric>
 #include <string>
 #include <vector>
+
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/platform/logging.h"
@@ -32,8 +33,8 @@ namespace tensorflow {
 // REQUIRES: in.dims() == perm.size()
 // REQUIRES: in.dim_size(perm[i]) == out->dim_size(i)
 template <typename Device>
-Status DoTranspose(const Device& device, const Tensor& in,
-                   const gtl::ArraySlice<int32> perm, Tensor* out);
+absl::Status DoTranspose(const Device& device, const Tensor& in,
+                         const absl::Span<const int32> perm, Tensor* out);
 
 // Conjugate and transpose tensor 'in' into tensor 'out' according to dimension
 // permutation 'perm'.
@@ -43,32 +44,34 @@ Status DoTranspose(const Device& device, const Tensor& in,
 // REQUIRES: in.dims() == perm.size()
 // REQUIRES: in.dim_size(perm[i]) == out->dim_size(i)
 template <typename Device>
-Status DoConjugateTranspose(const Device& device, const Tensor& in,
-                            const gtl::ArraySlice<int32> perm, Tensor* out);
+absl::Status DoConjugateTranspose(const Device& device, const Tensor& in,
+                                  const absl::Span<const int32> perm,
+                                  Tensor* out);
 
 // Convenience versions of DoTranspose that only swap the last (inner) two
 // dimensions.
 template <typename Device>
-Status DoMatrixTranspose(const Device& device, const Tensor& in, Tensor* out);
+absl::Status DoMatrixTranspose(const Device& device, const Tensor& in,
+                               Tensor* out);
 
 // Convenience versions of DoConjugateTranspose that only swap the last (inner)
 // two dimensions.
 template <typename Device>
-Status DoConjugateMatrixTranspose(const Device& device, const Tensor& in,
-                                  Tensor* out);
+absl::Status DoConjugateMatrixTranspose(const Device& device, const Tensor& in,
+                                        Tensor* out);
 
 // Primary device specific functor to be specialized for each device and type.
 template <typename Device, typename T, bool conjugate = false>
 struct Transpose {
   static void run(const Device& d, const Tensor& in,
-                  const gtl::ArraySlice<int32> perm, Tensor* out);
+                  const absl::Span<const int32> perm, Tensor* out);
 };
 
 // Implementation details.
 namespace internal {
 
-typedef gtl::InlinedVector<int64, 8> TransposeDimsVec;
-typedef gtl::InlinedVector<int32, 8> TransposePermsVec;
+typedef absl::InlinedVector<int64_t, 8UL> TransposeDimsVec;
+typedef absl::InlinedVector<int32, 8UL> TransposePermsVec;
 
 // Helper function that takes a tensor shape, a permutation, combines the
 // neighboring shapes if their indices in the permutation are consecutive.
@@ -76,7 +79,7 @@ typedef gtl::InlinedVector<int32, 8> TransposePermsVec;
 // Example: Tensor shape {2, 3, 4, 5, 120} and permutation {0, 4, 1, 2, 3} will
 // produce new shape {2, 60, 120} and new permutation {0, 2, 1}.
 inline void ReduceTransposeDimensions(const TensorShape& shape,
-                                      gtl::ArraySlice<int32> perm,
+                                      absl::Span<const int32> perm,
                                       TransposePermsVec* new_perm,
                                       TransposeDimsVec* new_dims) {
   CHECK_EQ(shape.dims(), perm.size());
@@ -145,7 +148,7 @@ inline bool NonSingletonDimensionsAlign(const TensorShape& input_shape,
 // Uses Eigen to transpose.
 template <typename Device, typename T, int NDIMS>
 void TransposeUsingEigen(const Device& d, const Tensor& in,
-                         const gtl::ArraySlice<int32> perm, bool conjugate,
+                         const absl::Span<const int32> perm, bool conjugate,
                          Tensor* out) {
   Eigen::array<int, NDIMS> p;
   for (int i = 0; i < NDIMS; ++i) p[i] = perm[i];
@@ -163,10 +166,9 @@ void TransposeUsingEigen(const Device& d, const Tensor& in,
 }
 
 template <typename Device>
-Status DoTransposeImpl(const Device& d, const Tensor& in,
-                       const gtl::ArraySlice<int32> perm, bool conjugate,
-                       Tensor* out) {
-  CHECK_GE(in.dims(), 2);
+absl::Status DoTransposeImpl(const Device& d, const Tensor& in,
+                             const absl::Span<const int32> perm, bool conjugate,
+                             Tensor* out) {
   CHECK_EQ(in.dims(), out->dims());
   CHECK_EQ(in.dims(), perm.size());
   CHECK_EQ(in.dtype(), out->dtype());
@@ -176,6 +178,8 @@ Status DoTransposeImpl(const Device& d, const Tensor& in,
     case DT_QINT8:
     case DT_QUINT8:
     case DT_UINT8:
+    case DT_FLOAT8_E5M2:
+    case DT_FLOAT8_E4M3FN:
       Transpose<Device, uint8>::run(d, in, perm, out);
       break;
 
@@ -191,11 +195,13 @@ Status DoTransposeImpl(const Device& d, const Tensor& in,
     case DT_FLOAT:
     case DT_INT32:
     case DT_QINT32:
+    case DT_UINT32:
       Transpose<Device, uint32>::run(d, in, perm, out);
       break;
 
     case DT_DOUBLE:
     case DT_INT64:
+    case DT_UINT64:
       Transpose<Device, uint64>::run(d, in, perm, out);
       break;
 
@@ -225,33 +231,26 @@ Status DoTransposeImpl(const Device& d, const Tensor& in,
       break;
 
     case DT_STRING:
-      Transpose<Device, string>::run(d, in, perm, out);
+      Transpose<Device, tstring>::run(d, in, perm, out);
       break;
 
     default:
       return errors::Unimplemented("Unsupported dtype on CPU: ", in.dtype());
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 template <typename Device>
-inline Status DoMatrixTransposeImpl(const Device& device, const Tensor& in,
-                                    bool conjugate, Tensor* out) {
+inline absl::Status DoMatrixTransposeImpl(const Device& device,
+                                          const Tensor& in, bool conjugate,
+                                          Tensor* out) {
   const int ndims = in.dims();
-  if (ndims == 0) return Status::OK();
+  if (ndims == 0) return absl::OkStatus();
   TransposePermsVec perm(ndims);
   std::iota(perm.begin(), perm.end(), 0);
   std::swap(perm[ndims - 2], perm[ndims - 1]);
   return DoTransposeImpl(device, in, perm, conjugate, out);
 }
-
-#ifdef TENSORFLOW_USE_SYCL
-// For SYCL lets always go through Eigen
-template <typename Device, typename T>
-void TransposeSYCL(const Device& d, const Tensor& in,
-                   const gtl::ArraySlice<int32> perm, bool conjugate,
-                   Tensor* out);
-#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace internal
 }  // namespace tensorflow

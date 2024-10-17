@@ -17,11 +17,11 @@ limitations under the License.
 #include <array>
 #include <climits>
 
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
-#include "tensorflow/core/lib/io/path.h"
-#include "tensorflow/core/lib/strings/stringprintf.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
@@ -72,6 +72,21 @@ TEST_F(SqliteTest, InsertAndSelectDouble) {
   EXPECT_EQ(6, stmt.ColumnInt(0));
   EXPECT_EQ(1, stmt.ColumnInt(1));
 }
+
+#ifdef DSQLITE_ENABLE_JSON1
+TEST_F(SqliteTest, Json1Extension) {
+  string s1 = "{\"key\": 42}";
+  string s2 = "{\"key\": \"value\"}";
+  auto stmt = db_->PrepareOrDie("INSERT INTO T (a, b) VALUES (?, ?)");
+  stmt.BindText(1, s1);
+  stmt.BindText(2, s2);
+  TF_ASSERT_OK(stmt.StepAndReset());
+  stmt = db_->PrepareOrDie("SELECT json_extract(a, '$.key'), json_extract(b, '$.key') FROM T");
+  TF_ASSERT_OK(stmt.Step(&is_done_));
+  EXPECT_EQ(42, stmt.ColumnInt(0));
+  EXPECT_EQ("value", stmt.ColumnString(1));
+}
+#endif //DSQLITE_ENABLE_JSON1
 
 TEST_F(SqliteTest, NulCharsInString) {
   string s;  // XXX: Want to write {2, '\0'} but not sure why not.
@@ -199,19 +214,18 @@ TEST_F(SqliteTest, Statement_MoveAssignment) {
 TEST_F(SqliteTest, PrepareFailed) {
   SqliteLock lock(*db_);
   SqliteStatement stmt;
-  Status s = db_->Prepare("SELECT", &stmt);
+  absl::Status s = db_->Prepare("SELECT", &stmt);
   ASSERT_FALSE(s.ok());
-  EXPECT_NE(string::npos, s.error_message().find("SELECT"));
+  EXPECT_NE(string::npos, s.message().find("SELECT"));
   EXPECT_EQ(SQLITE_ERROR, db_->errcode());
 }
 
 TEST_F(SqliteTest, BindFailed) {
   auto stmt = db_->PrepareOrDie("INSERT INTO T (a) VALUES (123)");
   stmt.BindInt(1, 123);
-  Status s = stmt.StepOnce();
-  EXPECT_NE(string::npos,
-            s.error_message().find("INSERT INTO T (a) VALUES (123)"))
-      << s.error_message();
+  absl::Status s = stmt.StepOnce();
+  EXPECT_NE(string::npos, s.message().find("INSERT INTO T (a) VALUES (123)"))
+      << s.message();
 }
 
 TEST_F(SqliteTest, SnappyExtension) {

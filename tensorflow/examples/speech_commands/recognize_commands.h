@@ -21,6 +21,7 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -48,16 +49,16 @@ class RecognizeCommands {
   // further recognitions for a set time after one has been triggered, which can
   // help reduce spurious recognitions.
   explicit RecognizeCommands(const std::vector<string>& labels,
-                             int32 average_window_duration_ms = 1000,
+                             int32_t average_window_duration_ms = 1000,
                              float detection_threshold = 0.2,
-                             int32 suppression_ms = 500,
-                             int32 minimum_count = 3);
+                             int32_t suppression_ms = 500,
+                             int32_t minimum_count = 3);
 
   // Call this with the results of running a model on sample data.
-  Status ProcessLatestResults(const Tensor& latest_results,
-                              const int64 current_time_ms,
-                              string* found_command, float* score,
-                              bool* is_new_command);
+  absl::Status ProcessLatestResults(const Tensor& latest_results,
+                                    const int64_t current_time_ms,
+                                    string* found_command, float* score,
+                                    bool* is_new_command);
 
  private:
   // Configuration
@@ -68,10 +69,10 @@ class RecognizeCommands {
   int32 minimum_count_;
 
   // Working variables
-  std::deque<std::pair<int64, Tensor>> previous_results_;
+  std::deque<std::pair<int64_t, Tensor>> previous_results_;
   string previous_top_label_;
-  int64 labels_count_;
-  int64 previous_top_label_time_;
+  int64_t labels_count_;
+  int64_t previous_top_label_time_;
 };
 
 }  // namespace tensorflow

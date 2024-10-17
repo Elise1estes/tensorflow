@@ -13,43 +13,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATFORM_PROTOBUF_H_
-#define TENSORFLOW_PLATFORM_PROTOBUF_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_PROTOBUF_H_
+#define TENSORFLOW_CORE_PLATFORM_PROTOBUF_H_
 
 #include "tensorflow/core/platform/platform.h"
 #include "tensorflow/core/platform/types.h"
-
-// Import whatever namespace protobuf comes from into the
-// ::tensorflow::protobuf namespace.
-//
-// TensorFlow code should use the ::tensorflow::protobuf namespace to
-// refer to all protobuf APIs.
-
-#if defined(PLATFORM_GOOGLE) && !defined(USE_DEFAULT_PROTOBUF)
-#include "tensorflow/core/platform/google/protobuf.h"
-#else
-#include "tensorflow/core/platform/default/protobuf.h"
-#endif
+#include "tsl/platform/protobuf.h"
 
 namespace tensorflow {
-// Parses a protocol buffer contained in a string in the binary wire format.
-// Returns true on success. Note: Unlike protobuf's builtin ParseFromString,
-// this function has no size restrictions on the total size of the encoded
-// protocol buffer.
-bool ParseProtoUnlimited(protobuf::MessageLite* proto,
-                         const string& serialized);
-bool ParseProtoUnlimited(protobuf::MessageLite* proto, const void* serialized,
-                         size_t size);
-
-// Returns the string value for the value of a string or bytes protobuf field.
-inline const string& ProtobufStringToString(const string& s) { return s; }
-
-// Set <dest> to <src>. Swapping is allowed, as <src> does not need to be
-// preserved.
-inline void SetProtobufStringSwapAllowed(string* src, string* dest) {
-  dest->swap(*src);
-}
-
+namespace protobuf = tsl::protobuf;  // NOLINT(misc-unused-alias-decls)
+// NOLINTBEGIN(misc-unused-using-decls)
+using tsl::kProtobufInt64Typename;
+using tsl::kProtobufUint64Typename;
+using tsl::ParseFromTString;
+using tsl::ParseProtoUnlimited;
+using tsl::protobuf_int64;
+using tsl::protobuf_uint64;
+using tsl::ProtobufStringToString;
+using tsl::SerializeToTString;
+using tsl::SetProtobufStringSwapAllowed;
+using tsl::TStringOutputStream;
+// NOLINTEND(misc-unused-using-decls)
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_PLATFORM_PROTOBUF_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_PROTOBUF_H_

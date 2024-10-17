@@ -34,7 +34,8 @@ limitations under the License.
 #include "{{TFCOMPILE_HEADER}}"  // NOLINT(whitespace/braces)
 // clang-format on
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "tensorflow/core/platform/byte_order.h"
 #include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
@@ -50,42 +51,36 @@ namespace tensorflow {
 namespace tfcompile {
 namespace {
 
-void zero_buffers(void** bufs, const intptr_t* sizes, size_t n) {
-  for (int i = 0; i < n; ++i) {
-    if (sizes[i] != -1) {
-      memset(bufs[i], 0, sizes[i]);
-    }
+void zero_buffers(XlaCompiledCpuFunction* computation) {
+  for (int i = 0; i < computation->num_args(); ++i) {
+    memset(computation->arg_data(i), 0, computation->arg_size(i));
   }
 }
 
 // Trivial test that runs the generated function to ensure it doesn't crash.
 TEST(TEST_NAME, NoCrash) {
-  Eigen::ThreadPool pool(port::NumSchedulableCPUs());
+  Eigen::ThreadPool pool(port::MaxParallelism());
   Eigen::ThreadPoolDevice device(&pool, pool.NumThreads());
 
   CPP_CLASS computation;
   computation.set_thread_pool(&device);
-  zero_buffers(computation.args(), CPP_CLASS::ArgSizes(), CPP_CLASS::kNumArgs);
+  zero_buffers(&computation);
 
   EXPECT_TRUE(computation.Run());
 }
 
 // Simple benchmark that repeatedly runs the generated function.
-void BM_NAME(int iters) {
-  testing::StopTiming();
-
-  Eigen::ThreadPool pool(port::NumSchedulableCPUs());
+void BM_NAME(benchmark::State& state) {
+  Eigen::ThreadPool pool(port::MaxParallelism());
   Eigen::ThreadPoolDevice device(&pool, pool.NumThreads());
 
   CPP_CLASS computation;
   computation.set_thread_pool(&device);
-  zero_buffers(computation.args(), CPP_CLASS::ArgSizes(), CPP_CLASS::kNumArgs);
+  zero_buffers(&computation);
 
-  testing::StartTiming();
-  while (--iters) {
+  for (auto s : state) {
     computation.Run();
   }
-  testing::StopTiming();
 }
 BENCHMARK(BM_NAME);
 

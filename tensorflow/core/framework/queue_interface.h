@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_FRAMEWORK_QUEUE_INTERFACE_H_
-#define TENSORFLOW_FRAMEWORK_QUEUE_INTERFACE_H_
+#ifndef TENSORFLOW_CORE_FRAMEWORK_QUEUE_INTERFACE_H_
+#define TENSORFLOW_CORE_FRAMEWORK_QUEUE_INTERFACE_H_
 
 #include <string>
 #include <vector>
@@ -85,18 +85,18 @@ class QueueInterface : public ResourceBase {
   virtual Status MatchesNodeDef(const NodeDef& node_def) = 0;
 
   // Returns the number of elements in the queue.
-  virtual int32 size() = 0;
+  virtual int32 size() const = 0;
 
   virtual const DataTypeVector& component_dtypes() const = 0;
 
-  string DebugString() override {
+  string DebugString() const override {
     return strings::StrCat("A Queue of size: ", size());
   }
 
  protected:
-  virtual ~QueueInterface() {}
+  ~QueueInterface() override {}
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_FRAMEWORK_QUEUE_INTERFACE_H_
+#endif  // TENSORFLOW_CORE_FRAMEWORK_QUEUE_INTERFACE_H_

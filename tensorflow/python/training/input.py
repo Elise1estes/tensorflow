@@ -15,35 +15,34 @@
 
 """Input pipeline.
 
-Please see the @{$reading_data$reading data how-to}
+Please see the [reading data
+how-to](https://tensorflow.org/api_guides/python/reading_data)
 for context.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import collections
-
-from six.moves import xrange  # pylint: disable=redefined-builtin
 
 from tensorflow.python.eager import context
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.layers import utils
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import control_flow_assert
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import data_flow_ops
 from tensorflow.python.ops import io_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import sparse_ops
-from tensorflow.python.ops import variable_scope as vs
+from tensorflow.python.ops import variable_v1
 from tensorflow.python.summary import summary
 from tensorflow.python.training import queue_runner
+from tensorflow.python.util import deprecation
+from tensorflow.python.util.compat import collections_abc
 from tensorflow.python.util.tf_export import tf_export
 
 
@@ -54,11 +53,14 @@ _restore_sparse = sparse_ops._take_many_sparse_from_tensors_map
 # pylint: enable=protected-access
 
 
-@tf_export("train.match_filenames_once")
+@tf_export(
+    "io.match_filenames_once",
+    v1=["io.match_filenames_once", "train.match_filenames_once"])
+@deprecation.deprecated_endpoints("train.match_filenames_once")
 def match_filenames_once(pattern, name=None):
   """Save the list of files matching pattern, so it is only computed once.
 
-  NOTE: The order of the files returned can be non-deterministic.
+  NOTE: The order of the files returned is deterministic.
 
   Args:
     pattern: A file pattern (glob), or 1D tensor of file patterns.
@@ -68,13 +70,16 @@ def match_filenames_once(pattern, name=None):
     A variable that is initialized to the list of files matching the pattern(s).
   """
   with ops.name_scope(name, "matching_filenames", [pattern]) as name:
-    return vs.variable(
+    return variable_v1.VariableV1(
         name=name, initial_value=io_ops.matching_files(pattern),
         trainable=False, validate_shape=False,
         collections=[ops.GraphKeys.LOCAL_VARIABLES])
 
 
-@tf_export("train.limit_epochs")
+@tf_export(v1=["train.limit_epochs"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.from_tensors(tensor).repeat(num_epochs)`.")
 def limit_epochs(tensor, num_epochs=None, name=None):
   """Returns tensor `num_epochs` times and then raises an `OutOfRange` error.
 
@@ -99,7 +104,7 @@ def limit_epochs(tensor, num_epochs=None, name=None):
     raise ValueError("num_epochs must be > 0 not %d." % num_epochs)
   with ops.name_scope(name, "limit_epochs", [tensor]) as name:
     zero64 = constant_op.constant(0, dtype=dtypes.int64)
-    epochs = vs.variable(
+    epochs = variable_v1.VariableV1(
         zero64, name="epochs", trainable=False,
         collections=[ops.GraphKeys.LOCAL_VARIABLES])
     counter = epochs.count_up_to(num_epochs)
@@ -107,7 +112,12 @@ def limit_epochs(tensor, num_epochs=None, name=None):
       return array_ops.identity(tensor, name=name)
 
 
-@tf_export("train.input_producer")
+@tf_export(v1=["train.input_producer"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.from_tensor_slices(input_tensor).shuffle"
+    "(tf.shape(input_tensor, out_type=tf.int64)[0]).repeat(num_epochs)`. If "
+    "`shuffle=False`, omit the `.shuffle(...)`.")
 def input_producer(input_tensor,
                    element_shape=None,
                    num_epochs=None,
@@ -186,11 +196,16 @@ def input_producer(input_tensor,
             q, [enq], cancel_op=cancel_op))
     if summary_name is not None:
       summary.scalar(summary_name,
-                     math_ops.to_float(q.size()) * (1. / capacity))
+                     math_ops.cast(q.size(), dtypes.float32) * (1. / capacity))
     return q
 
 
-@tf_export("train.string_input_producer")
+@tf_export(v1=["train.string_input_producer"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.from_tensor_slices(string_tensor).shuffle"
+    "(tf.shape(input_tensor, out_type=tf.int64)[0]).repeat(num_epochs)`. If "
+    "`shuffle=False`, omit the `.shuffle(...)`.")
 def string_input_producer(string_tensor,
                           num_epochs=None,
                           shuffle=True,
@@ -237,15 +252,15 @@ def string_input_producer(string_tensor,
   @end_compatibility
   """
   not_null_err = "string_input_producer requires a non-null input tensor"
-  if not isinstance(string_tensor, ops.Tensor) and not string_tensor:
+  if not isinstance(string_tensor, tensor_lib.Tensor) and not string_tensor:
     raise ValueError(not_null_err)
 
   with ops.name_scope(name, "input_producer", [string_tensor]) as name:
     string_tensor = ops.convert_to_tensor(string_tensor, dtype=dtypes.string)
     with ops.control_dependencies([
-        control_flow_ops.Assert(
-            math_ops.greater(array_ops.size(string_tensor), 0),
-            [not_null_err])]):
+        control_flow_assert.Assert(
+            math_ops.greater(array_ops.size(string_tensor), 0), [not_null_err])
+    ]):
       string_tensor = array_ops.identity(string_tensor)
     return input_producer(
         input_tensor=string_tensor,
@@ -260,7 +275,11 @@ def string_input_producer(string_tensor,
         cancel_op=cancel_op)
 
 
-@tf_export("train.range_input_producer")
+@tf_export(v1=["train.range_input_producer"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.range(limit).shuffle(limit).repeat(num_epochs)`. If "
+    "`shuffle=False`, omit the `.shuffle(...)`.")
 def range_input_producer(limit, num_epochs=None, shuffle=True, seed=None,
                          capacity=32, shared_name=None, name=None):
   """Produces the integers from 0 to limit-1 in a queue.
@@ -298,7 +317,12 @@ def range_input_producer(limit, num_epochs=None, shuffle=True, seed=None,
         shared_name, "fraction_of_%d_full" % capacity, name)
 
 
-@tf_export("train.slice_input_producer")
+@tf_export(v1=["train.slice_input_producer"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.from_tensor_slices(tuple(tensor_list)).shuffle"
+    "(tf.shape(input_tensor, out_type=tf.int64)[0]).repeat(num_epochs)`. If "
+    "`shuffle=False`, omit the `.shuffle(...)`.")
 def slice_input_producer(tensor_list, num_epochs=None, shuffle=True, seed=None,
                          capacity=32, shared_name=None, name=None):
   """Produces a slice of each `Tensor` in `tensor_list`.
@@ -335,7 +359,8 @@ def slice_input_producer(tensor_list, num_epochs=None, shuffle=True, seed=None,
   @end_compatibility
   """
   with ops.name_scope(name, "input_producer", tensor_list):
-    tensor_list = ops.convert_n_to_tensor_or_indexed_slices(tensor_list)
+    tensor_list = indexed_slices.convert_n_to_tensor_or_indexed_slices(
+        tensor_list)
     if not tensor_list:
       raise ValueError(
           "Expected at least one tensor in slice_input_producer().")
@@ -357,7 +382,7 @@ def _flatten(tensor_list_list):
   return [tensor for tensor_list in tensor_list_list for tensor in tensor_list]
 
 
-class _SparseMetaData(object):
+class _SparseMetaData:
   """Store information about the Tensor: Is it sparse?, map_op, and rank."""
 
   def __init__(self, sparse, map_op, rank):
@@ -372,7 +397,7 @@ class _SparseMetaData(object):
     """
     self._sparse = sparse
     self._map_op = map_op
-    self._rank = rank
+    self._rank = tensor_shape.as_dimension(rank)
 
   def __eq__(self, other):
     if self.sparse != other.sparse:
@@ -485,7 +510,7 @@ def _store_sparse_tensors(tensor_list, enqueue_many, keep_input,
   def _sparse_meta_data(t, storing_op, map_op):
     if not isinstance(t, sparse_tensor.SparseTensor):
       return _SparseMetaData(False, None, None)
-    rank = t.dense_shape.shape.with_rank(1)[0]
+    rank = t.dense_shape.shape.with_rank(1).dims[0]
     if enqueue_many:
       rank -= 1
     # If a shared map_op was provided, use that. Otherwise use the name of
@@ -573,13 +598,13 @@ def _store_sparse_tensors_join(tensor_list_list, enqueue_many, keep_input):
 
 def _restore_sparse_tensors(stored_list, sparse_info_list):
   """Restore SparseTensors after dequeue in batch, batch_join, etc."""
-  received_sequence = isinstance(stored_list, collections.Sequence)
+  received_sequence = isinstance(stored_list, collections_abc.Sequence)
   if not received_sequence:
     stored_list = (stored_list,)
   tensors = [
       _restore_sparse(sparse_map_op=info.map_op,
                       sparse_handles=array_ops.squeeze(s, [1]),
-                      rank=(info.rank + 1).value)
+                      rank=tensor_shape.dimension_value(info.rank + 1))
       if info.sparse else s
       for (s, info) in zip(stored_list, sparse_info_list)]
   has_st = any(isinstance(x, sparse_tensor.SparseTensor) for x in tensors)
@@ -602,15 +627,18 @@ def _restore_sparse_tensors(stored_list, sparse_info_list):
 
 
 def _validate(tensor_list):
-  tensor_list = ops.convert_n_to_tensor_or_indexed_slices(tensor_list)
+  tensor_list = indexed_slices.convert_n_to_tensor_or_indexed_slices(
+      tensor_list)
   if not tensor_list:
     raise ValueError("Expected at least one tensor in batch().")
   return tensor_list
 
 
 def _validate_join(tensor_list_list):
-  tensor_list_list = [ops.convert_n_to_tensor_or_indexed_slices(tl)
-                      for tl in tensor_list_list]
+  tensor_list_list = [
+      indexed_slices.convert_n_to_tensor_or_indexed_slices(tl)
+      for tl in tensor_list_list
+  ]
   if not tensor_list_list:
     raise ValueError("Expected at least one input in batch_join().")
   return tensor_list_list
@@ -673,19 +701,21 @@ def _shapes(tensor_list_list, shapes, enqueue_many):
     len0 = len(tensor_list_list[0])
 
     for tl in tensor_list_list:
-      for i in xrange(len0):
+      for i in range(len0):
         if tl[i].shape.ndims is None:
           raise ValueError("Cannot infer Tensor's rank: %s" % tl[i])
 
-    shapes = [_merge_shapes(
-        [tl[i].shape.as_list() for tl in tensor_list_list], enqueue_many)
-              for i in xrange(len0)]
+    shapes = [
+        _merge_shapes([tl[i].shape.as_list()
+                       for tl in tensor_list_list], enqueue_many)
+        for i in range(len0)
+    ]
   return shapes
 
 
 def _select_which_to_enqueue(tensor_list, keep_input):
   """Select which examples to enqueue based on vector `keep_input`."""
-  select_i = math_ops.to_int32(keep_input)
+  select_i = math_ops.cast(keep_input, dtypes.int32)
   tensor_list = [
       data_flow_ops.dynamic_partition(x, select_i, num_partitions=2)[1]
       for x in tensor_list]
@@ -753,8 +783,9 @@ def _batch(tensors, batch_size, keep_input, num_threads=1, capacity=32,
     queue = _which_queue(dynamic_pad)(
         capacity=capacity, dtypes=types, shapes=shapes, shared_name=shared_name)
     _enqueue(queue, tensor_list, num_threads, enqueue_many, keep_input)
-    summary.scalar("fraction_of_%d_full" % capacity,
-                   math_ops.to_float(queue.size()) * (1. / capacity))
+    summary.scalar(
+        "fraction_of_%d_full" % capacity,
+        math_ops.cast(queue.size(), dtypes.float32) * (1. / capacity))
 
     if allow_smaller_final_batch:
       dequeued = queue.dequeue_up_to(batch_size, name=name)
@@ -792,8 +823,9 @@ def _batch_join(tensors_list, batch_size, keep_input, capacity=32,
     queue = _which_queue(dynamic_pad)(
         capacity=capacity, dtypes=types, shapes=shapes, shared_name=shared_name)
     _enqueue_join(queue, tensor_list_list, enqueue_many, keep_input)
-    summary.scalar("fraction_of_%d_full" % capacity,
-                   math_ops.to_float(queue.size()) * (1. / capacity))
+    summary.scalar(
+        "fraction_of_%d_full" % capacity,
+        math_ops.cast(queue.size(), dtypes.float32) * (1. / capacity))
 
     if allow_smaller_final_batch:
       dequeued = queue.dequeue_up_to(batch_size, name=name)
@@ -830,8 +862,8 @@ def _shuffle_batch(tensors, batch_size, capacity, min_after_dequeue,
         capacity=capacity, min_after_dequeue=min_after_dequeue, seed=seed,
         dtypes=types, shapes=shapes, shared_name=shared_name)
     _enqueue(queue, tensor_list, num_threads, enqueue_many, keep_input)
-    full = (math_ops.to_float(
-        math_ops.maximum(0, queue.size() - min_after_dequeue)) *
+    full = (math_ops.cast(
+        math_ops.maximum(0, queue.size() - min_after_dequeue), dtypes.float32) *
             (1. / (capacity - min_after_dequeue)))
     # Note that name contains a '/' at the end so we intentionally do not place
     # a '/' after %s below.
@@ -872,8 +904,8 @@ def _shuffle_batch_join(tensors_list, batch_size, capacity,
         capacity=capacity, min_after_dequeue=min_after_dequeue, seed=seed,
         dtypes=types, shapes=shapes, shared_name=shared_name)
     _enqueue_join(queue, tensor_list_list, enqueue_many, keep_input)
-    full = (math_ops.to_float(
-        math_ops.maximum(0, queue.size() - min_after_dequeue)) *
+    full = (math_ops.cast(
+        math_ops.maximum(0, queue.size() - min_after_dequeue), dtypes.float32) *
             (1. / (capacity - min_after_dequeue)))
     # Note that name contains a '/' at the end so we intentionally do not place
     # a '/' after %s below.
@@ -893,7 +925,11 @@ def _shuffle_batch_join(tensors_list, batch_size, capacity,
 # Batching functions ----------------------------------------------------------
 
 
-@tf_export("train.batch")
+@tf_export(v1=["train.batch"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.batch(batch_size)` (or `padded_batch(...)` if "
+    "`dynamic_pad=True`).")
 def batch(tensors, batch_size, num_threads=1, capacity=32,
           enqueue_many=False, shapes=None, dynamic_pad=False,
           allow_smaller_final_batch=False, shared_name=None, name=None):
@@ -988,7 +1024,11 @@ def batch(tensors, batch_size, num_threads=1, capacity=32,
       name=name)
 
 
-@tf_export("train.maybe_batch")
+@tf_export(v1=["train.maybe_batch"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.filter(...).batch(batch_size)` (or `padded_batch(...)`"
+    " if `dynamic_pad=True`).")
 def maybe_batch(tensors, keep_input, batch_size, num_threads=1, capacity=32,
                 enqueue_many=False, shapes=None, dynamic_pad=False,
                 allow_smaller_final_batch=False, shared_name=None, name=None):
@@ -1041,7 +1081,11 @@ def maybe_batch(tensors, keep_input, batch_size, num_threads=1, capacity=32,
       name=name)
 
 
-@tf_export("train.batch_join")
+@tf_export(v1=["train.batch_join"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.interleave(...).batch(batch_size)` (or "
+    "`padded_batch(...)` if `dynamic_pad=True`).")
 def batch_join(tensors_list, batch_size, capacity=32, enqueue_many=False,
                shapes=None, dynamic_pad=False, allow_smaller_final_batch=False,
                shared_name=None, name=None):
@@ -1049,7 +1093,7 @@ def batch_join(tensors_list, batch_size, capacity=32, enqueue_many=False,
 
   The `tensors_list` argument is a list of tuples of tensors, or a list of
   dictionaries of tensors.  Each element in the list is treated similarly
-  to the `tensors` argument of `tf.train.batch()`.
+  to the `tensors` argument of `tf.compat.v1.train.batch()`.
 
   WARNING: This function is nondeterministic, since it starts a separate thread
   for each tensor.
@@ -1147,7 +1191,11 @@ def batch_join(tensors_list, batch_size, capacity=32, enqueue_many=False,
       name=name)
 
 
-@tf_export("train.maybe_batch_join")
+@tf_export(v1=["train.maybe_batch_join"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.interleave(...).filter(...).batch(batch_size)` (or "
+    "`padded_batch(...)` if `dynamic_pad=True`).")
 def maybe_batch_join(tensors_list, keep_input, batch_size, capacity=32,
                      enqueue_many=False, shapes=None, dynamic_pad=False,
                      allow_smaller_final_batch=False, shared_name=None,
@@ -1200,7 +1248,10 @@ def maybe_batch_join(tensors_list, keep_input, batch_size, capacity=32,
       name=name)
 
 
-@tf_export("train.shuffle_batch")
+@tf_export(v1=["train.shuffle_batch"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.shuffle(min_after_dequeue).batch(batch_size)`.")
 def shuffle_batch(tensors, batch_size, capacity, min_after_dequeue,
                   num_threads=1, seed=None, enqueue_many=False, shapes=None,
                   allow_smaller_final_batch=False, shared_name=None, name=None):
@@ -1236,7 +1287,7 @@ def shuffle_batch(tensors, batch_size, capacity, min_after_dequeue,
 
   ```python
   # Creates batches of 32 images and 32 labels.
-  image_batch, label_batch = tf.train.shuffle_batch(
+  image_batch, label_batch = tf.compat.v1.train.shuffle_batch(
         [single_image, single_label],
         batch_size=32,
         num_threads=4,
@@ -1300,7 +1351,11 @@ def shuffle_batch(tensors, batch_size, capacity, min_after_dequeue,
       name=name)
 
 
-@tf_export("train.maybe_shuffle_batch")
+@tf_export(v1=["train.maybe_shuffle_batch"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.filter(...).shuffle(min_after_dequeue).batch(batch_size)`"
+    ".")
 def maybe_shuffle_batch(tensors, batch_size, capacity, min_after_dequeue,
                         keep_input, num_threads=1, seed=None,
                         enqueue_many=False, shapes=None,
@@ -1360,7 +1415,11 @@ def maybe_shuffle_batch(tensors, batch_size, capacity, min_after_dequeue,
       name=name)
 
 
-@tf_export("train.shuffle_batch_join")
+@tf_export(v1=["train.shuffle_batch_join"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.interleave(...).shuffle(min_after_dequeue).batch"
+    "(batch_size)`.")
 def shuffle_batch_join(tensors_list, batch_size, capacity,
                        min_after_dequeue, seed=None, enqueue_many=False,
                        shapes=None, allow_smaller_final_batch=False,
@@ -1369,7 +1428,7 @@ def shuffle_batch_join(tensors_list, batch_size, capacity,
 
   The `tensors_list` argument is a list of tuples of tensors, or a list of
   dictionaries of tensors.  Each element in the list is treated similarly
-  to the `tensors` argument of `tf.train.shuffle_batch()`.
+  to the `tensors` argument of `tf.compat.v1.train.shuffle_batch()`.
 
   This version enqueues a different list of tensors in different threads.
   It adds the following to the current `Graph`:
@@ -1454,7 +1513,11 @@ def shuffle_batch_join(tensors_list, batch_size, capacity,
       name=name)
 
 
-@tf_export("train.maybe_shuffle_batch_join")
+@tf_export(v1=["train.maybe_shuffle_batch_join"])
+@deprecation.deprecated(
+    None, "Queue-based input pipelines have been replaced by `tf.data`. Use "
+    "`tf.data.Dataset.interleave(...).filter(...).shuffle(min_after_dequeue)"
+    ".batch(batch_size)`.")
 def maybe_shuffle_batch_join(tensors_list, batch_size, capacity,
                              min_after_dequeue, keep_input, seed=None,
                              enqueue_many=False, shapes=None,

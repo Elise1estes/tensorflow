@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_GRAPPLER_INPUTS_TRIVIAL_TEST_GRAPH_INPUT_YIELDER_H_
-#define TENSORFLOW_GRAPPLER_INPUTS_TRIVIAL_TEST_GRAPH_INPUT_YIELDER_H_
+#ifndef TENSORFLOW_CORE_GRAPPLER_INPUTS_TRIVIAL_TEST_GRAPH_INPUT_YIELDER_H_
+#define TENSORFLOW_CORE_GRAPPLER_INPUTS_TRIVIAL_TEST_GRAPH_INPUT_YIELDER_H_
 
 #include <string>
 #include <vector>
@@ -30,7 +30,7 @@ class TrivialTestGraphInputYielder : public InputYielder {
  public:
   TrivialTestGraphInputYielder(int num_stages, int width, int tensor_size,
                                bool insert_queue,
-                               const std::vector<string>& device_names);
+                               const std::vector<std::string>& device_names);
   bool NextItem(GrapplerItem* item) override;
 
  private:
@@ -38,10 +38,10 @@ class TrivialTestGraphInputYielder : public InputYielder {
   const int width_;
   const int tensor_size_;
   const bool insert_queue_;
-  std::vector<string> device_names_;
+  std::vector<std::string> device_names_;
 };
 
 }  // end namespace grappler
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_GRAPPLER_INPUTS_TRIVIAL_TEST_GRAPH_INPUT_YIELDER_H_
+#endif  // TENSORFLOW_CORE_GRAPPLER_INPUTS_TRIVIAL_TEST_GRAPH_INPUT_YIELDER_H_

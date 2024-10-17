@@ -22,6 +22,7 @@ limitations under the License.
 #include <map>
 #include <vector>
 
+#include "tensorflow/core/common_runtime/composite_device.h"
 #include "tensorflow/core/common_runtime/device_set.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/graph/costmodel.h"
@@ -35,6 +36,7 @@ struct SessionOptions;
 // as a key into a state dictionary if it wants to keep state across
 // calls.
 struct GraphOptimizationPassOptions {
+  // Filled in by DirectSession for PRE_PLACEMENT optimizations. Can be empty.
   string session_handle;
   const SessionOptions* session_options = nullptr;
   const CostModel* cost_model = nullptr;
@@ -47,6 +49,11 @@ struct GraphOptimizationPassOptions {
   // workers.
   const DeviceSet* device_set = nullptr;  // Not owned.
 
+  // Maps from a CompositeDevice name to a list of underlying physical
+  // devices.
+  const std::vector<CompositeDevice*>* composite_devices =
+      nullptr;  // Not owned.
+
   // The graph to optimize, for optimization passes that run before
   // partitioning. Null for post-partitioning passes.
   // An optimization pass may replace *graph with a new graph object.
@@ -57,6 +64,24 @@ struct GraphOptimizationPassOptions {
   // Null for pre-partitioning passes.
   std::unordered_map<string, std::unique_ptr<Graph>>* partition_graphs =
       nullptr;
+
+  // Indicator of whether or not the graph was derived from a function.
+  bool is_function_graph = false;
+  // Set when is_function_graph is true. The default device where the function
+  // runs. If nullptr, it runs on the local host.
+  const Device* default_function_device = nullptr;
+  // Set when is_function_graph is true. The function where the graph was
+  // derived. `graph` doesn't contain all the information in the function_def,
+  // e.g. function attributes.
+  const FunctionDef* function_def = nullptr;
+
+  // TODO(b/176491312): Remove this if shape inference on import flag is
+  // removed. If True, allows mlir roundtrip to run shape inference on import.
+  bool shape_inference_on_tfe_dialect_import = true;
+
+  // A unique filename prefix (using hostname, process ID, thread ID and
+  // timestamp) for graph dumps.
+  string debug_filename_prefix;
 };
 
 // Optimization passes are implemented by inheriting from
@@ -65,6 +90,13 @@ class GraphOptimizationPass {
  public:
   virtual ~GraphOptimizationPass() {}
   virtual Status Run(const GraphOptimizationPassOptions& options) = 0;
+  void set_name(const string& name) { name_ = name; }
+  string name() const { return name_; }
+
+ private:
+  // The name of the optimization pass, which is the same as the inherited
+  // class name.
+  string name_;
 };
 
 // The key is a 'phase' number. Phases are executed in increasing
@@ -87,6 +119,10 @@ class OptimizationPassRegistry {
   void Register(Grouping grouping, int phase,
                 std::unique_ptr<GraphOptimizationPass> pass);
 
+  const std::map<Grouping, GraphOptimizationPasses>& groups() {
+    return groups_;
+  }
+
   // Run all passes in grouping, ordered by phase, with the same
   // options.
   Status RunGrouping(Grouping grouping,
@@ -95,8 +131,26 @@ class OptimizationPassRegistry {
   // Returns the global registry of optimization passes.
   static OptimizationPassRegistry* Global();
 
+  // Prints registered optimization passes for debugging.
+  void LogGrouping(Grouping grouping, int vlog_level);
+  void LogAllGroupings(int vlog_level);
+
  private:
   std::map<Grouping, GraphOptimizationPasses> groups_;
+
+  const char* GetGroupingName(Grouping grouping) const {
+    switch (grouping) {
+      case PRE_PLACEMENT:
+        return "pre_placement";
+      case POST_PLACEMENT:
+        return "post_placement";
+      case POST_REWRITE_FOR_EXEC:
+        return "post_rewrite_for_exec";
+      case POST_PARTITIONING:
+        return "post_partitioning";
+    }
+    return "unknown";
+  }
 };
 
 namespace optimization_registration {
@@ -105,7 +159,9 @@ class OptimizationPassRegistration {
  public:
   OptimizationPassRegistration(OptimizationPassRegistry::Grouping grouping,
                                int phase,
-                               std::unique_ptr<GraphOptimizationPass> pass) {
+                               std::unique_ptr<GraphOptimizationPass> pass,
+                               string optimization_pass_name) {
+    pass->set_name(optimization_pass_name);
     OptimizationPassRegistry::Global()->Register(grouping, phase,
                                                  std::move(pass));
   }
@@ -119,11 +175,13 @@ class OptimizationPassRegistration {
 #define REGISTER_OPTIMIZATION_UNIQ_HELPER(ctr, grouping, phase, optimization) \
   REGISTER_OPTIMIZATION_UNIQ(ctr, grouping, phase, optimization)
 
-#define REGISTER_OPTIMIZATION_UNIQ(ctr, grouping, phase, optimization) \
-  static optimization_registration::OptimizationPassRegistration       \
-      register_optimization_##ctr(                                     \
-          grouping, phase,                                             \
-          std::unique_ptr<GraphOptimizationPass>(new optimization))
+#define REGISTER_OPTIMIZATION_UNIQ(ctr, grouping, phase, optimization)         \
+  static ::tensorflow::optimization_registration::OptimizationPassRegistration \
+      register_optimization_##ctr(                                             \
+          grouping, phase,                                                     \
+          ::std::unique_ptr<::tensorflow::GraphOptimizationPass>(              \
+              new optimization()),                                             \
+          #optimization)
 
 }  // namespace tensorflow
 

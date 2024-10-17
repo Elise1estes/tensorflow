@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_DEBUG_NODE_INSERTER_H_
-#define TENSORFLOW_DEBUG_NODE_INSERTER_H_
+#ifndef TENSORFLOW_CORE_DEBUG_DEBUG_GRAPH_UTILS_H_
+#define TENSORFLOW_CORE_DEBUG_DEBUG_GRAPH_UTILS_H_
 
 #include <unordered_map>
 #include <vector>
@@ -71,7 +71,7 @@ class DebugNodeInserter {
   //
   // If the nodes (A, B and C) are located on GPU and the edges from A to B or C
   // is HOST_MEMORY, then the CopyHost op will be used instead of the Copy op.
-  static Status InsertNodes(
+  static absl::Status InsertNodes(
       const protobuf::RepeatedPtrField<DebugTensorWatch>& watches, Graph* graph,
       Device* device);
 
@@ -91,7 +91,7 @@ class DebugNodeInserter {
                                        const string& debug_op_name);
 
  private:
-  static Status CreateCopyNode(
+  static absl::Status CreateCopyNode(
       Graph* graph, const DeviceType device_type, const bool is_host_memory,
       const string& src_node_name, const int src_output, const DataType src_dt,
       const string& tensor_name, const std::vector<string>& debug_ops,
@@ -103,24 +103,22 @@ class DebugNodeInserter {
   // connected with an equal sign ("="). Multiple key-value pairs are separated
   // with semicolons (";"), which optional whitespace in between, e.g.,
   // "DebugNumericSummary(mute_if_healthy=true, lower_bound=-100.0)".
-  static Status ParseDebugOpName(
+  static absl::Status ParseDebugOpName(
       const string& debug_op_name, string* debug_op_name_proper,
       std::unordered_map<string, string>* attributes);
 
-  static Status SetDebugNodeAttributes(
+  static absl::Status SetDebugNodeAttributes(
       Node* debug_node, const std::unordered_map<string, string>& attributes);
 
-  static Status CreateDebugNode(Graph* graph, const Device& device,
-                                const string& src_copy_node_name,
-                                const DataType src_dt,
-                                const string& tensor_name,
-                                const std::vector<string>& debug_urls,
-                                const int debug_op_num,
-                                const string& debug_op_name, Node** debug_node);
+  static absl::Status CreateDebugNode(
+      Graph* graph, const Device& device, const string& src_copy_node_name,
+      const DataType src_dt, const string& tensor_name,
+      const std::vector<string>& debug_urls, const int debug_op_num,
+      const string& debug_op_name, Node** debug_node);
   // TODO(cais): Cut down the number of args to this method.
 
   friend class DebugGraphUtilsTest;
 };
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_DEBUG_NODE_INSERTER_H_
+#endif  // TENSORFLOW_CORE_DEBUG_DEBUG_GRAPH_UTILS_H_

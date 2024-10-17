@@ -18,9 +18,12 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_TF2XLA_KERNELS_CWISE_OPS_H_
 #define TENSORFLOW_COMPILER_TF2XLA_KERNELS_CWISE_OPS_H_
 
+#include <utility>
+#include <vector>
+
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
-#include "tensorflow/compiler/xla/client/client_library.h"
-#include "tensorflow/compiler/xla/client/computation_builder.h"
+#include "xla/client/client_library.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/util/bcast.h"
 
@@ -30,7 +33,7 @@ namespace tensorflow {
 // inputs that can be broadcast to the same shape. The base class
 // contains pure virtual methods to override: description is a textual
 // description of the operation; and Computation adds the
-// implementation of the operation to a xla::ComputationBuilder. For most
+// implementation of the operation to a xla::XlaBuilder. For most
 // arithmetic Ops XLA handles the broadcasting automatically given the input
 // tensors.
 class XlaBinaryOp : public XlaOpKernel {
@@ -41,7 +44,7 @@ class XlaBinaryOp : public XlaOpKernel {
     OP_REQUIRES(ctx, lhs == rhs,
                 errors::InvalidArgument("Input types of binary op must match"));
   }
-  ~XlaBinaryOp() override {}
+  ~XlaBinaryOp() override = default;
 
   // Implement the (tensor,tensor)->tensor lambda that should be
   // applied to the inputs. The desired computation should be added to
@@ -55,23 +58,19 @@ class XlaBinaryOp : public XlaOpKernel {
   // higher-rank input should be matched when broadcasting the
   // lower-rank input. See comment below and the documentation on broadcasting
   // in the XLA documentation.
-  virtual xla::ComputationDataHandle Computation(
-      XlaOpKernelContext* ctx, const xla::ComputationDataHandle& lhs,
-      const gtl::ArraySlice<int64>& lhs_shape,
-      const xla::ComputationDataHandle& rhs,
-      const gtl::ArraySlice<int64>& rhs_shape, const BCast& broadcast_helper,
-      const std::vector<int64>& extend_dimensions) = 0;
+  virtual xla::XlaOp Computation(
+      XlaOpKernelContext* ctx, const xla::XlaOp& lhs,
+      const absl::Span<const int64_t>& lhs_shape, const xla::XlaOp& rhs,
+      const absl::Span<const int64_t>& rhs_shape, const BCast& broadcast_helper,
+      const std::vector<int64_t>& extend_dimensions) = 0;
 
   void Compile(XlaOpKernelContext* ctx) override;
 
   // Helper function that performs the broadcasting described by
   // 'broadcast_helper', yielding arguments 'lhs' and 'rhs' that have the same
   // shape.
-  static std::pair<xla::ComputationDataHandle, xla::ComputationDataHandle>
-  Broadcast(xla::ComputationBuilder* builder,
-            const xla::ComputationDataHandle& lhs,
-            const xla::ComputationDataHandle& rhs,
-            const BCast& broadcast_helper);
+  static std::pair<xla::XlaOp, xla::XlaOp> Broadcast(
+      xla::XlaOp lhs, xla::XlaOp rhs, const BCast& broadcast_helper);
 };
 
 }  // namespace tensorflow

@@ -48,7 +48,7 @@ void PrintNodeInfo(const NodeDef* node) {
     if (shape_status.ok()) {
       shape_description = PartialTensorShape(shape_proto).DebugString();
     } else {
-      shape_description = shape_status.error_message();
+      shape_description = shape_status.message();
     }
   }
   DataType dtype = DT_INVALID;
@@ -77,7 +77,7 @@ void PrintBenchmarkUsage(const std::vector<const NodeDef*>& placeholders,
       dtype = node->attr().at("dtype").type();
     }
     input_layer_types.push_back(DataTypeString(dtype));
-    std::vector<int64> sizes;
+    std::vector<int64_t> sizes;
     PartialTensorShape shape;
     if (node->attr().count("shape")) {
       TensorShapeProto shape_proto = node->attr().at("shape").shape();
@@ -94,7 +94,7 @@ void PrintBenchmarkUsage(const std::vector<const NodeDef*>& placeholders,
       for (int i = 0; i < shape.dims(); ++i) {
         sizes.push_back(shape.dim_size(i));
       }
-      sizes_string = str_util::Join(sizes, ",");
+      sizes_string = absl::StrJoin(sizes, ",");
     }
     input_layer_shapes.push_back(sizes_string);
   }
@@ -103,10 +103,10 @@ void PrintBenchmarkUsage(const std::vector<const NodeDef*>& placeholders,
   for (const NodeDef* node : outputs) {
     output_layers.push_back(node->name());
   }
-  string input_layer_value = str_util::Join(input_layers, ",");
-  string input_layer_type_value = str_util::Join(input_layer_types, ",");
-  string input_layer_shape_value = str_util::Join(input_layer_shapes, ":");
-  string output_layer_value = str_util::Join(output_layers, ",");
+  string input_layer_value = absl::StrJoin(input_layers, ",");
+  string input_layer_type_value = absl::StrJoin(input_layer_types, ",");
+  string input_layer_shape_value = absl::StrJoin(input_layer_shapes, ":");
+  string output_layer_value = absl::StrJoin(output_layers, ",");
 
   std::cout << "To use with tensorflow/tools/benchmark:benchmark_model try "
                "these arguments:"
@@ -126,7 +126,7 @@ Status PrintStructure(const GraphDef& graph) {
   TF_RETURN_IF_ERROR(SortByExecutionOrder(graph, &sorted_graph));
   for (const NodeDef& node : sorted_graph.node()) {
     std::cout << node.name() << " (" << node.op() << "): ["
-              << str_util::Join(node.input(), ", ") << "]";
+              << absl::StrJoin(node.input(), ", ") << "]";
     if (node.op() == "Const") {
       Tensor tensor;
       if (node.attr().count("value") &&
@@ -138,7 +138,7 @@ Status PrintStructure(const GraphDef& graph) {
     }
     std::cout << std::endl;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status SummarizeGraph(const GraphDef& graph, const string& graph_path,
@@ -197,8 +197,8 @@ Status SummarizeGraph(const GraphDef& graph, const string& graph_path,
     std::cout << std::endl;
   }
 
-  int64 const_parameter_count = 0;
-  int64 variable_parameter_count = 0;
+  int64_t const_parameter_count = 0;
+  int64_t variable_parameter_count = 0;
   int control_edge_count = 0;
   std::map<string, int> device_counts;
   for (const NodeDef& node : graph.node()) {
@@ -284,7 +284,7 @@ Status SummarizeGraph(const GraphDef& graph, const string& graph_path,
     TF_RETURN_IF_ERROR(PrintStructure(graph));
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 int ParseFlagsAndSummarizeGraph(int argc, char* argv[]) {
@@ -318,7 +318,7 @@ int ParseFlagsAndSummarizeGraph(int argc, char* argv[]) {
   Status load_status = LoadTextOrBinaryGraphFile(in_graph, &graph_def);
   if (!load_status.ok()) {
     LOG(ERROR) << "Loading graph '" << in_graph << "' failed with "
-               << load_status.error_message();
+               << load_status.message();
     LOG(ERROR) << usage;
     return -1;
   }
@@ -326,7 +326,7 @@ int ParseFlagsAndSummarizeGraph(int argc, char* argv[]) {
   Status summarize_result =
       SummarizeGraph(graph_def, in_graph, print_structure);
   if (!summarize_result.ok()) {
-    LOG(ERROR) << summarize_result.error_message() << "\n" << usage;
+    LOG(ERROR) << summarize_result.message() << "\n" << usage;
     return -1;
   }
 

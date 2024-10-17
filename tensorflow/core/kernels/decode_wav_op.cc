@@ -40,7 +40,7 @@ class DecodeWavOp : public OpKernel {
     OP_REQUIRES(context, TensorShapeUtils::IsScalar(contents.shape()),
                 errors::InvalidArgument("contents must be scalar, got shape ",
                                         contents.shape().DebugString()));
-    const string wav_string = contents.scalar<string>()();
+    const string& wav_string = contents.scalar<tstring>()();
     OP_REQUIRES(context, wav_string.size() <= std::numeric_limits<int>::max(),
                 errors::InvalidArgument("WAV contents are too large for int: ",
                                         wav_string.size()));
@@ -54,13 +54,13 @@ class DecodeWavOp : public OpKernel {
                        wav_string, &decoded_samples, &decoded_sample_count,
                        &decoded_channel_count, &decoded_sample_rate));
 
-    int32 output_sample_count;
+    int32_t output_sample_count;
     if (desired_samples_ == -1) {
       output_sample_count = decoded_sample_count;
     } else {
       output_sample_count = desired_samples_;
     }
-    int32 output_channel_count;
+    int32_t output_channel_count;
     if (desired_channels_ == -1) {
       output_channel_count = decoded_channel_count;
     } else {

@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_TRANSPOSE_OP_H_
-#define TENSORFLOW_KERNELS_TRANSPOSE_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_TRANSPOSE_OP_H_
+#define TENSORFLOW_CORE_KERNELS_TRANSPOSE_OP_H_
 
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -28,8 +28,9 @@ class TransposeOp : public OpKernel {
   void Compute(OpKernelContext* ctx) override;
 
  protected:
-  virtual Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                             gtl::ArraySlice<int32> perm, Tensor* out) = 0;
+  virtual absl::Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                                   absl::Span<const int32> perm,
+                                   Tensor* out) = 0;
   virtual bool IsConjugate() const { return false; }
 };
 
@@ -38,11 +39,11 @@ class TransposeCpuOp : public TransposeOp {
   explicit TransposeCpuOp(OpKernelConstruction* ctx) : TransposeOp(ctx) {}
 
  protected:
-  Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                     gtl::ArraySlice<int32> perm, Tensor* out) override;
+  absl::Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                           absl::Span<const int32> perm, Tensor* out) override;
 };
 
-#ifdef INTEL_MKL
+#if defined(INTEL_MKL)
 class MklTransposeCpuOp : public TransposeOp {
  public:
   explicit MklTransposeCpuOp(OpKernelConstruction* ctx) : TransposeOp(ctx) {}
@@ -58,20 +59,10 @@ class TransposeGpuOp : public TransposeOp {
   explicit TransposeGpuOp(OpKernelConstruction* ctx) : TransposeOp(ctx) {}
 
  protected:
-  Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                     gtl::ArraySlice<int32> perm, Tensor* out) override;
+  absl::Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                           absl::Span<const int32> perm, Tensor* out) override;
 };
 
-#ifdef TENSORFLOW_USE_SYCL
-class TransposeSyclOp : public TransposeOp {
- public:
-  explicit TransposeSyclOp(OpKernelConstruction* ctx) : TransposeOp(ctx) {}
-
- protected:
-  Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                     gtl::ArraySlice<int32> perm, Tensor* out) override;
-};
-#endif  // TENSORFLOW_USE_SYCL
 
 // Conjugating transpose ops.
 class ConjugateTransposeCpuOp : public TransposeOp {
@@ -80,12 +71,12 @@ class ConjugateTransposeCpuOp : public TransposeOp {
       : TransposeOp(ctx) {}
 
  protected:
-  Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                     gtl::ArraySlice<int32> perm, Tensor* out) override;
+  absl::Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                           absl::Span<const int32> perm, Tensor* out) override;
   bool IsConjugate() const override { return true; }
 };
 
-#ifdef INTEL_MKL
+#if defined(INTEL_MKL)
 class MklConjugateTransposeCpuOp : public TransposeOp {
  public:
   explicit MklConjugateTransposeCpuOp(OpKernelConstruction* ctx)
@@ -104,24 +95,12 @@ class ConjugateTransposeGpuOp : public TransposeOp {
       : TransposeOp(ctx) {}
 
  protected:
-  Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                     gtl::ArraySlice<int32> perm, Tensor* out) override;
+  absl::Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                           absl::Span<const int32> perm, Tensor* out) override;
   bool IsConjugate() const override { return true; }
 };
 
-#ifdef TENSORFLOW_USE_SYCL
-class ConjugateTransposeSyclOp : public TransposeOp {
- public:
-  explicit ConjugateTransposeSyclOp(OpKernelConstruction* ctx)
-      : TransposeOp(ctx) {}
-
- protected:
-  Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                     gtl::ArraySlice<int32> perm, Tensor* out) override;
-  bool IsConjugate() const override { return true; }
-};
-#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_TRANSPOSE_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_TRANSPOSE_OP_H_

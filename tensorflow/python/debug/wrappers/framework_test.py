@@ -13,12 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 """Framework of debug-wrapped sessions."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
-import shutil
 import tempfile
 import threading
 
@@ -34,6 +29,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
+from tensorflow.python.lib.io import file_io
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 # Import resource_variable_ops for the variables-to-tensor implicit conversion.
@@ -141,6 +137,7 @@ class TestDebugWrapperSessionBadAction(framework.BaseDebugWrapperSession):
     return framework.OnRunEndResponse()
 
 
+@test_util.run_v1_only("Sessions are not available in TF 2.x")
 class DebugWrapperSessionTest(test_util.TensorFlowTestCase):
 
   def _no_rewrite_session_config(self):
@@ -196,7 +193,7 @@ class DebugWrapperSessionTest(test_util.TensorFlowTestCase):
   def tearDown(self):
     # Tear down temporary dump directory.
     if os.path.isdir(self._dump_root):
-      shutil.rmtree(self._dump_root)
+      file_io.delete_recursively(self._dump_root)
 
     ops.reset_default_graph()
 
@@ -272,11 +269,11 @@ class DebugWrapperSessionTest(test_util.TensorFlowTestCase):
     """Attempt to wrap a non-Session-type object should cause an exception."""
 
     wrapper = TestDebugWrapperSessionBadAction(self._sess)
-    with self.assertRaisesRegexp(TypeError, "Expected type .*; got type .*"):
+    with self.assertRaisesRegex(TypeError, "Expected type .*; got type .*"):
       TestDebugWrapperSessionBadAction(wrapper)
 
   def testSessionInitBadActionValue(self):
-    with self.assertRaisesRegexp(
+    with self.assertRaisesRegex(
         ValueError, "Invalid OnSessionInitAction value: nonsense_action"):
       TestDebugWrapperSessionBadAction(
           self._sess, bad_init_action="nonsense_action")
@@ -285,7 +282,7 @@ class DebugWrapperSessionTest(test_util.TensorFlowTestCase):
     wrapper = TestDebugWrapperSessionBadAction(
         self._sess, bad_run_start_action="nonsense_action")
 
-    with self.assertRaisesRegexp(
+    with self.assertRaisesRegex(
         ValueError, "Invalid OnRunStartAction value: nonsense_action"):
       wrapper.run(self._s)
 
@@ -295,7 +292,7 @@ class DebugWrapperSessionTest(test_util.TensorFlowTestCase):
     wrapper = TestDebugWrapperSessionBadAction(
         self._sess, bad_debug_urls="file://foo")
 
-    with self.assertRaisesRegexp(TypeError, "Expected type .*; got type .*"):
+    with self.assertRaisesRegex(TypeError, "Expected type .*; got type .*"):
       wrapper.run(self._s)
 
   def testErrorDuringRun(self):
@@ -321,9 +318,9 @@ class DebugWrapperSessionTest(test_util.TensorFlowTestCase):
                                       self._observer)
 
     with wrapper as sess:
-      self.assertAllClose([[3.0], [4.0]], self._s.eval())
+      self.assertAllClose([[3.0], [4.0]], self._s)
       self.assertEqual(1, self._observer["on_run_start_count"])
-      self.assertEqual(self._s, self._observer["run_fetches"])
+      self.assertEqual([self._s], self._observer["run_fetches"])
       self.assertEqual(1, self._observer["on_run_end_count"])
 
       self.assertAllClose(
@@ -339,8 +336,8 @@ class DebugWrapperSessionTest(test_util.TensorFlowTestCase):
 
     with wrapper.as_default():
       foo = constant_op.constant(42, name="foo")
-      self.assertEqual(42, foo.eval())
-      self.assertEqual(foo, self._observer["run_fetches"])
+      self.assertEqual(42, self.evaluate(foo))
+      self.assertEqual([foo], self._observer["run_fetches"])
 
   def testWrapperShouldSupportSessionClose(self):
     wrapper = TestDebugWrapperSession(self._sess, self._dump_root,

@@ -13,16 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATNFORM_CLOUD_DNS_CACHE_H_
-#define TENSORFLOW_PLATNFORM_CLOUD_DNS_CACHE_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_CLOUD_GCS_DNS_CACHE_H_
+#define TENSORFLOW_CORE_PLATFORM_CLOUD_GCS_DNS_CACHE_H_
 
+#include <memory>
 #include <random>
+#include <vector>
 
 #include "tensorflow/core/platform/cloud/http_request.h"
 #include "tensorflow/core/platform/env.h"
 
 namespace tensorflow {
-const int64 kDefaultRefreshRateSecs = 60;
+const int64_t kDefaultRefreshRateSecs = 60;
 
 // DnsCache is a userspace DNS cache specialized for the GCS filesystem.
 //
@@ -36,10 +38,10 @@ class GcsDnsCache {
   GcsDnsCache() : GcsDnsCache(kDefaultRefreshRateSecs) {}
 
   // Constructs a GcsDnsCache with the specified refresh rate.
-  GcsDnsCache(int64 refresh_rate_secs)
+  GcsDnsCache(int64_t refresh_rate_secs)
       : GcsDnsCache(Env::Default(), refresh_rate_secs) {}
 
-  GcsDnsCache(Env* env, int64 refresh_rate_secs);
+  GcsDnsCache(Env* env, int64_t refresh_rate_secs);
 
   ~GcsDnsCache() {
     mutex_lock l(mu_);
@@ -62,16 +64,16 @@ class GcsDnsCache {
   mutex mu_;
   Env* env_;
   condition_variable cond_var_;
-  std::default_random_engine random_ GUARDED_BY(mu_);
-  bool started_ GUARDED_BY(mu_) = false;
-  bool cancelled_ GUARDED_BY(mu_) = false;
-  std::unique_ptr<Thread> worker_ GUARDED_BY(mu_);  // After mutable vars.
-  const int64 refresh_rate_secs_;
+  std::default_random_engine random_ TF_GUARDED_BY(mu_);
+  bool started_ TF_GUARDED_BY(mu_) = false;
+  bool cancelled_ TF_GUARDED_BY(mu_) = false;
+  std::unique_ptr<Thread> worker_ TF_GUARDED_BY(mu_);  // After mutable vars.
+  const int64_t refresh_rate_secs_;
 
   // Entries in this vector correspond to entries in kCachedDomainNames.
-  std::vector<std::vector<string>> addresses_ GUARDED_BY(mu_);
+  std::vector<std::vector<string>> addresses_ TF_GUARDED_BY(mu_);
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_PLATNFORM_CLOUD_DNS_CACHE_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_CLOUD_GCS_DNS_CACHE_H_

@@ -16,29 +16,26 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_WORKER_SERVICE_IMPL_H_
 #define TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_WORKER_SERVICE_IMPL_H_
 
-#include "grpc++/impl/codegen/async_stream.h"
-#include "grpc++/impl/codegen/async_unary_call.h"
-#include "grpc++/impl/codegen/proto_utils.h"
-#include "grpc++/impl/codegen/rpc_method.h"
-#include "grpc++/impl/codegen/service_type.h"
-#include "grpc++/impl/codegen/status.h"
-#include "grpc++/impl/codegen/stub_options.h"
-#include "grpc++/impl/codegen/sync_stream.h"
-#include "grpc++/support/byte_buffer.h"
+#include "grpcpp/impl/codegen/async_stream.h"
+#include "grpcpp/impl/codegen/async_unary_call.h"
+#include "grpcpp/impl/codegen/proto_utils.h"
+#include "grpcpp/impl/codegen/rpc_method.h"
+#include "grpcpp/impl/codegen/service_type.h"
+#include "grpcpp/impl/codegen/status.h"
+#include "grpcpp/impl/codegen/stub_options.h"
+#include "grpcpp/impl/codegen/sync_stream.h"
+#include "grpcpp/support/byte_buffer.h"
 
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
 #include "tensorflow/core/distributed_runtime/tensor_coding.h"
 #include "tensorflow/core/protobuf/worker.pb.h"
 
 namespace grpc {
-class CompletionQueue;
-class Channel;
-class RpcService;
-class ServerCompletionQueue;
-class ServerContext;
 
 // Support parsing/unparsing of tensorflow::TensorResponse.
 // Wire-format is identical to RecvTensorResponse.
+// This is specializing an existing template, so it's okay to do this in a
+// namespace that we don't own.
 template <>
 class SerializationTraits<tensorflow::TensorResponse> {
  public:
@@ -59,13 +56,14 @@ class SerializationTraits<tensorflow::TensorResponse> {
       if (!s.ok()) {
         result = Status(StatusCode::INTERNAL,
                         ::tensorflow::strings::StrCat(
-                            "TensorResponse parse error", s.ToString()));
+                            "TensorResponse parse error", s.message()));
       }
     }
     buffer->Clear();
     return result;
   }
 };
+
 }  // namespace grpc
 
 namespace tensorflow {
@@ -81,11 +79,17 @@ enum class GrpcWorkerMethod {
   kCleanupGraph,
   kCleanupAll,
   kRecvTensor,
+  kRecvBuf,
   kLogging,
   kTracing,
+  kCompleteGroup,
+  kCompleteInstance,
+  kGetStepSequence,
+  kMarkRecvFinished,
 };
+
 static const int kGrpcNumWorkerMethods =
-    static_cast<int>(GrpcWorkerMethod::kTracing) + 1;
+    static_cast<int>(GrpcWorkerMethod::kMarkRecvFinished) + 1;
 
 const char* GrpcWorkerMethodName(GrpcWorkerMethod id);
 

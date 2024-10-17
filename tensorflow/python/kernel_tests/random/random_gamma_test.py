@@ -14,18 +14,16 @@
 # ==============================================================================
 """Tests for tensorflow.ops.random_ops.random_gamma."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import math
-
 import numpy as np
-from six.moves import xrange  # pylint: disable=redefined-builtin
 
+from tensorflow.python.eager import context
+from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import random_seed
+from tensorflow.python.framework import test_util
+from tensorflow.python.kernel_tests.random import util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
@@ -40,22 +38,32 @@ class RandomGammaTest(test.TestCase):
     np.random.seed(137)
     random_seed.set_random_seed(137)
 
-  def _Sampler(self, num, alpha, beta, dtype, use_gpu, seed=None):
+  def _Sampler(self, num, alpha, beta, dtype, use_gpu=True, seed=None):
 
     def func():
-      with self.test_session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
+      with self.session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
         rng = random_ops.random_gamma(
             [num], alpha, beta=beta, dtype=dtype, seed=seed)
         ret = np.empty([10, num])
-        for i in xrange(10):
-          ret[i, :] = sess.run(rng)
+        for i in range(10):
+          ret[i, :] = self.evaluate(rng)
       return ret
 
     return func
 
+  def testNpDtypes(self):
+    self.evaluate(random_ops.random_gamma(
+        [5], alpha=np.ones([2, 1, 3]), beta=np.ones([3]), dtype=np.float32))
+
+  def testEmptySamplingNoError(self):
+    self.evaluate(random_ops.random_gamma(
+        [5], alpha=np.ones([2, 0, 3]), beta=np.ones([3]), dtype=dtypes.float32))
+
+  @test_util.run_deprecated_v1
   def testMomentsFloat32(self):
     self._testMoments(dtypes.float32)
 
+  @test_util.run_deprecated_v1
   def testMomentsFloat64(self):
     self._testMoments(dtypes.float64)
 
@@ -65,16 +73,6 @@ class RandomGammaTest(test.TestCase):
     except ImportError as e:
       tf_logging.warn("Cannot test moments: %s" % e)
       return
-
-    # Check the given array of samples matches the given theoretical moment
-    # function at different orders. The test is considered passing if the
-    # z-tests of all statistical moments are all below z_limit.
-    # Parameters:
-    #   max_moments: the largest moments of the distribution to be tested
-    #   stride: the distance between samples to check for statistical properties
-    #       0 means the n-th moment of each sample
-    #       any other strides tests for spatial correlation between samples;
-    #   z_limit: the maximum z-test we would consider the test to pass;
 
     # The moments test is a z-value test.  This is the largest z-value
     # we want to tolerate. Since the z-test approximates a unit normal
@@ -89,48 +87,14 @@ class RandomGammaTest(test.TestCase):
         for scale in 9, 17:
           # Gamma moments only defined for values less than the scale param.
           max_moment = min(6, scale // 2)
-          sampler = self._Sampler(
-              20000, alpha, 1 / scale, dt, use_gpu=False, seed=12345)
-          moments = [0] * (max_moment + 1)
-          moments_sample_count = [0] * (max_moment + 1)
-          x = np.array(sampler().flat)  # sampler does 10x samples
-          for k in range(len(x)):
-            moment = 1.
-            for i in range(max_moment + 1):
-              index = k + i * stride
-              if index >= len(x):
-                break
-              moments[i] += moment
-              moments_sample_count[i] += 1
-              moment *= x[index]
-          for i in range(max_moment + 1):
-            moments[i] /= moments_sample_count[i]
-          for i in range(1, max_moment + 1):
-            g = stats.gamma(alpha, scale=scale)
-            if stride == 0:
-              moments_i_mean = g.moment(i)
-              moments_i_squared = g.moment(2 * i)
-            else:
-              moments_i_mean = pow(g.moment(1), i)
-              moments_i_squared = pow(g.moment(2), i)
-            # Calculate moment variance safely:
-            # This is just
-            #  (moments_i_squared - moments_i_mean**2) / moments_sample_count[i]
-            normalized_moments_i_var = (
-                moments_i_mean / moments_sample_count[i] *
-                (moments_i_squared / moments_i_mean - moments_i_mean))
-            # Assume every operation has a small numerical error.
-            # It takes i multiplications to calculate one i-th moment.
-            error_per_moment = i * np.finfo(dt.as_numpy_dtype).eps
-            total_variance = (normalized_moments_i_var + error_per_moment)
-            tiny = np.finfo(dt.as_numpy_dtype).tiny
-            self.assertGreaterEqual(total_variance, 0)
-            if total_variance < tiny:
-              total_variance = tiny
-            # z_test is approximately a unit normal distribution.
-            z_test = abs(
-                (moments[i] - moments_i_mean) / math.sqrt(total_variance))
-            self.assertLess(z_test, z_limit)
+          sampler = self._Sampler(20000, alpha, 1 / scale, dt, seed=12345)
+          z_scores = util.test_moment_matching(
+              sampler(),
+              max_moment,
+              stats.gamma(alpha, scale=scale),
+              stride=stride,
+          )
+          self.assertAllLess(z_scores, z_limit)
 
   def _testZeroDensity(self, alpha):
     """Zero isn't in the support of the gamma distribution.
@@ -152,16 +116,14 @@ class RandomGammaTest(test.TestCase):
         dtypes.float64: stats.gamma(alpha).cdf(np.finfo(np.float64).tiny)
     }
     failures = []
-    for use_gpu in [False, True]:
-      for dt in dtypes.float16, dtypes.float32, dtypes.float64:
-        sampler = self._Sampler(
-            10000, alpha, 1.0, dt, use_gpu=use_gpu, seed=12345)
-        x = sampler()
-        allowable = allowable_zeros[dt] * x.size
-        allowable = allowable * 2 if allowable < 10 else allowable * 1.05
-        if np.sum(x <= 0) > allowable:
-          failures += [(use_gpu, dt)]
-      self.assertEqual([], failures)
+    for dt in dtypes.float16, dtypes.float32, dtypes.float64:
+      sampler = self._Sampler(10000, alpha, 1.0, dt, seed=12345)
+      x = sampler()
+      allowable = allowable_zeros[dt] * x.size
+      allowable = allowable * 2 if allowable < 10 else allowable * 1.05
+      if np.sum(x <= 0) > allowable:
+        failures += [dt]
+    self.assertEqual([], failures)
 
   def testNonZeroSmallShape(self):
     self._testZeroDensity(0.01)
@@ -173,23 +135,18 @@ class RandomGammaTest(test.TestCase):
   # to see the same sequence of values. Will catch buggy
   # implementations which uses the same random number seed.
   def testDistinct(self):
-    for use_gpu in [False, True]:
-      for dt in dtypes.float16, dtypes.float32, dtypes.float64:
-        sampler = self._Sampler(1000, 2.0, 1.0, dt, use_gpu=use_gpu)
-        x = sampler()
-        y = sampler()
-        # Number of different samples.
-        count = (x == y).sum()
-        count_limit = 20 if dt == dtypes.float16 else 10
-        if count >= count_limit:
-          print(use_gpu, dt)
-          print("x = ", x)
-          print("y = ", y)
-          print("count = ", count)
-        self.assertLess(count, count_limit)
+    for dt in dtypes.float16, dtypes.float32, dtypes.float64:
+      sampler = self._Sampler(1000, 2.0, 1.0, dt)
+      x = sampler()
+      y = sampler()
+      # Number of different samples.
+      count = (x == y).sum()
+      count_limit = 20 if dt == dtypes.float16 else 10
+      self.assertLess(count, count_limit)
 
   # Checks that the CPU and GPU implementation returns the same results,
   # given the same random seed
+  @test_util.run_deprecated_v1
   def testCPUGPUMatch(self):
     for dt in dtypes.float16, dtypes.float32, dtypes.float64:
       results = {}
@@ -202,12 +159,12 @@ class RandomGammaTest(test.TestCase):
         self.assertAllClose(results[False], results[True], rtol=1e-6, atol=1e-6)
 
   def testSeed(self):
-    for use_gpu in [False, True]:
-      for dt in dtypes.float16, dtypes.float32, dtypes.float64:
-        sx = self._Sampler(1000, 0.0, 1.0, dt, use_gpu=use_gpu, seed=345)
-        sy = self._Sampler(1000, 0.0, 1.0, dt, use_gpu=use_gpu, seed=345)
-        self.assertAllEqual(sx(), sy())
+    for dt in dtypes.float16, dtypes.float32, dtypes.float64:
+      sx = self._Sampler(1000, 0.0, 1.0, dt, seed=345)
+      sy = self._Sampler(1000, 0.0, 1.0, dt, seed=345)
+      self.assertAllEqual(sx(), sy())
 
+  @test_util.run_deprecated_v1
   def testNoCSE(self):
     """CSE = constant subexpression eliminator.
 
@@ -215,13 +172,13 @@ class RandomGammaTest(test.TestCase):
     merged.
     """
     for dtype in dtypes.float16, dtypes.float32, dtypes.float64:
-      for use_gpu in [False, True]:
-        with self.test_session(use_gpu=use_gpu):
-          rnd1 = random_ops.random_gamma([24], 2.0, dtype=dtype)
-          rnd2 = random_ops.random_gamma([24], 2.0, dtype=dtype)
-          diff = rnd2 - rnd1
-          self.assertGreater(np.linalg.norm(diff.eval()), 0.1)
+      with self.cached_session():
+        rnd1 = random_ops.random_gamma([24], 2.0, dtype=dtype)
+        rnd2 = random_ops.random_gamma([24], 2.0, dtype=dtype)
+        diff = rnd2 - rnd1
+        self.assertGreater(np.linalg.norm(diff.eval()), 0.1)
 
+  @test_util.run_deprecated_v1
   def testShape(self):
     # Fully known shape.
     rnd = random_ops.random_gamma([150], 2.0)
@@ -253,14 +210,25 @@ class RandomGammaTest(test.TestCase):
     rnd = random_ops.random_gamma([50], array_ops.placeholder(dtypes.float32))
     self.assertIs(None, rnd.get_shape().ndims)
 
+  @test_util.run_deprecated_v1
   def testPositive(self):
     n = int(10e3)
     for dt in [dtypes.float16, dtypes.float32, dtypes.float64]:
-      with self.test_session():
+      with self.cached_session():
         x = random_ops.random_gamma(shape=[n], alpha=0.001, dtype=dt, seed=0)
         self.assertEqual(0, math_ops.reduce_sum(math_ops.cast(
             math_ops.less_equal(x, 0.), dtype=dtypes.int64)).eval())
 
+  def testSizeTooLarge(self):
+    # Grappler asserts on size overflow, so this error is only caught when
+    # running eagerly.
+    if context.executing_eagerly():
+      with self.assertRaisesRegex((ValueError, errors.InvalidArgumentError),
+                                  "overflow"):
+        rate = constant_op.constant(1.0, shape=(4, 4, 4, 4, 4))
+        self.evaluate(
+            random_ops.random_gamma(
+                shape=[46902, 51188, 34063, 59195], alpha=rate))
 
 if __name__ == "__main__":
   test.main()

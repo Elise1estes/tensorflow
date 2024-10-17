@@ -14,27 +14,22 @@
 # ==============================================================================
 """Operators for manipulating tensors.
 
-@@roll
+API docstring: tensorflow.manip
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.ops import gen_manip_ops as _gen_manip_ops
-from tensorflow.python.util.all_util import remove_undocumented
+from tensorflow.python.util import deprecation
+from tensorflow.python.util import dispatch
 from tensorflow.python.util.tf_export import tf_export
 
 
 # pylint: disable=protected-access
-@tf_export('manip.roll')
-def roll(input, shift, axis):  # pylint: disable=redefined-builtin
-  return _gen_manip_ops.roll(input, shift, axis)
+@tf_export('roll', v1=['roll', 'manip.roll'])
+@dispatch.add_dispatch_support
+@deprecation.deprecated_endpoints('manip.roll')
+def roll(input, shift, axis, name=None):  # pylint: disable=redefined-builtin
+  return _gen_manip_ops.roll(input, shift, axis, name)
 
 
 roll.__doc__ = _gen_manip_ops.roll.__doc__
 # pylint: enable=protected-access
-
-_allowed_symbols = ['roll']
-
-remove_undocumented(__name__, allowed_exception_list=_allowed_symbols)

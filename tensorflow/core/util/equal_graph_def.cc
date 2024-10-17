@@ -15,8 +15,11 @@ limitations under the License.
 
 #include "tensorflow/core/util/equal_graph_def.h"
 
+#include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
+
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/graph.pb.h"
@@ -145,7 +148,7 @@ bool EqualNodeDef(const NodeDef& actual, const NodeDef& expected, string* diff,
 
   int first_control_input = actual.input_size();
   for (int i = 0; i < actual.input_size(); ++i) {
-    if (str_util::StartsWith(actual.input(i), "^")) {
+    if (absl::StartsWith(actual.input(i), "^")) {
       first_control_input = i;
       break;
     }
@@ -241,7 +244,7 @@ uint64 NodeDefHash(const NodeDef& ndef, const EqualGraphDefOptions& options) {
   // Normal inputs. Order important.
   int first_control_input = ndef.input_size();
   for (int i = 0; i < ndef.input_size(); ++i) {
-    if (str_util::StartsWith(ndef.input(i), "^")) {
+    if (absl::StartsWith(ndef.input(i), "^")) {
       first_control_input = i;
       break;
     }

@@ -14,10 +14,13 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/framework/common_shape_fns.h"
+#include "tensorflow/core/framework/dataset_stateful_op_allowlist.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
 
 namespace tensorflow {
+
+using shape_inference::InferenceContext;
 
 REGISTER_OP("Assert")
     .Input("condition: bool")
@@ -26,6 +29,8 @@ REGISTER_OP("Assert")
     .Attr("T: list(type)")
     .Attr("summarize: int = 3")
     .SetShapeFn(shape_inference::NoOutputs);
+
+ALLOW_STATEFUL_OP_FOR_DATASET_FUNCTIONS("Assert");
 
 REGISTER_OP("Print")
     .Input("input: T")
@@ -38,6 +43,26 @@ REGISTER_OP("Print")
     .Attr("first_n: int = -1")
     .Attr("summarize: int = 3")
     .SetShapeFn(shape_inference::UnchangedShape);
+
+ALLOW_STATEFUL_OP_FOR_DATASET_FUNCTIONS("Print");
+
+REGISTER_OP("PrintV2")
+    .Input("input: string")
+    .SetIsStateful()
+    .Attr("output_stream: string = 'stderr'")
+    .Attr("end: string = '\n'")
+    .SetShapeFn([](InferenceContext* c) {
+      // Early exit if rank is unknown.
+      if (!c->RankKnown(c->input(0))) return absl::OkStatus();
+      // Make sure that the input is a scalar.
+      if (c->Rank(c->input(0)) != 0) {
+        return errors::InvalidArgument("input must be a scalar, but has rank: ",
+                                       c->Rank(c->input(0)));
+      }
+      return absl::OkStatus();
+    });
+
+ALLOW_STATEFUL_OP_FOR_DATASET_FUNCTIONS("PrintV2");
 
 // ----------------------------------------------------------------------------
 // Operators that deal with SummaryProtos (encoded as DT_STRING tensors) as
@@ -60,20 +85,6 @@ REGISTER_OP("TensorSummary")
     .Attr("description: string = ''")
     .Attr("labels: list(string) = []")
     .Attr("display_name: string = ''")
-    .SetShapeFn(shape_inference::ScalarShape);
-
-REGISTER_OP("ScalarSummary")
-    .Input("tags: string")
-    .Input("values: T")
-    .Output("summary: string")
-    .Attr("T: realnumbertype")
-    .SetShapeFn(shape_inference::ScalarShape);
-
-REGISTER_OP("HistogramSummary")
-    .Input("tag: string")
-    .Input("values: T")
-    .Output("summary: string")
-    .Attr("T: realnumbertype = DT_FLOAT")
     .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("ImageSummary")
@@ -105,15 +116,11 @@ REGISTER_OP("AudioSummary")
     .SetShapeFn(shape_inference::ScalarShape)
     .Deprecated(15, "Use AudioSummaryV2.");
 
-REGISTER_OP("MergeSummary")
-    .Input("inputs: N * string")
-    .Output("summary: string")
-    .Attr("N : int >= 1")
-    .SetShapeFn(shape_inference::ScalarShape);
-
 REGISTER_OP("Timestamp")
     .Output("ts: float64")
     .SetIsStateful()
     .SetShapeFn(shape_inference::ScalarShape);
+
+ALLOW_STATEFUL_OP_FOR_DATASET_FUNCTIONS("Timestamp");
 
 }  // end namespace tensorflow

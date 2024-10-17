@@ -14,23 +14,19 @@
 # ==============================================================================
 """Tests for XLA dynamic slicing ops."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
-from tensorflow.compiler.tests.xla_test import XLATestCase
+from tensorflow.compiler.tests import xla_test
 from tensorflow.compiler.tf2xla.python import xla
 from tensorflow.python.framework import dtypes
 from tensorflow.python.ops import array_ops
 from tensorflow.python.platform import test
 
 
-class DynamicUpdateSliceOpsTest(XLATestCase):
+class DynamicUpdateSliceOpsTest(xla_test.XLATestCase):
 
   def _assertOpOutputMatchesExpected(self, op, args, expected):
-    with self.test_session() as session:
+    with self.session() as session:
       with self.test_scope():
         placeholders = [
             array_ops.placeholder(dtypes.as_dtype(arg.dtype), arg.shape)
@@ -54,10 +50,10 @@ class DynamicUpdateSliceOpsTest(XLATestCase):
       self._assertOpOutputMatchesExpected(
           xla.dynamic_update_slice, [
               np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=dtype),
-              np.array([-1, -2, -3], dtype=dtype),
+              np.array([11, 12, 13], dtype=dtype),
               np.array([6], dtype=np.int32)
           ],
-          expected=np.array([1, 2, 3, 4, 5, 6, -1, -2, -3, 10], dtype=dtype))
+          expected=np.array([1, 2, 3, 4, 5, 6, 11, 12, 13, 10], dtype=dtype))
 
       self._assertOpOutputMatchesExpected(
           xla.dynamic_update_slice, [

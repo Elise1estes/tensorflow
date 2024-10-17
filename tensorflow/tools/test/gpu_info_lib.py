@@ -14,12 +14,9 @@
 # ==============================================================================
 """Library for getting system information during TensorFlow tests."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import ctypes as ct
 import platform
+
 
 from tensorflow.core.util import test_log_pb2
 from tensorflow.python.framework import errors
@@ -33,8 +30,8 @@ def _gather_gpu_devices_proc():
     bus_id = f.split("/")[5]
     key_values = dict(line.rstrip().replace("\t", "").split(":", 1)
                       for line in gfile.GFile(f, "r"))
-    key_values = dict((k.lower(), v.strip(" ").rstrip(" "))
-                      for (k, v) in key_values.items())
+    key_values = dict(
+        (k.lower(), v.strip(" ").rstrip(" ")) for (k, v) in key_values.items())
     info = test_log_pb2.GPUInfo()
     info.model = key_values.get("model", "Unknown")
     info.uuid = key_values.get("gpu uuid", "Unknown")

@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Configurations for TensorFlow Debugger (TFDBG) command-line interfaces."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import json
 import os
@@ -47,7 +43,7 @@ class CLIConfig(object):
         self._config[key] = value
     self._save_to_file()
 
-    self._set_callbacks = dict()
+    self._set_callbacks = {}
 
   def get(self, property_name):
     if property_name not in self._config:

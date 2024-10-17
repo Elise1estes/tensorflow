@@ -14,28 +14,15 @@
 # ==============================================================================
 
 """Helpers to manipulate a tensor graph in python.
-"""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+API docstring: tensorflow.graph_util
+"""
 
 
 # pylint: disable=unused-import
-from tensorflow.python.framework.graph_util_impl import convert_variables_to_constants
 from tensorflow.python.framework.graph_util_impl import extract_sub_graph
+from tensorflow.python.framework.graph_util_impl import graph_defs_equal
 from tensorflow.python.framework.graph_util_impl import must_run_on_cpu
 from tensorflow.python.framework.graph_util_impl import remove_training_nodes
 from tensorflow.python.framework.graph_util_impl import tensor_shape_from_node_def_name
 # pylint: enable=unused-import
-from tensorflow.python.util.all_util import remove_undocumented
-
-_allowed_symbols = [
-    # TODO(drpng): find a good place to reference this.
-    "convert_variables_to_constants",
-    "extract_sub_graph",
-    "must_run_on_cpu",
-    "tensor_shape_from_node_def_name",
-    "remove_training_nodes",
-]
-remove_undocumented(__name__, _allowed_symbols)

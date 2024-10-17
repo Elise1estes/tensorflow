@@ -65,15 +65,15 @@ TEST(PartialRunMgr, PartialRunRemoved) {
 
   int called = 0;
   partial_run_mgr.PartialRunDone(
-      step_id, [&called](Status status) { called++; }, Status::OK());
-  partial_run_mgr.ExecutorDone(step_id, Status::OK());
+      step_id, [&called](Status status) { called++; }, absl::OkStatus());
+  partial_run_mgr.ExecutorDone(step_id, absl::OkStatus());
 
   // Calling ExecutorDone and PartialRunDone on the step_id should still only
   // result in the callback being called once.
   // This proves that the original PartialRun has been removed.
   partial_run_mgr.PartialRunDone(
-      step_id, [&called](Status status) { called++; }, Status::OK());
-  partial_run_mgr.ExecutorDone(step_id, Status::OK());
+      step_id, [&called](Status status) { called++; }, absl::OkStatus());
+  partial_run_mgr.ExecutorDone(step_id, absl::OkStatus());
   EXPECT_EQ(1, called);
 }
 
@@ -139,12 +139,12 @@ TEST_P(StatusPropagationTest, PartialRunDoneFirst) {
 // ExecutorDone and PartialRunDone.
 Status ExecutorError() { return errors::Internal("executor error"); }
 Status PartialRunError() { return errors::Internal("partial run error"); }
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     PartialRunMgr, StatusPropagationTest,
     ::testing::Values(
-        StatusTestParam{Status::OK(), Status::OK(), Status::OK()},
-        StatusTestParam{ExecutorError(), Status::OK(), ExecutorError()},
-        StatusTestParam{Status::OK(), PartialRunError(), PartialRunError()},
+        StatusTestParam{absl::OkStatus(), absl::OkStatus(), absl::OkStatus()},
+        StatusTestParam{ExecutorError(), absl::OkStatus(), ExecutorError()},
+        StatusTestParam{absl::OkStatus(), PartialRunError(), PartialRunError()},
         StatusTestParam{ExecutorError(), PartialRunError(), ExecutorError()}));
 
 }  // namespace

@@ -13,13 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_DEBUG_GRPC_TESTLIB_H_
-#define TENSORFLOW_DEBUG_GRPC_TESTLIB_H_
+#ifndef TENSORFLOW_CORE_DEBUG_DEBUG_GRPC_TESTLIB_H_
+#define TENSORFLOW_CORE_DEBUG_DEBUG_GRPC_TESTLIB_H_
 
 #include <atomic>
 #include <unordered_set>
 
-#include "grpc++/grpc++.h"
+#include "grpcpp/grpcpp.h"
 #include "tensorflow/core/debug/debug_io_utils.h"
 #include "tensorflow/core/debug/debug_service.grpc.pb.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -29,7 +29,7 @@ namespace tensorflow {
 
 namespace test {
 
-class TestEventListenerImpl final : public EventListener::Service {
+class TestEventListenerImpl final : public grpc::EventListener::Service {
  public:
   TestEventListenerImpl() : stop_requested_(false), stopped_(false) {}
 
@@ -39,7 +39,7 @@ class TestEventListenerImpl final : public EventListener::Service {
   ::grpc::Status SendEvents(
       ::grpc::ServerContext* context,
       ::grpc::ServerReaderWriter< ::tensorflow::EventReply,
-                                  ::tensorflow::Event>* stream);
+                                  ::tensorflow::Event>* stream) override;
 
   // Clear debug data (e.g., Tensors) received so far.
   void ClearReceivedDebugData();
@@ -60,9 +60,9 @@ class TestEventListenerImpl final : public EventListener::Service {
   std::atomic_bool stop_requested_;
   std::atomic_bool stopped_;
 
-  std::vector<DebugNodeKey> debug_node_keys_ GUARDED_BY(states_mu_);
+  std::vector<DebugNodeKey> debug_node_keys_ TF_GUARDED_BY(states_mu_);
   std::vector<EventReply::DebugOpStateChange::State> new_states_
-      GUARDED_BY(states_mu_);
+      TF_GUARDED_BY(states_mu_);
 
   std::unordered_set<DebugNodeKey> write_enabled_debug_node_keys_;
 
@@ -84,4 +84,4 @@ bool PollTillFirstRequestSucceeds(const string& server_url,
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_DEBUG_GRPC_TESTLIB_H_
+#endif  // TENSORFLOW_CORE_DEBUG_DEBUG_GRPC_TESTLIB_H_

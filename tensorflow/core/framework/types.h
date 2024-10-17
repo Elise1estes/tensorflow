@@ -13,24 +13,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_FRAMEWORK_TYPES_H_
-#define TENSORFLOW_FRAMEWORK_TYPES_H_
+#ifndef TENSORFLOW_CORE_FRAMEWORK_TYPES_H_
+#define TENSORFLOW_CORE_FRAMEWORK_TYPES_H_
 
+#include <cstddef>
 #include <map>
 #include <set>
 #include <string>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-// Disable clang-format to prevent 'FixedPoint' header from being included
-// before 'Tensor' header on which it depends.
-// clang-format off
-#include "third_party/eigen3/unsupported/Eigen/CXX11/FixedPoint"
-// clang-format on
+#include "absl/numeric/bits.h"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "xla/tsl/framework/device_type.h"
 #include "tensorflow/core/framework/bfloat16.h"
+#include "tensorflow/core/framework/full_type.pb.h"
 #include "tensorflow/core/framework/numeric_types.h"
 #include "tensorflow/core/framework/resource_handle.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/core/framework/variant.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
@@ -38,6 +36,8 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
+
+class Variant;
 
 // MemoryType is used to describe whether input or output Tensors of
 // an OpKernel should reside in "Host memory" (e.g., CPU memory) or
@@ -48,31 +48,16 @@ enum MemoryType {
   HOST_MEMORY = 1,
 };
 
-// A DeviceType is just a string, but we wrap it up in a class to give
-// some type checking as we're passing these around
-class DeviceType {
- public:
-  DeviceType(const char* type)  // NOLINT(runtime/explicit)
-      : type_(type) {}
+using tsl::DeviceType;  // NOLINT
 
-  explicit DeviceType(StringPiece type) : type_(type.data(), type.size()) {}
-
-  const char* type() const { return type_.c_str(); }
-  const string& type_string() const { return type_; }
-
-  bool operator<(const DeviceType& other) const;
-  bool operator==(const DeviceType& other) const;
-  bool operator!=(const DeviceType& other) const { return !(*this == other); }
-
- private:
-  string type_;
-};
-std::ostream& operator<<(std::ostream& os, const DeviceType& d);
-
-// Convenient constants that can be passed to a DeviceType constructor
-TF_EXPORT extern const char* const DEVICE_CPU;   // "CPU"
-TF_EXPORT extern const char* const DEVICE_GPU;   // "GPU"
-TF_EXPORT extern const char* const DEVICE_SYCL;  // "SYCL"
+// Convenient constants that can be passed to a DeviceType constructor.
+// See comments for CreateOpKernel in op_kernel.h for uses of DEVICE_DEFAULT
+// and other device types.
+TF_EXPORT extern const char* const DEVICE_DEFAULT;     // "DEFAULT"
+TF_EXPORT extern const char* const DEVICE_CPU;         // "CPU"
+TF_EXPORT extern const char* const DEVICE_GPU;         // "GPU"
+TF_EXPORT extern const char* const DEVICE_TPU;         // "TPU"
+TF_EXPORT extern const char* const DEVICE_TPU_SYSTEM;  // "TPU_SYSTEM"
 
 template <typename Device>
 struct DeviceName {};
@@ -82,33 +67,29 @@ struct DeviceName<Eigen::ThreadPoolDevice> {
   static const std::string value;
 };
 
-#if GOOGLE_CUDA
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA) || \
+    (defined(TENSORFLOW_USE_ROCM) && TENSORFLOW_USE_ROCM)
 template <>
 struct DeviceName<Eigen::GpuDevice> {
   static const std::string value;
 };
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#ifdef TENSORFLOW_USE_SYCL
-template <>
-struct DeviceName<Eigen::SyclDevice> {
-  static const std::string value;
-};
-#endif  // TENSORFLOW_USE_SYCL
+typedef absl::InlinedVector<MemoryType, 4UL> MemoryTypeVector;
+typedef absl::Span<const MemoryType> MemoryTypeSlice;
 
-typedef gtl::InlinedVector<MemoryType, 4> MemoryTypeVector;
-typedef gtl::ArraySlice<MemoryType> MemoryTypeSlice;
+typedef absl::InlinedVector<DataType, 4UL> DataTypeVector;
+typedef absl::Span<const DataType> DataTypeSlice;
 
-typedef gtl::InlinedVector<DataType, 4> DataTypeVector;
-typedef gtl::ArraySlice<DataType> DataTypeSlice;
-
-typedef gtl::InlinedVector<DeviceType, 4> DeviceTypeVector;
+typedef absl::InlinedVector<DeviceType, 4UL> DeviceTypeVector;
+typedef absl::InlinedVector<std::pair<DeviceType, int32>, 4UL>
+    PrioritizedDeviceTypeVector;
 
 // Convert the enums to strings for errors:
-string DataTypeString(DataType dtype);
-string DeviceTypeString(const DeviceType& device_type);
-string DataTypeSliceString(const DataTypeSlice dtypes);
-inline string DataTypeVectorString(const DataTypeVector& dtypes) {
+std::string DataTypeString(DataType dtype);
+std::string DeviceTypeString(const DeviceType& device_type);
+std::string DataTypeSliceString(const DataTypeSlice dtypes);
+inline std::string DataTypeVectorString(const DataTypeVector& dtypes) {
   return DataTypeSliceString(dtypes);
 }
 
@@ -145,7 +126,7 @@ class DataTypeSet {
       if (pos_ < kNumBits) {
         uint32 remaining_mask = set_.mask_ >> pos_;
         if (remaining_mask != 0u) {
-          pos_ += ctz_uint32(remaining_mask);
+          pos_ += absl::countr_zero(remaining_mask);
         }
       }
       DCHECK_LE(pos_, kNumBits);
@@ -158,39 +139,11 @@ class DataTypeSet {
     }
   };
 
-  static uint32 ctz_uint32(uint32 x) {
-    DCHECK_NE(x, 0u);
-#ifdef __GNUC__
-    return __builtin_ctz(x);
-#else
-    uint32 n = 0u;
-    while ((x & 1u) == 0u) {
-      x >>= 1;
-      ++n;
-    }
-    return n;
-#endif
-  }
-
-  static uint32 clz_uint32(uint32 x) {
-    DCHECK_NE(x, 0u);
-#ifdef __GNUC__
-    return __builtin_clz(x);
-#else
-    uint32 n = 0u;
-    while ((x >> (kNumBits - 1u)) == 0u) {
-      x <<= 1;
-      ++n;
-    }
-    return n;
-#endif
-  }
-
   Iterator begin() const {
     // The begin position is the index of the first bit set to 1 in the entire
     // bit mask. If there are no bits set to 1, then the index is 0.
     if (mask_ != 0) {
-      return Iterator(*this, ctz_uint32(mask_));
+      return Iterator(*this, absl::countr_zero(mask_));
     }
     // The set is empty.
     return Iterator(*this, 0);
@@ -200,25 +153,13 @@ class DataTypeSet {
     // The end position is the index of the highest bit that is set, plus 1.
     // If there are no bits set to 1, then the index is 0.
     if (mask_ != 0) {
-      return Iterator(*this, kNumBits - clz_uint32(mask_));
+      return Iterator(*this, kNumBits - absl::countl_zero(mask_));
     }
     // The set is empty.
     return Iterator(*this, 0);
   }
 
-  size_t size() const {
-#if defined(__GNUC__)
-    return __builtin_popcount(mask_);
-#else
-    size_t n = 0;
-    uint32 x = mask_;
-    while (x > 0) {
-      n += x & 1u;
-      x >>= 1;
-    }
-    return n;
-#endif
-  }
+  size_t size() const { return absl::popcount(mask_); }
 
   constexpr DataTypeSet operator|(const DataTypeSet& other) const {
     return DataTypeSet(mask_ | other.mask_);
@@ -263,7 +204,9 @@ constexpr DataTypeSet kAllTypes =
     ToSet(DT_BOOL) | ToSet(DT_QINT8) | ToSet(DT_QUINT8) | ToSet(DT_QINT16) |
     ToSet(DT_QUINT16) | ToSet(DT_QINT32) | ToSet(DT_HALF) | ToSet(DT_RESOURCE) |
     ToSet(DT_VARIANT) | ToSet(DT_UINT32) | ToSet(DT_UINT64) |
-    ToSet(DT_BFLOAT16);
+    ToSet(DT_BFLOAT16) | ToSet(DT_FLOAT8_E5M2) | ToSet(DT_FLOAT8_E4M3FN) |
+    ToSet(DT_INT4) | ToSet(DT_UINT4);
+
 inline const DataTypeSet& AllTypes() { return kAllTypes; }
 
 #if !defined(IS_MOBILE_PLATFORM) || defined(SUPPORT_SELECTIVE_REGISTRATION)
@@ -273,7 +216,7 @@ constexpr DataTypeSet kRealNumberTypes =
     ToSet(DT_FLOAT) | ToSet(DT_DOUBLE) | ToSet(DT_INT32) | ToSet(DT_INT64) |
     ToSet(DT_UINT8) | ToSet(DT_INT16) | ToSet(DT_INT8) | ToSet(DT_UINT16) |
     ToSet(DT_HALF) | ToSet(DT_UINT32) | ToSet(DT_UINT64) | ToSet(DT_BFLOAT16);
-inline const DataTypeSet RealNumberTypes() { return kRealNumberTypes; }
+inline const DataTypeSet& RealNumberTypes() { return kRealNumberTypes; }
 
 // Return the list of all numeric types.
 // Includes complex and quantized types.
@@ -282,8 +225,8 @@ const DataTypeSet kNumberTypes =
     ToSet(DT_FLOAT) | ToSet(DT_DOUBLE) | ToSet(DT_INT64) | ToSet(DT_INT32) |
     ToSet(DT_UINT8) | ToSet(DT_UINT16) | ToSet(DT_INT16) | ToSet(DT_INT8) |
     ToSet(DT_COMPLEX64) | ToSet(DT_COMPLEX128) | ToSet(DT_QINT8) |
-    ToSet(DT_QUINT8) | ToSet(DT_QINT32) | ToSet(DT_HALF) | ToSet(DT_UINT32) |
-    ToSet(DT_UINT64) | ToSet(DT_BFLOAT16);
+    ToSet(DT_QUINT8) | ToSet(DT_QINT16) | ToSet(DT_QUINT16) | ToSet(DT_QINT32) |
+    ToSet(DT_HALF) | ToSet(DT_UINT32) | ToSet(DT_UINT64) | ToSet(DT_BFLOAT16);
 inline const DataTypeSet& NumberTypes() { return kNumberTypes; }
 
 constexpr DataTypeSet kQuantizedTypes = ToSet(DT_QINT8) | ToSet(DT_QUINT8) |
@@ -294,7 +237,7 @@ inline const DataTypeSet& QuantizedTypes() { return kQuantizedTypes; }
 // Types that support '<' and '>', including quantized types.
 const DataTypeSet kRealAndQuantizedTypes =
     ToSet(DT_FLOAT) | ToSet(DT_DOUBLE) | ToSet(DT_INT32) | ToSet(DT_INT64) |
-    ToSet(DT_UINT8) | ToSet(DT_UINT16) | ToSet(DT_UINT16) | ToSet(DT_INT8) |
+    ToSet(DT_UINT8) | ToSet(DT_UINT16) | ToSet(DT_INT16) | ToSet(DT_INT8) |
     ToSet(DT_QINT8) | ToSet(DT_QUINT8) | ToSet(DT_QINT16) | ToSet(DT_QUINT16) |
     ToSet(DT_QINT32) | ToSet(DT_HALF) | ToSet(DT_BFLOAT16);
 inline const DataTypeSet& RealAndQuantizedTypes() {
@@ -386,11 +329,9 @@ MATCH_TYPE_AND_ENUM(uint16, DT_UINT16);
 MATCH_TYPE_AND_ENUM(uint8, DT_UINT8);
 MATCH_TYPE_AND_ENUM(int16, DT_INT16);
 MATCH_TYPE_AND_ENUM(int8, DT_INT8);
-MATCH_TYPE_AND_ENUM(string, DT_STRING);
+MATCH_TYPE_AND_ENUM(tstring, DT_STRING);
 MATCH_TYPE_AND_ENUM(complex64, DT_COMPLEX64);
 MATCH_TYPE_AND_ENUM(complex128, DT_COMPLEX128);
-MATCH_TYPE_AND_ENUM(int64, DT_INT64);
-MATCH_TYPE_AND_ENUM(uint64, DT_UINT64);
 MATCH_TYPE_AND_ENUM(bool, DT_BOOL);
 MATCH_TYPE_AND_ENUM(qint8, DT_QINT8);
 MATCH_TYPE_AND_ENUM(quint8, DT_QUINT8);
@@ -399,8 +340,65 @@ MATCH_TYPE_AND_ENUM(quint16, DT_QUINT16);
 MATCH_TYPE_AND_ENUM(qint32, DT_QINT32);
 MATCH_TYPE_AND_ENUM(bfloat16, DT_BFLOAT16);
 MATCH_TYPE_AND_ENUM(Eigen::half, DT_HALF);
+MATCH_TYPE_AND_ENUM(float8_e5m2, DT_FLOAT8_E5M2);
+MATCH_TYPE_AND_ENUM(float8_e4m3fn, DT_FLOAT8_E4M3FN);
+MATCH_TYPE_AND_ENUM(int4, DT_INT4);
+MATCH_TYPE_AND_ENUM(uint4, DT_UINT4);
 MATCH_TYPE_AND_ENUM(ResourceHandle, DT_RESOURCE);
 MATCH_TYPE_AND_ENUM(Variant, DT_VARIANT);
+
+template <>
+struct DataTypeToEnum<long> {
+  static DataType v() { return value; }
+  static DataType ref() { return MakeRefType(value); }
+  static constexpr DataType value = sizeof(long) == 4 ? DT_INT32 : DT_INT64;
+};
+template <>
+struct IsValidDataType<long> {
+  static constexpr bool value = true;
+};
+template <>
+struct EnumToDataType<DT_INT64> {
+  typedef int64_t Type;
+};
+
+template <>
+struct DataTypeToEnum<unsigned long> {
+  static DataType v() { return value; }
+  static DataType ref() { return MakeRefType(value); }
+  static constexpr DataType value =
+      sizeof(unsigned long) == 4 ? DT_UINT32 : DT_UINT64;
+};
+template <>
+struct IsValidDataType<unsigned long> {
+  static constexpr bool value = true;
+};
+template <>
+struct EnumToDataType<DT_UINT64> {
+  typedef tensorflow::uint64 Type;
+};
+
+template <>
+struct DataTypeToEnum<long long> {
+  static DataType v() { return DT_INT64; }
+  static DataType ref() { return MakeRefType(DT_INT64); }
+  static constexpr DataType value = DT_INT64;
+};
+template <>
+struct IsValidDataType<long long> {
+  static constexpr bool value = true;
+};
+
+template <>
+struct DataTypeToEnum<unsigned long long> {
+  static DataType v() { return DT_UINT64; }
+  static DataType ref() { return MakeRefType(DT_UINT64); }
+  static constexpr DataType value = DT_UINT64;
+};
+template <>
+struct IsValidDataType<unsigned long long> {
+  static constexpr bool value = true;
+};
 
 #undef MATCH_TYPE_AND_ENUM
 
@@ -411,7 +409,7 @@ struct IsValidDataType {
 };
 
 // Extra validity checking; not part of public API.
-static_assert(IsValidDataType<int64>::value, "Incorrect impl for int64");
+static_assert(IsValidDataType<int64_t>::value, "Incorrect impl for int64");
 static_assert(IsValidDataType<int32>::value, "Incorrect impl for int32");
 
 // TODO(jeff): Maybe unify this with Tensor::CanUseDMA, or the underlying
@@ -422,17 +420,22 @@ constexpr DataTypeSet kDataTypesCanUseMemcpy =
     ToSet(DT_COMPLEX64) | ToSet(DT_COMPLEX128) | ToSet(DT_INT64) |
     ToSet(DT_UINT64) | ToSet(DT_BOOL) | ToSet(DT_QINT8) | ToSet(DT_QUINT8) |
     ToSet(DT_QINT16) | ToSet(DT_QUINT16) | ToSet(DT_QINT32) |
-    ToSet(DT_BFLOAT16) | ToSet(DT_HALF);
+    ToSet(DT_BFLOAT16) | ToSet(DT_HALF) | ToSet(DT_FLOAT8_E5M2) |
+    ToSet(DT_FLOAT8_E4M3FN) | ToSet(DT_INT4) | ToSet(DT_UINT4);
 inline bool DataTypeCanUseMemcpy(DataType dt) {
   return kDataTypesCanUseMemcpy.Contains(dt);
 }
 
 // Returns true iff 'dt' is a real, non-quantized floating point type.
 constexpr DataTypeSet kDataTypeIsFloating =
-    ToSet(DT_HALF) | ToSet(DT_BFLOAT16) | ToSet(DT_FLOAT) | ToSet(DT_DOUBLE);
+    ToSet(DT_HALF) | ToSet(DT_BFLOAT16) | ToSet(DT_FLOAT) | ToSet(DT_DOUBLE) |
+    ToSet(DT_FLOAT8_E4M3FN) | ToSet(DT_FLOAT8_E5M2);
 inline bool DataTypeIsFloating(DataType dt) {
   return kDataTypeIsFloating.Contains(dt);
 }
+
+// Returns true iff 'dt' is a numeric type.
+inline bool DataTypeIsNumeric(DataType dt) { return kNumberTypes.Contains(dt); }
 
 // Returns true iff 'dt' is a complex type.
 constexpr DataTypeSet kDataTypeIsComplex =
@@ -447,22 +450,25 @@ inline bool DataTypeIsQuantized(DataType dt) {
 
 // Is the dtype nonquantized integral?
 constexpr DataTypeSet kDataTypeIsInteger =
-    ToSet(DT_INT8) | ToSet(DT_UINT8) | ToSet(DT_INT16) | ToSet(DT_UINT16) |
-    ToSet(DT_INT32) | ToSet(DT_UINT32) | ToSet(DT_INT64) | ToSet(DT_UINT64);
+    ToSet(DT_INT4) | ToSet(DT_UINT4) | ToSet(DT_INT8) | ToSet(DT_UINT8) |
+    ToSet(DT_INT16) | ToSet(DT_UINT16) | ToSet(DT_INT32) | ToSet(DT_UINT32) |
+    ToSet(DT_INT64) | ToSet(DT_UINT64);
 inline bool DataTypeIsInteger(DataType dt) {
   return kDataTypeIsInteger.Contains(dt);
 }
 
 // Is the dtype a signed integral type?
-constexpr DataTypeSet kDataTypeIsSigned =
-    ToSet(DT_INT8) | ToSet(DT_INT16) | ToSet(DT_INT32) | ToSet(DT_INT64);
+constexpr DataTypeSet kDataTypeIsSigned = ToSet(DT_INT4) | ToSet(DT_INT8) |
+                                          ToSet(DT_INT16) | ToSet(DT_INT32) |
+                                          ToSet(DT_INT64);
 inline bool DataTypeIsSigned(DataType dt) {
   return kDataTypeIsSigned.Contains(dt);
 }
 
 // Is the dtype an unsigned integral type?
-constexpr DataTypeSet kDataTypeIsUnsigned =
-    ToSet(DT_UINT8) | ToSet(DT_UINT16) | ToSet(DT_UINT32) | ToSet(DT_UINT64);
+constexpr DataTypeSet kDataTypeIsUnsigned = ToSet(DT_UINT4) | ToSet(DT_UINT8) |
+                                            ToSet(DT_UINT16) |
+                                            ToSet(DT_UINT32) | ToSet(DT_UINT64);
 inline bool DataTypeIsUnsigned(DataType dt) {
   return kDataTypeIsUnsigned.Contains(dt);
 }
@@ -470,11 +476,55 @@ inline bool DataTypeIsUnsigned(DataType dt) {
 // Returns a 0 on failure
 int DataTypeSize(DataType dt);
 
+// Returns HOST_MEMORY if `dtype` is always on host or is a DT_INT32,
+// DEVICE_MEMORY otherwise.
+MemoryType MTypeFromDType(const DataType dtype);
+
+// Returns HOST_MEMORY if `dtype` is always on host, DEVICE_MEMORY otherwise.
+// The reason we have MTypeFromDType() and MTypeFromDTypeIntsOnDevice(): for
+// GPUs, we would like to keep int operations on host for performance concerns.
+// But for TPUs (and other devices), int operations are placed on device.
+MemoryType MTypeFromDTypeIntsOnDevice(const DataType dtype);
+
 // Types that always sit on host: DT_STRING, DT_STRING_REF, DT_RESOURCE.
 // For DT_RESOURCE, the handle always sits on host (even if the underlying
 // object has device-allocated resources).
 bool DataTypeAlwaysOnHost(DataType dt);
 
+// FullType implementation.
+
+// Reference container for a type definition. These values are usually interned.
+// These containers admit a notion of ordering for efficient access. The
+// ordering has no semantic otherwise.
+struct TypeRef {
+  std::shared_ptr<FullTypeDef> full_type;
+
+  bool operator==(const TypeRef& other) const {
+    // TODO(mdan): This should be more efficient.
+    return full_type->SerializeAsString() ==
+           other.full_type->SerializeAsString();
+  }
+  bool operator<(const TypeRef& other) const {
+    return full_type->SerializeAsString() <
+           other.full_type->SerializeAsString();
+  }
+};
+
+struct TypeHasher {
+  std::size_t operator()(const TypeRef& k) const {
+    return std::hash<std::string>()(k.full_type->SerializeAsString());
+  }
+};
+
+// Maps a legacy DType proto enum to an equivalent FullType ID,
+// i.e. sets the type_id of t based on dtype.
+void map_dtype_to_tensor(const DataType& dtype, FullTypeDef& t);
+
+// Set the type id_of t to TFT_TENSOR and add a child arg by mapping
+// a legacy DType proto enun to an equivalent FullType ID, e.g.
+// if dtype is DT_FLOAT, sets t to TFT_TENSOR[TFT_FLOAT].
+void map_dtype_to_child_of_tensor(const DataType& dtype, FullTypeDef& t);
+
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_FRAMEWORK_TYPES_H_
+#endif  // TENSORFLOW_CORE_FRAMEWORK_TYPES_H_

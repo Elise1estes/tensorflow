@@ -21,12 +21,13 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/core/framework/attr_value.pb.h"
+#include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op_def_util.h"
-#include "tensorflow/core/framework/versions.pb_text.h"
+#include "tensorflow/core/framework/versions.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/str_util.h"
@@ -37,7 +38,7 @@ namespace tensorflow {
 string SummarizeGraphDef(const GraphDef& graph_def) {
   string ret;
   strings::StrAppend(
-      &ret, "versions = ", ProtoShortDebugString(graph_def.versions()), ";\n");
+      &ret, "versions = ", graph_def.versions().ShortDebugString(), ";\n");
   for (const NodeDef& node : graph_def.node()) {
     strings::StrAppend(&ret, SummarizeNodeDef(node), ";\n");
   }
@@ -48,7 +49,7 @@ Status ValidateExternalGraphDefSyntax(const GraphDef& graph_def) {
   for (const NodeDef& node : graph_def.node()) {
     TF_RETURN_IF_ERROR(ValidateExternalNodeDefSyntax(node));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 Status AddDefaultAttrsToGraphDef(GraphDef* graph_def,
@@ -78,7 +79,7 @@ Status AddDefaultAttrsToGraphDef(GraphDef* graph_def,
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 static Status RemoveNewDefaultAttrsFromNodeDef(
@@ -95,7 +96,7 @@ static Status RemoveNewDefaultAttrsFromNodeDef(
   std::vector<string> to_remove;
   for (const auto& attr : node_def->attr()) {
     // If the attr is not in consumer_op_def and doesn't start with '_'...
-    if (!str_util::StartsWith(attr.first, "_") &&
+    if (!absl::StartsWith(attr.first, "_") &&
         FindAttr(attr.first, *consumer_op_def) == nullptr) {
       const OpDef::AttrDef* producer_attr_def =
           FindAttr(attr.first, *producer_op_def);
@@ -103,7 +104,7 @@ static Status RemoveNewDefaultAttrsFromNodeDef(
         return errors::InvalidArgument(
             "Attr '", attr.first,
             "' missing in producer's OpDef: ", SummarizeOpDef(*producer_op_def),
-            " but found in node: ", SummarizeNodeDef(*node_def));
+            " but found in node: ", FormatNodeDefForError(*node_def));
       }
       // ...and it has the same value as the default in producer,
       if (producer_attr_def->has_default_value() &&
@@ -123,7 +124,7 @@ static Status RemoveNewDefaultAttrsFromNodeDef(
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 static bool IsFunction(const GraphDef& graph_def, const string& op_name) {
@@ -160,7 +161,44 @@ Status RemoveNewDefaultAttrsFromGraphDef(
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
+}
+
+void StripDefaultAttributes(const OpRegistryInterface& op_registry,
+                            protobuf::RepeatedPtrField<NodeDef>* nodes) {
+  for (int i = 0; i < nodes->size(); ++i) {
+    NodeDef* node = nodes->Mutable(i);
+
+    const OpDef* op_def;
+    const OpRegistrationData* op_reg_data = nullptr;
+    Status s = op_registry.LookUp(node->op(), &op_reg_data);
+    if (!s.ok()) {
+      VLOG(1) << "Ignoring encountered unknown operation "
+              << SummarizeNodeDef(*node)
+              << " when stripping default attributes. It is likely a function, "
+                 "in which case ignoring it is fine";
+      continue;
+    }
+    op_def = &op_reg_data->op_def;
+
+    for (const OpDef::AttrDef& attr_def : op_def->attr()) {
+      if (attr_def.has_default_value()) {
+        AttrValueMap* attrs = node->mutable_attr();
+        const string& name = attr_def.name();
+        auto iter = attrs->find(name);
+        if (iter != attrs->end()) {
+          const AttrValue& default_value = attr_def.default_value();
+          // There should never be an attribute whose default value is a tensor
+          // larger than 32MB so allow false negatives  for efficient
+          // comparison.
+          if (AreAttrValuesEqual(iter->second, default_value,
+                                 /*allow_false_negatives=*/true)) {
+            attrs->erase(name);
+          }
+        }
+      }
+    }
+  }
 }
 
 void OpsUsedByGraph(const GraphDef& graph_def,
@@ -223,7 +261,7 @@ Status StrippedOpListForGraph(const GraphDef& graph_def,
     stripped_op->CopyFrom(*op_def);
     RemoveDescriptionsFromOpDef(stripped_op);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

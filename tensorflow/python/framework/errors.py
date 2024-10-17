@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Exception types for TensorFlow errors."""
+"""Exception types for TensorFlow errors.
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+API docstring: tensorflow.errors
+"""
 
 # pylint: disable=unused-import
 from tensorflow.python.framework import errors_impl as _impl
@@ -25,50 +24,3 @@ from tensorflow.python.framework import errors_impl as _impl
 # pylint: disable=wildcard-import
 from tensorflow.python.framework.errors_impl import *
 # pylint: enable=wildcard-import
-from tensorflow.python.util.all_util import remove_undocumented
-
-# These are referenced in client/client_lib.py.
-# Unfortunately, we can't import client_lib to examine
-# the references, since it would create a dependency cycle.
-_allowed_symbols = [
-    "AbortedError",
-    "AlreadyExistsError",
-    "CancelledError",
-    "DataLossError",
-    "DeadlineExceededError",
-    "FailedPreconditionError",
-    "InternalError",
-    "InvalidArgumentError",
-    "NotFoundError",
-    "OpError",
-    "OutOfRangeError",
-    "PermissionDeniedError",
-    "ResourceExhaustedError",
-    "UnauthenticatedError",
-    "UnavailableError",
-    "UnimplementedError",
-    "UnknownError",
-    "error_code_from_exception_type",
-    "exception_type_from_error_code",
-    "raise_exception_on_not_ok_status",
-    # Scalars that have no docstrings:
-    "OK",
-    "CANCELLED",
-    "UNKNOWN",
-    "INVALID_ARGUMENT",
-    "DEADLINE_EXCEEDED",
-    "NOT_FOUND",
-    "ALREADY_EXISTS",
-    "PERMISSION_DENIED",
-    "UNAUTHENTICATED",
-    "RESOURCE_EXHAUSTED",
-    "FAILED_PRECONDITION",
-    "ABORTED",
-    "OUT_OF_RANGE",
-    "UNIMPLEMENTED",
-    "INTERNAL",
-    "UNAVAILABLE",
-    "DATA_LOSS",
-]
-
-remove_undocumented(__name__, _allowed_symbols)

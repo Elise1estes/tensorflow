@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests and benchmarks for creating RPC clusters on localhost."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import time
 
 import numpy as np
@@ -25,6 +21,7 @@ import numpy as np
 from tensorflow.python.client import session as session_lib
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import partitioned_variables
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables
@@ -34,6 +31,7 @@ from tensorflow.python.training import device_setter
 
 class CreateLocalClusterTest(test.TestCase):
 
+  @test_util.run_v1_only("b/120545219")
   def testCreateLocalCluster(self):
     workers, _ = test.create_local_cluster(num_workers=2, num_ps=2)
     worker_sessions = [session_lib.Session(w.target) for w in workers]

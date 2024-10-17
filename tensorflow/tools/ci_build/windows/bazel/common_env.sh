@@ -26,8 +26,12 @@
 # * Bazel windows executable copied as "bazel.exe" and included in PATH.
 
 # Use a temporary directory with a short name.
-export TMPDIR="C:/tmp"
+export TMPDIR=${TMPDIR:-"C:/tmp"}
+export TMPDIR=$(cygpath -m "$TMPDIR")
 mkdir -p "$TMPDIR"
+
+# Add timestamps before each command.
+export PS4='+ $(date) + '
 
 # Set bash path
 export BAZEL_SH=${BAZEL_SH:-"C:/tools/msys64/usr/bin/bash"}
@@ -37,9 +41,9 @@ export PYTHON_BASE_PATH="${PYTHON_DIRECTORY:-Program Files/Anaconda3}"
 # Set the path to find bazel.
 export PATH="/c/tools/bazel/:$PATH"
 
-# Set Python path for ./configure
-export PYTHON_BIN_PATH="C:/${PYTHON_BASE_PATH}/python.exe"
-export PYTHON_LIB_PATH="C:/${PYTHON_BASE_PATH}/lib/site-packages"
+# Set Python path (if not already set) for ./configure
+export PYTHON_BIN_PATH="${PYTHON_BIN_PATH:-C:/${PYTHON_BASE_PATH}/python.exe}"
+export PYTHON_LIB_PATH="${PYTHON_LIB_PATH:-C:/${PYTHON_BASE_PATH}/lib/site-packages}"
 
 # Add python into PATH, it's needed because gen_git_source.py uses
 # '/usr/bin/env python' as a shebang
@@ -49,8 +53,3 @@ export PATH="/c/Program Files/Git/cmd:$PATH"
 
 # Make sure we have pip in PATH
 export PATH="/c/${PYTHON_BASE_PATH}/Scripts:$PATH"
-
-# Add Cuda and Cudnn dll directories into PATH
-export PATH="/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v9.0/bin:$PATH"
-export PATH="/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v9.0/extras/CUPTI/libx64:$PATH"
-export PATH="/c/tools/cuda/bin:$PATH"

@@ -68,7 +68,7 @@ look at following code:
 
 Above user code leads to following execution:
   call hooks.begin()
-  sess = tf.Session()
+  sess = tf.compat.v1.Session()
   call hooks.after_create_session()
   while not stop is requested:
     call hooks.before_run()
@@ -84,23 +84,14 @@ Note that if sess.run() raises OutOfRangeError or StopIteration then
 hooks.after_run() will not be called but hooks.end() will still be called.
 If sess.run() raises any other exception then neither hooks.after_run() nor
 hooks.end() will be called.
-
-@@SessionRunHook
-@@SessionRunArgs
-@@SessionRunContext
-@@SessionRunValues
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 import collections
 from tensorflow.python.util.tf_export import tf_export
 
 
-@tf_export("train.SessionRunHook")
-class SessionRunHook(object):
+@tf_export(v1=["train.SessionRunHook"])
+class SessionRunHook:
   """Hook to extend calls to MonitoredSession.run()."""
 
   def begin(self):
@@ -191,7 +182,7 @@ class SessionRunHook(object):
     pass
 
 
-@tf_export("train.SessionRunArgs")
+@tf_export(v1=["train.SessionRunArgs"])
 class SessionRunArgs(
     collections.namedtuple("SessionRunArgs",
                            ["fetches", "feed_dict", "options"])):
@@ -216,8 +207,8 @@ class SessionRunArgs(
     return super(SessionRunArgs, cls).__new__(cls, fetches, feed_dict, options)
 
 
-@tf_export("train.SessionRunContext")
-class SessionRunContext(object):
+@tf_export(v1=["train.SessionRunContext"])
+class SessionRunContext:
   """Provides information about the `session.run()` call being made.
 
   Provides information about original request to `Session.Run()` function.
@@ -268,7 +259,7 @@ class SessionRunContext(object):
     self._stop_requested = True
 
 
-@tf_export("train.SessionRunValues")
+@tf_export(v1=["train.SessionRunValues"])
 class SessionRunValues(
     collections.namedtuple("SessionRunValues",
                            ["results", "options", "run_metadata"])):

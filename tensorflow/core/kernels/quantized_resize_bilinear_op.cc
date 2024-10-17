@@ -25,9 +25,9 @@ limitations under the License.
 
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/kernels/image_resizer_state.h"
 #include "tensorflow/core/kernels/quantization_utils.h"
 #include "tensorflow/core/platform/macros.h"
+#include "tensorflow/core/util/image_resizer_state.h"
 
 namespace tensorflow {
 
@@ -37,18 +37,19 @@ namespace {
 // Compute the interpolation indices only once.
 template <typename T_SCALE>
 struct InterpolationCache {
-  std::vector<int64> lower;  // Lower source index used in the interpolation
-  std::vector<int64> upper;  // Upper source index used in the interpolation
-  // 1-D linear iterpolation scale (see:
+  std::vector<int64_t> lower;  // Lower source index used in the interpolation
+  std::vector<int64_t> upper;  // Upper source index used in the interpolation
+  // 1-D linear interpolation scale (see:
   // https://en.wikipedia.org/wiki/Bilinear_interpolation)
   std::vector<float> lerp;
   std::vector<T_SCALE> ilerp;
 };
 
-template <typename T_SCALE>
+template <typename T_SCALE, typename Scaler>
 inline void ComputeInterpolationWeights(
-    const int64 out_size, const int64 in_size, const float scale,
+    const int64_t out_size, const int64_t in_size, const float scale,
     const int resolution, InterpolationCache<T_SCALE>* interpolation) {
+  const Scaler scaler;
   interpolation->lower.resize(out_size + 1);
   interpolation->upper.resize(out_size + 1);
   interpolation->lerp.resize(out_size + 1);
@@ -56,27 +57,34 @@ inline void ComputeInterpolationWeights(
 
   interpolation->lower[out_size] = 0;
   interpolation->upper[out_size] = 0;
-  for (int64 i = out_size - 1; i >= 0; --i) {
-    const float in = i * scale;
-    interpolation->lower[i] = static_cast<int64>(in);
+  for (int64_t i = out_size - 1; i >= 0; --i) {
+    const float in = scaler(i, scale);
+    const float in_f = std::floor(in);
+    interpolation->lower[i] =
+        std::max(static_cast<int64_t>(in_f), static_cast<int64_t>(0));
     interpolation->upper[i] =
-        std::min(interpolation->lower[i] + 1, in_size - 1);
-    interpolation->lerp[i] = in - interpolation->lower[i];
-    interpolation->ilerp[i] = static_cast<T_SCALE>(
-        (in - interpolation->lower[i]) * (1 << resolution));
+        std::min(static_cast<int64_t>(std::ceil(in)), in_size - 1);
+    interpolation->lower[i] =
+        std::min(interpolation->lower[i], interpolation->upper[i]);
+    interpolation->lerp[i] = in - in_f;
+    interpolation->ilerp[i] =
+        static_cast<T_SCALE>((in - in_f) * (1 << resolution));
   }
 }
 
 template <typename T_SCALE>
-inline InterpolationCache<T_SCALE> BuildLerpCache(const int64 out_size,
-                                                  const int64 in_size,
-                                                  const float scale,
-                                                  const int index_step,
-                                                  const int resolution) {
+inline InterpolationCache<T_SCALE> BuildLerpCache(
+    const int64_t out_size, const int64_t in_size, const float scale,
+    const int index_step, const int resolution, const bool half_pixel_centers) {
   InterpolationCache<T_SCALE> cache;
   // Compute the cached interpolation weights on the x and y dimensions.
-  ComputeInterpolationWeights<T_SCALE>(out_size, in_size, scale, resolution,
-                                       &cache);
+  if (half_pixel_centers) {
+    ComputeInterpolationWeights<T_SCALE, HalfPixelScaler>(
+        out_size, in_size, scale, resolution, &cache);
+  } else {
+    ComputeInterpolationWeights<T_SCALE, LegacyScaler>(out_size, in_size, scale,
+                                                       resolution, &cache);
+  }
   CHECK(index_step > 0);
   if (index_step > 1) {
     for (int i = 0; i < cache.lower.size(); ++i) {
@@ -238,13 +246,13 @@ inline uint8x8_t ComputeLerpx8Tmpl(const quint8* const yl, const quint8* yu,
 
 template <int RESOLUTION, typename T, typename T_SCALE, typename T_CALC>
 inline void OutputLerpForChannels(const InterpolationCache<T_SCALE>& xs,
-                                  const int64 x, const T_SCALE ys_ilerp,
+                                  const int64_t x, const T_SCALE ys_ilerp,
                                   const int channels, const float min,
                                   const float max, const T* ys_input_lower_ptr,
                                   const T* ys_input_upper_ptr,
                                   T* output_y_ptr) {
-  const int64 xs_lower = xs.lower[x];
-  const int64 xs_upper = xs.upper[x];
+  const int64_t xs_lower = xs.lower[x];
+  const int64_t xs_upper = xs.upper[x];
   const T_SCALE xs_ilerp = xs.ilerp[x];
   for (int c = 0; c < channels; ++c) {
     const T top_left = ys_input_lower_ptr[xs_lower + c];
@@ -259,7 +267,7 @@ inline void OutputLerpForChannels(const InterpolationCache<T_SCALE>& xs,
 
 template <int RES>
 inline void OutputLerp8x8x1(const InterpolationCache<int16>& xs,
-                            const int64 x_start, const int16 ys_ilerp,
+                            const int64_t x_start, const int16_t ys_ilerp,
                             const float min, const float max,
                             const quint8* const ys_input_lower_ptr,
                             const quint8* const ys_input_upper_ptr,
@@ -285,7 +293,7 @@ inline void OutputLerp8x8x1(const InterpolationCache<int16>& xs,
 
 template <int RES>
 inline void OutputLerp8x8x3(const InterpolationCache<int16>& xs,
-                            const int64 x_start, const int16 ys_ilerp,
+                            const int64_t x_start, const int16_t ys_ilerp,
                             const float min, const float max,
                             const quint8* const ys_input_lower_ptr,
                             const quint8* const ys_input_upper_ptr,
@@ -326,7 +334,7 @@ inline void OutputLerp8x8x3(const InterpolationCache<int16>& xs,
 
 template <int RESOLUTION>
 inline void OutputLerp32x4x1(const InterpolationCache<int32>& xs,
-                             const int64 x_start, const int32 ys_ilerp,
+                             const int64_t x_start, const int32_t ys_ilerp,
                              const float min, const float max,
                              const qint32* const ys_input_lower_ptr,
                              const qint32* const ys_input_upper_ptr,
@@ -365,7 +373,7 @@ inline void OutputLerp32x4x1(const InterpolationCache<int32>& xs,
 
 #else
   for (int x = x_start; x < x_start + 4; ++x) {
-    OutputLerpForChannels<RESOLUTION, qint32, int32, int64>(
+    OutputLerpForChannels<RESOLUTION, qint32, int32, int64_t>(
         xs, x, ys_ilerp, 1, min, max, ys_input_lower_ptr, ys_input_upper_ptr,
         output_y_ptr);
   }
@@ -374,7 +382,7 @@ inline void OutputLerp32x4x1(const InterpolationCache<int32>& xs,
 
 template <int RESOLUTION>
 inline void OutputLerp32x4x3(const InterpolationCache<int32>& xs,
-                             const int64 x_start, const int32 ys_ilerp,
+                             const int64_t x_start, const int32_t ys_ilerp,
                              const float min, const float max,
                              const qint32* const ys_input_lower_ptr,
                              const qint32* const ys_input_upper_ptr,
@@ -450,7 +458,7 @@ inline void OutputLerp32x4x3(const InterpolationCache<int32>& xs,
 
 #else
   for (int x = x_start; x < x_start + 4; ++x) {
-    OutputLerpForChannels<RESOLUTION, qint32, int32, int64>(
+    OutputLerpForChannels<RESOLUTION, qint32, int32, int64_t>(
         xs, x, ys_ilerp, 3, min, max, ys_input_lower_ptr, ys_input_upper_ptr,
         output_y_ptr);
   }
@@ -459,34 +467,35 @@ inline void OutputLerp32x4x3(const InterpolationCache<int32>& xs,
 
 template <typename T>
 void ResizeImageReference(typename TTypes<T, 4>::ConstTensor images,
-                          const int batch_size, const int64 in_height,
-                          const int64 in_width, const int64 out_height,
-                          const int64 out_width, const int channels,
+                          const int batch_size, const int64_t in_height,
+                          const int64_t in_width, const int64_t out_height,
+                          const int64_t out_width, const int channels,
                           const float height_scale, const float width_scale,
                           const float in_min, const float in_max,
+                          const bool half_pixel_centers,
                           typename TTypes<T, 4>::Tensor* output) {
   CHECK_NOTNULL(output);
 
-  const InterpolationCache<float> xs =
-      BuildLerpCache<float>(out_width, in_width, width_scale, channels, 0);
-  const InterpolationCache<float> ys =
-      BuildLerpCache<float>(out_height, in_height, height_scale, 1, 0);
+  const InterpolationCache<float> xs = BuildLerpCache<float>(
+      out_width, in_width, width_scale, channels, 0, half_pixel_centers);
+  const InterpolationCache<float> ys = BuildLerpCache<float>(
+      out_height, in_height, height_scale, 1, 0, half_pixel_centers);
 
-  const int64 in_row_size = in_width * channels;
-  const int64 in_batch_num_values = in_height * in_row_size;
-  const int64 out_row_size = out_width * channels;
+  const int64_t in_row_size = in_width * channels;
+  const int64_t in_batch_num_values = in_height * in_row_size;
+  const int64_t out_row_size = out_width * channels;
 
   const T* input_b_ptr = images.data();
 
   T* output_y_ptr = output->data();
   for (int b = 0; b < batch_size; ++b) {
-    for (int64 y = 0; y < out_height; ++y) {
+    for (int64_t y = 0; y < out_height; ++y) {
       const T* ys_input_lower_ptr = input_b_ptr + ys.lower[y] * in_row_size;
       const T* ys_input_upper_ptr = input_b_ptr + ys.upper[y] * in_row_size;
       const float ys_lerp = ys.lerp[y];
-      for (int64 x = 0; x < out_width; ++x) {
-        const int64 xs_lower = xs.lower[x];
-        const int64 xs_upper = xs.upper[x];
+      for (int64_t x = 0; x < out_width; ++x) {
+        const int64_t xs_lower = xs.lower[x];
+        const int64_t xs_upper = xs.upper[x];
         const float xs_lerp = xs.lerp[x];
         for (int c = 0; c < channels; ++c) {
           const T top_left = ys_input_lower_ptr[xs_lower + c];
@@ -507,24 +516,26 @@ void ResizeImageReference(typename TTypes<T, 4>::ConstTensor images,
 
 template <typename T>
 void ResizeImage(typename TTypes<T, 4>::ConstTensor images,
-                 const int batch_size, const int64 in_height,
-                 const int64 in_width, const int64 out_height,
-                 const int64 out_width, const int channels,
+                 const int batch_size, const int64_t in_height,
+                 const int64_t in_width, const int64_t out_height,
+                 const int64_t out_width, const int channels,
                  const float height_scale, const float width_scale,
                  const float in_min, const float in_max,
+                 const bool half_pixel_centers,
                  typename TTypes<T, 4>::Tensor* output) {
   ResizeImageReference<T>(images, batch_size, in_height, in_width, out_height,
                           out_width, channels, height_scale, width_scale,
-                          in_min, in_max, output);
+                          in_min, in_max, half_pixel_centers, output);
 }
 
 template <>
 void ResizeImage<qint32>(typename TTypes<qint32, 4>::ConstTensor images,
-                         const int batch_size, const int64 in_height,
-                         const int64 in_width, const int64 out_height,
-                         const int64 out_width, const int channels,
+                         const int batch_size, const int64_t in_height,
+                         const int64_t in_width, const int64_t out_height,
+                         const int64_t out_width, const int channels,
                          const float height_scale, const float width_scale,
                          const float in_min, const float in_max,
+                         const bool half_pixel_centers,
                          typename TTypes<qint32, 4>::Tensor* output) {
   // 30 is maximum resolution for signed int.
   constexpr int RESOLUTION = 30;
@@ -532,29 +543,30 @@ void ResizeImage<qint32>(typename TTypes<qint32, 4>::ConstTensor images,
 
   CHECK_NOTNULL(output);
 
-  const InterpolationCache<int32> xs = BuildLerpCache<int32>(
-      out_width, in_width, width_scale, channels, RESOLUTION);
-  const InterpolationCache<int32> ys =
-      BuildLerpCache<int32>(out_height, in_height, height_scale, 1, RESOLUTION);
+  const InterpolationCache<int32> xs =
+      BuildLerpCache<int32>(out_width, in_width, width_scale, channels,
+                            RESOLUTION, half_pixel_centers);
+  const InterpolationCache<int32> ys = BuildLerpCache<int32>(
+      out_height, in_height, height_scale, 1, RESOLUTION, half_pixel_centers);
 
-  const int64 in_row_size = in_width * channels;
-  const int64 in_batch_num_values = in_height * in_row_size;
-  const int64 out_row_size = out_width * channels;
+  const int64_t in_row_size = in_width * channels;
+  const int64_t in_batch_num_values = in_height * in_row_size;
+  const int64_t out_row_size = out_width * channels;
 
   const qint32* input_b_ptr = images.data();
 
   qint32* output_y_ptr = output->data();
 
   for (int b = 0; b < batch_size; ++b) {
-    for (int64 y = 0; y < out_height; ++y) {
+    for (int64_t y = 0; y < out_height; ++y) {
       const qint32* ys_input_lower_ptr =
           input_b_ptr + ys.lower[y] * in_row_size;
       const qint32* ys_input_upper_ptr =
           input_b_ptr + ys.upper[y] * in_row_size;
-      const int32 ys_ilerp = ys.ilerp[y];
+      const int32_t ys_ilerp = ys.ilerp[y];
       // Optimized for channels == 1 or channels == 3 as this
       // is typical channels.
-      int64 x = 0;
+      int64_t x = 0;
       if (channels == 1) {
         for (; x < out_width - SIMD_STEP + 1; x += SIMD_STEP) {
           OutputLerp32x4x1<RESOLUTION>(xs, x, ys_ilerp, in_min, in_max,
@@ -569,7 +581,7 @@ void ResizeImage<qint32>(typename TTypes<qint32, 4>::ConstTensor images,
         }
       }
       for (; x < out_width; ++x) {
-        OutputLerpForChannels<RESOLUTION, qint32, int32, int64>(
+        OutputLerpForChannels<RESOLUTION, qint32, int32, int64_t>(
             xs, x, ys_ilerp, channels, in_min, in_max, ys_input_lower_ptr,
             ys_input_upper_ptr, output_y_ptr);
       }
@@ -581,11 +593,12 @@ void ResizeImage<qint32>(typename TTypes<qint32, 4>::ConstTensor images,
 
 template <>
 void ResizeImage<quint8>(typename TTypes<quint8, 4>::ConstTensor images,
-                         const int batch_size, const int64 in_height,
-                         const int64 in_width, const int64 out_height,
-                         const int64 out_width, const int channels,
+                         const int batch_size, const int64_t in_height,
+                         const int64_t in_width, const int64_t out_height,
+                         const int64_t out_width, const int channels,
                          const float height_scale, const float width_scale,
                          const float in_min, const float in_max,
+                         const bool half_pixel_centers,
                          typename TTypes<quint8, 4>::Tensor* output) {
   // 7 is maximum resolution for unsigned byte.
   constexpr int RESOLUTION = 7;
@@ -593,31 +606,32 @@ void ResizeImage<quint8>(typename TTypes<quint8, 4>::ConstTensor images,
 
   CHECK_NOTNULL(output);
 
-  const InterpolationCache<int16> xs = BuildLerpCache<int16>(
-      out_width, in_width, width_scale, channels, RESOLUTION);
-  const InterpolationCache<int16> ys =
-      BuildLerpCache<int16>(out_height, in_height, height_scale, 1, RESOLUTION);
+  const InterpolationCache<int16> xs =
+      BuildLerpCache<int16>(out_width, in_width, width_scale, channels,
+                            RESOLUTION, half_pixel_centers);
+  const InterpolationCache<int16> ys = BuildLerpCache<int16>(
+      out_height, in_height, height_scale, 1, RESOLUTION, half_pixel_centers);
 
-  const int64 in_row_size = in_width * channels;
-  const int64 in_batch_num_values = in_height * in_row_size;
-  const int64 out_row_size = out_width * channels;
+  const int64_t in_row_size = in_width * channels;
+  const int64_t in_batch_num_values = in_height * in_row_size;
+  const int64_t out_row_size = out_width * channels;
 
   const quint8* input_b_ptr = images.data();
 
   quint8* output_y_ptr = output->data();
 
   for (int b = 0; b < batch_size; ++b) {
-    for (int64 y = 0; y < out_height; ++y) {
+    for (int64_t y = 0; y < out_height; ++y) {
       const quint8* ys_input_lower_ptr =
           input_b_ptr + ys.lower[y] * in_row_size;
       const quint8* ys_input_upper_ptr =
           input_b_ptr + ys.upper[y] * in_row_size;
-      const int32 ys_ilerp = ys.ilerp[y];
+      const int32_t ys_ilerp = ys.ilerp[y];
       // Optimized for channels == 1 or channels == 3 as this
       // is typical channels.
       // TODO(satok): Support more generic NEON optimized implementation
       // for different channels.
-      int64 x = 0;
+      int64_t x = 0;
       if (channels == 1) {
         for (; x < out_width - SIMD_STEP + 1; x += SIMD_STEP) {
           OutputLerp8x8x1<RESOLUTION>(xs, x, ys_ilerp, in_min, in_max,
@@ -646,16 +660,17 @@ template <typename T>
 void ResizeBilinear(const typename TTypes<T, 4>::ConstTensor& images,
                     const float height_scale, const float width_scale,
                     const float in_min, const float in_max,
+                    const bool half_pixel_centers,
                     typename TTypes<T, 4>::Tensor* output) {
   CHECK_NOTNULL(output);
 
   const int batch_size = images.dimension(0);
-  const int64 in_height = images.dimension(1);
-  const int64 in_width = images.dimension(2);
+  const int64_t in_height = images.dimension(1);
+  const int64_t in_width = images.dimension(2);
   const int channels = images.dimension(3);
 
-  const int64 out_height = output->dimension(1);
-  const int64 out_width = output->dimension(2);
+  const int64_t out_height = output->dimension(1);
+  const int64_t out_width = output->dimension(2);
 
   // Handle no-op resizes efficiently.
   if (out_height == in_height && out_width == in_width) {
@@ -666,11 +681,11 @@ void ResizeBilinear(const typename TTypes<T, 4>::ConstTensor& images,
   if (USE_REFERENCE) {
     ResizeImageReference<T>(images, batch_size, in_height, in_width, out_height,
                             out_width, channels, height_scale, width_scale,
-                            in_min, in_max, output);
+                            in_min, in_max, half_pixel_centers, output);
   } else {
     ResizeImage<T>(images, batch_size, in_height, in_width, out_height,
                    out_width, channels, height_scale, width_scale, in_min,
-                   in_max, output);
+                   in_max, half_pixel_centers, output);
   }
 }
 
@@ -682,26 +697,34 @@ class QuantizedResizeBilinearOp : public OpKernel {
   explicit QuantizedResizeBilinearOp(OpKernelConstruction* context)
       : OpKernel(context) {
     OP_REQUIRES_OK(context, context->GetAttr("align_corners", &align_corners_));
+    OP_REQUIRES_OK(
+        context, context->GetAttr("half_pixel_centers", &half_pixel_centers_));
   }
 
   void Compute(OpKernelContext* context) override {
-    const Tensor& input = context->input(0);
-    const float in_min = context->input(2).flat<float>()(0);
-    const float in_max = context->input(3).flat<float>()(0);
+    const auto& in_min_tensor = context->input(2);
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(in_min_tensor.shape()),
+                errors::InvalidArgument("min must be a scalar"));
+    const float in_min = in_min_tensor.flat<float>()(0);
+    const auto& in_max_tensor = context->input(3);
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(in_max_tensor.shape()),
+                errors::InvalidArgument("max must be a scalar"));
+    const float in_max = in_max_tensor.flat<float>()(0);
 
-    ImageResizerState st(align_corners_);
-    st.ValidateAndCreateOutput(context, input);
+    ImageResizerState st(align_corners_, false);
+    st.ValidateAndCreateOutput(context);
 
     if (!context->status().ok()) return;
 
     // Return if the output is empty.
     if (st.output->NumElements() == 0) return;
 
-    typename TTypes<T, 4>::ConstTensor image_data(input.tensor<T, 4>());
+    typename TTypes<T, 4>::ConstTensor image_data(
+        context->input(0).tensor<T, 4>());
     typename TTypes<T, 4>::Tensor output_data(st.output->tensor<T, 4>());
 
     ResizeBilinear<T>(image_data, st.height_scale, st.width_scale, in_min,
-                      in_max, &output_data);
+                      in_max, half_pixel_centers_, &output_data);
     Tensor* out_min = nullptr;
     OP_REQUIRES_OK(context, context->allocate_output(1, {}, &out_min));
     out_min->flat<float>()(0) = in_min;
@@ -713,8 +736,10 @@ class QuantizedResizeBilinearOp : public OpKernel {
 
  private:
   bool align_corners_;
+  bool half_pixel_centers_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(QuantizedResizeBilinearOp<T>);
+  QuantizedResizeBilinearOp<T>(const QuantizedResizeBilinearOp<T>&) = delete;
+  void operator=(const QuantizedResizeBilinearOp<T>&) = delete;
 };
 
 #define REGISTER_CPU_KERNEL(type)                         \

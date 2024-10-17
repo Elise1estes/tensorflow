@@ -44,7 +44,7 @@ RecordYielder::~RecordYielder() {
   delete thread_;
 }
 
-Status RecordYielder::YieldOne(string* value) {
+Status RecordYielder::YieldOne(tstring* value) {
   mutex_lock l(mu_);
   while (!BufEnough() && status_.ok()) {
     buf_enough_.wait(l);
@@ -70,7 +70,7 @@ Status RecordYielder::YieldOne(string* value) {
 
 struct RecordYielder::Shard {
   int index;                      // Shard index.
-  std::vector<string> filenames;  // File names given to this shard.
+  std::vector<tstring> filenames;  // File names given to this shard.
   Notification done;              // Notified when this shard is done.
   Status status;                  // Shard status.
 };
@@ -91,7 +91,7 @@ static Status MatchFiles(const string& patterns,
                       std::make_move_iterator(tmp_filenames.begin()),
                       std::make_move_iterator(tmp_filenames.end()));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void RecordYielder::MainLoop() {
@@ -121,7 +121,7 @@ void RecordYielder::MainLoop() {
 
     // Left-shift the filename list.
     const std::vector<string>::size_type num = filenames.size();
-    int64 shift;
+    int64_t shift;
     if (0 <= opts_.file_shuffle_shift_ratio &&
         opts_.file_shuffle_shift_ratio < 1) {
       shift = opts_.file_shuffle_shift_ratio * num;
@@ -197,10 +197,10 @@ bool RecordYielder::Add(std::vector<string>* values) {
 
 void RecordYielder::ShardLoop(Shard* shard) {
   std::vector<string> values;
-  const int64 kRecords = 16;
+  const int64_t kRecords = 16;
   for (const string& filename : shard->filenames) {
     std::unique_ptr<RandomAccessFile> file;
-    if (ShouldFinish(Status::OK())) break;
+    if (ShouldFinish(absl::OkStatus())) break;
     Status s = Env::Default()->NewRandomAccessFile(filename, &file);
     if (!s.ok()) {
       shard->status = errors::InvalidArgument("Can't open ", filename);
@@ -211,7 +211,7 @@ void RecordYielder::ShardLoop(Shard* shard) {
             opts_.compression_type);
     io::RecordReader rdr(file.get(), options);
     uint64 offset = 0;
-    string record;
+    tstring record;
     while (true) {
       Status s = rdr.ReadRecord(&offset, &record);
       if (s.ok()) {

@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_GRAPH_NODE_BUILDER_H_
-#define TENSORFLOW_GRAPH_NODE_BUILDER_H_
+#ifndef TENSORFLOW_CORE_GRAPH_NODE_BUILDER_H_
+#define TENSORFLOW_CORE_GRAPH_NODE_BUILDER_H_
 
 #include <vector>
 #include "tensorflow/core/framework/node_def_builder.h"
@@ -49,13 +49,14 @@ class NodeBuilder {
   // ArraySlice.
   struct NodeOut {
     // For referencing an existing Node.
-    NodeOut(Node* n, int32 i = 0);
+    NodeOut(Node* n, int32_t i = 0);
+    NodeOut(OutputTensor t);
 
     // For referencing Nodes not in the graph being built. It is
     // useful when preparing a graph for ExtendSession or creating a
     // back edge to a node that hasn't been added to the graph yet,
     // but will be.
-    NodeOut(StringPiece name, int32 i, DataType t);
+    NodeOut(StringPiece name, int32_t i, DataType t);
 
     // Default constructor for std::vector<NodeOut>.
     NodeOut();
@@ -76,7 +77,8 @@ class NodeBuilder {
   // specified by calling the methods below.
   // REQUIRES: The OpDef must satisfy ValidateOpDef().
   NodeBuilder(StringPiece name, StringPiece op_name,
-              const OpRegistryInterface* op_registry = OpRegistry::Global());
+              const OpRegistryInterface* op_registry = OpRegistry::Global(),
+              const NodeDebugInfo* debug = nullptr);
   NodeBuilder(StringPiece name, const OpDef* op_def);
 
   // Create a NodeBuilder from an existing NodeDefBuilder.
@@ -90,15 +92,21 @@ class NodeBuilder {
   NodeBuilder& Input(NodeOut src);
 
   // For inputs that take a list of tensors.
-  NodeBuilder& Input(gtl::ArraySlice<NodeOut> src_list);
+  NodeBuilder& Input(absl::Span<const NodeOut> src_list);
 
   // Require that this node run after src_node(s).
   NodeBuilder& ControlInput(Node* src_node);
-  NodeBuilder& ControlInputs(gtl::ArraySlice<Node*> src_nodes);
+  NodeBuilder& ControlInputs(absl::Span<Node* const> src_nodes);
 
   // Sets the "requested device spec" in the NodeDef (not the
   // "assigned device" in the Node).
   NodeBuilder& Device(StringPiece device_spec);
+
+  // Sets the device name in the "assigned device" field in tensorflow::Node.
+  NodeBuilder& AssignedDevice(StringPiece device);
+
+  // Sets the _XlaCluster attribute in created node to `xla_cluster`.
+  NodeBuilder& XlaCluster(StringPiece xla_cluster);
 
   // Set the value of an attr.  attr_name must match the name of one of
   // attrs defined by the Op, and value must have the corresponding type
@@ -113,7 +121,13 @@ class NodeBuilder {
   // Validates the described node and adds it to *graph, adding edges
   // for all (non-back) inputs.  If created_node is not nullptr,
   // *created_node will be set to the new node (or nullptr on error).
-  Status Finalize(Graph* graph, Node** created_node) const;
+  // If `consume` is true, the builder state will be moved into `node_def`,
+  // and the builder will be left in an undefined state.
+  Status Finalize(Graph* graph, Node** created_node, bool consume = false);
+
+  // Same as `Finalize` above, but using StatusOr to return value. Preferred
+  // form.
+  absl::StatusOr<Node*> Finalize(Graph* graph, bool consume = false);
 
   // Accessors for the values set in the constructor.
   const string& node_name() const { return def_builder_.node_name(); }
@@ -138,9 +152,11 @@ class NodeBuilder {
   bool GetOutputType(const Node* node, int i, DataType* dt);
 
   NodeDefBuilder def_builder_;
+  const OpRegistryInterface* op_registry_;
   std::vector<NodeOut> inputs_;
   std::vector<Node*> control_inputs_;
   std::vector<string> errors_;
+  string assigned_device_;
 };
 
 // IMPLEMENTATION -------------------------------------------------------------
@@ -160,4 +176,4 @@ NodeBuilder& NodeBuilder::Attr(StringPiece attr_name,
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_GRAPH_NODE_BUILDER_H_
+#endif  // TENSORFLOW_CORE_GRAPH_NODE_BUILDER_H_

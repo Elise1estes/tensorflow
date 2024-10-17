@@ -14,13 +14,11 @@
 # ==============================================================================
 """`LinearOperator` that wraps a [batch] matrix."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import math_ops
 from tensorflow.python.ops.linalg import linear_operator
 from tensorflow.python.ops.linalg import linear_operator_util
 from tensorflow.python.util.tf_export import tf_export
@@ -29,6 +27,7 @@ __all__ = ["LinearOperatorFullMatrix"]
 
 
 @tf_export("linalg.LinearOperatorFullMatrix")
+@linear_operator.make_composite_tensor
 class LinearOperatorFullMatrix(linear_operator.LinearOperator):
   """`LinearOperator` that wraps a [batch] matrix.
 
@@ -57,7 +56,7 @@ class LinearOperatorFullMatrix(linear_operator.LinearOperator):
   ==> Shape [2, 4] Tensor
 
   # Create a [2, 3] batch of 4 x 4 linear operators.
-  matrix = tf.random_normal(shape=[2, 3, 4, 4])
+  matrix = tf.random.normal(shape=[2, 3, 4, 4])
   operator = LinearOperatorFullMatrix(matrix)
   ```
 
@@ -132,18 +131,27 @@ class LinearOperatorFullMatrix(linear_operator.LinearOperator):
     Raises:
       TypeError:  If `diag.dtype` is not an allowed type.
     """
+    parameters = dict(
+        matrix=matrix,
+        is_non_singular=is_non_singular,
+        is_self_adjoint=is_self_adjoint,
+        is_positive_definite=is_positive_definite,
+        is_square=is_square,
+        name=name
+    )
 
     with ops.name_scope(name, values=[matrix]):
-      self._matrix = ops.convert_to_tensor(matrix, name="matrix")
+      self._matrix = linear_operator_util.convert_nonref_to_tensor(
+          matrix, name="matrix")
       self._check_matrix(self._matrix)
 
       super(LinearOperatorFullMatrix, self).__init__(
           dtype=self._matrix.dtype,
-          graph_parents=[self._matrix],
           is_non_singular=is_non_singular,
           is_self_adjoint=is_self_adjoint,
           is_positive_definite=is_positive_definite,
           is_square=is_square,
+          parameters=parameters,
           name=name)
 
   def _check_matrix(self, matrix):
@@ -156,28 +164,44 @@ class LinearOperatorFullMatrix(linear_operator.LinearOperator):
         dtypes.complex128,
     ]
 
-    matrix = ops.convert_to_tensor(matrix, name="matrix")
+    matrix = tensor_conversion.convert_to_tensor_v2_with_dispatch(
+        matrix, name="matrix"
+    )
 
     dtype = matrix.dtype
     if dtype not in allowed_dtypes:
-      raise TypeError(
-          "Argument matrix must have dtype in %s.  Found: %s"
-          % (allowed_dtypes, dtype))
+      raise TypeError(f"Argument `matrix` must have dtype in {allowed_dtypes}. "
+                      f"Received: {dtype}.")
 
-    if matrix.get_shape().ndims is not None and matrix.get_shape().ndims < 2:
-      raise ValueError(
-          "Argument matrix must have at least 2 dimensions.  Found: %s"
-          % matrix)
+    if matrix.shape.ndims is not None and matrix.shape.ndims < 2:
+      raise ValueError(f"Argument `matrix` must have at least 2 dimensions. "
+                       f"Received: {matrix}.")
+
+  @property
+  def matrix(self):
+    """The matrix defining this operator."""
+    return self._matrix
 
   def _shape(self):
-    return self._matrix.get_shape()
+    return self._matrix.shape
 
   def _shape_tensor(self):
     return array_ops.shape(self._matrix)
 
   def _matmul(self, x, adjoint=False, adjoint_arg=False):
-    return linear_operator_util.matmul_with_broadcast(
+    return math_ops.matmul(
         self._matrix, x, adjoint_a=adjoint, adjoint_b=adjoint_arg)
+
+  def _solve(self, rhs, adjoint=False, adjoint_arg=False):
+    return self._dense_solve(rhs, adjoint=adjoint, adjoint_arg=adjoint_arg)
 
   def _to_dense(self):
     return self._matrix
+
+  @property
+  def _composite_tensor_fields(self):
+    return ("matrix",)
+
+  @property
+  def _experimental_parameter_ndims_to_matrix_ndims(self):
+    return {"matrix": 2}

@@ -16,9 +16,9 @@ limitations under the License.
 #include <iostream>
 #include <vector>
 
-#include "grpc++/grpc++.h"
-#include "grpc++/security/credentials.h"
-#include "grpc++/server_builder.h"
+#include "grpcpp/grpcpp.h"
+#include "grpcpp/security/credentials.h"
+#include "grpcpp/server_builder.h"
 
 #include "tensorflow/core/distributed_runtime/server_lib.h"
 
@@ -38,8 +38,8 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-Status FillServerDef(const string& cluster_spec, const string& job_name,
-                     int task_index, ServerDef* options) {
+absl::Status FillServerDef(const string& cluster_spec, const string& job_name,
+                           int task_index, ServerDef* options) {
   options->set_protocol("grpc");
   options->set_job_name(job_name);
   options->set_task_index(task_index);
@@ -67,7 +67,7 @@ Status FillServerDef(const string& cluster_spec, const string& job_name,
       my_num_tasks = host_ports.size();
     }
     LOG(INFO) << "Peer " << job_name << " " << num_tasks << " {"
-              << str_util::Join(host_ports, ", ") << "}";
+              << absl::StrJoin(host_ports, ", ") << "}";
   }
   if (my_num_tasks == 0) {
     return errors::InvalidArgument("Job name \"", options->job_name(),
@@ -78,7 +78,7 @@ Status FillServerDef(const string& cluster_spec, const string& job_name,
                                    " is invalid (job \"", options->job_name(),
                                    "\" contains ", my_num_tasks, " tasks");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -113,10 +113,10 @@ int main(int argc, char* argv[]) {
     return -1;
   }
   tensorflow::ServerDef server_def;
-  tensorflow::Status s = tensorflow::FillServerDef(cluster_spec, job_name,
-                                                   task_index, &server_def);
+  absl::Status s = tensorflow::FillServerDef(cluster_spec, job_name, task_index,
+                                             &server_def);
   if (!s.ok()) {
-    std::cerr << "ERROR: " << s.error_message() << std::endl;
+    std::cerr << "ERROR: " << s.message() << std::endl;
     Usage(argv[0]);
     return -1;
   }

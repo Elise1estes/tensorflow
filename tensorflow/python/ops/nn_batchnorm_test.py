@@ -14,12 +14,7 @@
 # ==============================================================================
 """Tests for batch_norm related functionality in tensorflow.ops.nn."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
-from six.moves import xrange  # pylint: disable=redefined-builtin
 
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
@@ -35,7 +30,6 @@ import tensorflow.python.ops.nn_grad  # pylint: disable=unused-import
 from tensorflow.python.platform import test
 
 
-@test_util.with_c_api
 class BatchNormalizationTest(test.TestCase):
 
   def _npBatchNorm(self, x, m, v, beta, gamma, epsilon,
@@ -72,6 +66,7 @@ class BatchNormalizationTest(test.TestCase):
                                        gamma if scale_after_normalization else
                                        None, epsilon)
 
+  @test_util.run_deprecated_v1
   def testBatchNorm(self):
     x_shape = [3, 5, 4, 2]
     param_shape = [2]
@@ -81,7 +76,7 @@ class BatchNormalizationTest(test.TestCase):
     beta_val = np.random.random_sample(param_shape).astype(np.float32)
     gamma_val = np.random.random_sample(param_shape).astype(np.float32)
     for use_gpu in [True, False]:
-      with self.test_session(use_gpu=use_gpu) as sess:
+      with self.cached_session(use_gpu=use_gpu) as sess:
         x = constant_op.constant(x_val, name="x")
         m = constant_op.constant(m_val, name="m")
         v = constant_op.constant(v_val, name="v")
@@ -130,7 +125,7 @@ class BatchNormalizationTest(test.TestCase):
     v_val = np.random.random_sample(param_shape).astype(np.float64)
     beta_val = np.random.random_sample(param_shape).astype(np.float64)
     gamma_val = np.random.random_sample(param_shape).astype(np.float64)
-    with self.test_session():
+    with self.cached_session():
       x = constant_op.constant(x_val, name="x")
       m = constant_op.constant(m_val, name="m")
       v = constant_op.constant(v_val, name="v")
@@ -170,16 +165,20 @@ class BatchNormalizationTest(test.TestCase):
                                       shift_after_normalization, v,
                                       err_tolerance)
 
+  @test_util.run_deprecated_v1
   def testBatchNormInputGradient(self):
     self._testBatchNormGradientInAllNeedConfigs(0, "x")
 
+  @test_util.run_deprecated_v1
   def testBatchNormMeanGradient(self):
     self._testBatchNormGradientInAllNeedConfigs(1, "mean")
 
+  @test_util.run_deprecated_v1
   def testBatchNormVarianceGradient(self):
     self._testBatchNormGradientInAllNeedConfigs(
         2, "variance", err_tolerance=1e-03)
 
+  @test_util.run_deprecated_v1
   def testBatchNormBetaGradient(self):
     # Since beta does not exist when scale_after_normalization=False, we only
     # test for scale_after_normalization=True.
@@ -188,6 +187,7 @@ class BatchNormalizationTest(test.TestCase):
         self._testBatchNormGradient(3, "beta", scale_after_normalization, True,
                                     v)
 
+  @test_util.run_deprecated_v1
   def testBatchNormGammaGradient(self):
     # If scale_after_normalization is False, backprop for gamma in v1
     # will be 0. In version 2 of the API, if scale_after_normalization is False,
@@ -200,6 +200,7 @@ class BatchNormalizationTest(test.TestCase):
       self._testBatchNormGradient(4, "gamma", True, shift_after_normalization,
                                   2)
 
+  @test_util.run_deprecated_v1
   def testBatchNormGradImpl(self):
     x_shape = [7, 5, 4, 6]
     param_shape = [6]
@@ -211,7 +212,7 @@ class BatchNormalizationTest(test.TestCase):
     gamma_val = np.random.random_sample(param_shape).astype(np.float32)
     backprop_val = np.random.random_sample(x_shape).astype(np.float32)
     for use_gpu in [False, True]:
-      with self.test_session(use_gpu=use_gpu) as sess:
+      with self.cached_session(use_gpu=use_gpu) as sess:
         x = constant_op.constant(x_val, name="x")
         m = constant_op.constant(m_val, name="m")
         v = constant_op.constant(v_val, name="v")
@@ -236,15 +237,17 @@ class BatchNormalizationTest(test.TestCase):
           odx, odm, odv, odb, odg = gradients_impl.gradients(
               [on], [x, m, v, beta, gamma], [backprop])
           if scale_after_normalization:
-            all_grads = sess.run([dx, dm, dv, db, dg, odx, odm, odv, odb, odg])
+            all_grads = self.evaluate(
+                [dx, dm, dv, db, dg, odx, odm, odv, odb, odg])
             to_check = ["dx", "dm", "dv", "db", "dg"]
           else:
-            all_grads = sess.run([dx, dm, dv, db, odx, odm, odv, odb])
+            all_grads = self.evaluate([dx, dm, dv, db, odx, odm, odv, odb])
             to_check = ["dx", "dm", "dv", "db"]
           for i, _ in enumerate(to_check):
             self.assertAllClose(
                 all_grads[i + len(to_check)], all_grads[i], atol=0.000001)
 
+  @test_util.run_deprecated_v1
   def testBatchNormKeepDims(self):
     """Test for tf.nn.moments(..., keep_dims=True / False).
 
@@ -260,7 +263,7 @@ class BatchNormalizationTest(test.TestCase):
     beta_val = np.random.random_sample(param_shape).astype(np.float32)
     gamma_val = np.random.random_sample(param_shape).astype(np.float32)
     for use_gpu in [True, False]:
-      with self.test_session(use_gpu=use_gpu) as sess:
+      with self.cached_session(use_gpu=use_gpu) as sess:
         x = constant_op.constant(x_val, name="x")
         m = constant_op.constant(m_val, name="m")
         v = constant_op.constant(v_val, name="v")
@@ -287,19 +290,23 @@ class BatchNormalizationTest(test.TestCase):
                                                shift_after_normalization)
             tf_batch_norm, keep_dims_tf_batch_norm = sess.run(
                 [bn, keep_dims_bn])
-            self.assertEquals(x_shape, tf_batch_norm.shape)
-            self.assertEquals(x_shape, keep_dims_tf_batch_norm.shape)
+            self.assertEqual(x_shape, tf_batch_norm.shape)
+            self.assertEqual(x_shape, keep_dims_tf_batch_norm.shape)
             self.assertAllClose(
                 tf_batch_norm, keep_dims_tf_batch_norm, atol=0.000001)
 
-  def _testBatchNormArbitraryShapes(self, x_shape, param_shape, atol=0.0001):
-    x_val = np.random.random_sample(x_shape).astype(np.float32)
-    m_val = np.random.random_sample(param_shape).astype(np.float32)
-    v_val = np.random.random_sample(param_shape).astype(np.float32)
-    beta_val = np.random.random_sample(param_shape).astype(np.float32)
-    gamma_val = np.random.random_sample(param_shape).astype(np.float32)
+  def _testBatchNormArbitraryShapes(self, x_shape, param_shape, atol=0.0001,
+                                    dtype=dtypes.float32,
+                                    param_dtype=dtypes.float32):
+    numpy_dtype = dtype.as_numpy_dtype
+    numpy_param_dtype = param_dtype.as_numpy_dtype
+    x_val = np.random.random_sample(x_shape).astype(numpy_dtype)
+    m_val = np.random.random_sample(param_shape).astype(numpy_param_dtype)
+    v_val = np.random.random_sample(param_shape).astype(numpy_param_dtype)
+    beta_val = np.random.random_sample(param_shape).astype(numpy_param_dtype)
+    gamma_val = np.random.random_sample(param_shape).astype(numpy_param_dtype)
     for use_gpu in [True, False]:
-      with self.test_session(use_gpu=use_gpu) as sess:
+      with self.cached_session(use_gpu=use_gpu) as sess:
         x = constant_op.constant(x_val, name="x")
         m = constant_op.constant(m_val, name="m")
         v = constant_op.constant(v_val, name="v")
@@ -315,9 +322,9 @@ class BatchNormalizationTest(test.TestCase):
                                               gamma_val, epsilon,
                                               scale_after_normalization,
                                               shift_after_normalization)
-            [tf_batch_norm] = sess.run([bn])
-            self.assertEquals(x_shape, np_batch_norm.shape)
-            self.assertEquals(x_shape, tf_batch_norm.shape)
+            [tf_batch_norm] = self.evaluate([bn])
+            self.assertEqual(x_shape, np_batch_norm.shape)
+            self.assertEqual(x_shape, tf_batch_norm.shape)
             self.assertAllClose(np_batch_norm, tf_batch_norm, atol=atol)
 
   def testBatchNormArbitraryShapes(self):
@@ -332,8 +339,11 @@ class BatchNormalizationTest(test.TestCase):
     self._testBatchNormArbitraryShapes(
         (2, 3, 2, 4, 5), (1, 1, 1, 4, 5), atol=0.005)
 
+  def testBatchNormMixedPrecision(self):
+    self._testBatchNormArbitraryShapes((3, 3), (1, 3), dtype=dtypes.float16,
+                                       param_dtype=dtypes.float32, atol=0.001)
 
-@test_util.with_c_api
+
 class SufficientStatisticsTest(test.TestCase):
 
   def _npSuffStats(self, x, axes, shift, keep_dims):
@@ -345,11 +355,11 @@ class SufficientStatisticsTest(test.TestCase):
       m_ss = np.sum(x, axis=axis, keepdims=keep_dims)
       v_ss = np.sum(x * x, axis=axis, keepdims=keep_dims)
     count = 1.0
-    for d in xrange(x.ndim):
+    for d in range(x.ndim):
       if d in set(axes):
         count *= x.shape[d]
     if not keep_dims:
-      shift = np.squeeze(shift, axis=axis)
+      shift = np.asarray(shift)
     return count, m_ss, v_ss, shift
 
   def _opSuffStats(self, x, axes, shift, keep_dims):
@@ -359,15 +369,15 @@ class SufficientStatisticsTest(test.TestCase):
     x_val = np.random.random_sample(x_shape).astype(np.float32)
     np_c, np_m, np_v, np_s = self._npSuffStats(x_val, axes, shift, keep_dims)
     for use_gpu in [True, False]:
-      with self.test_session(use_gpu=use_gpu) as sess:
+      with self.cached_session(use_gpu=use_gpu) as sess:
         if has_shape:
           x = constant_op.constant(x_val, name="x")
           x.set_shape(x_shape)
           op_c, op_m, op_v, op_s = self._opSuffStats(x, axes, shift, keep_dims)
           if shift:
-            tf_c, tf_m, tf_v, tf_s = sess.run([op_c, op_m, op_v, op_s])
+            tf_c, tf_m, tf_v, tf_s = self.evaluate([op_c, op_m, op_v, op_s])
           else:
-            tf_c, tf_m, tf_v = sess.run([op_c, op_m, op_v])
+            tf_c, tf_m, tf_v = self.evaluate([op_c, op_m, op_v])
         else:
           x = array_ops.placeholder(
               dtype=dtypes.float32, shape=[None] * len(x_shape), name="x")
@@ -384,6 +394,7 @@ class SufficientStatisticsTest(test.TestCase):
         if shift:
           self.assertAllClose(np_s, tf_s, atol=0.000001)
 
+  @test_util.run_deprecated_v1
   def testSuffStats(self):
     for has_shape in [True, False]:
       for keep_dims in [True, False]:
@@ -393,7 +404,6 @@ class SufficientStatisticsTest(test.TestCase):
           self._testSuffStats([1, 2, 3], [0, 2], shift, keep_dims, has_shape)
 
 
-@test_util.with_c_api
 class NormalizeMomentsTest(test.TestCase):
 
   def _npNormalizeMoments(self, counts, mean_ss, variance_ss, shift):
@@ -417,7 +427,7 @@ class NormalizeMomentsTest(test.TestCase):
       shift_v = None
     npm, npv = self._npNormalizeMoments(counts, mean_ss, variance_ss, shift_v)
     for use_gpu in [True, False]:
-      with self.test_session(use_gpu=use_gpu) as sess:
+      with self.cached_session(use_gpu=use_gpu) as sess:
         tf_counts = constant_op.constant(counts, name="counts")
         tf_mean_ss = constant_op.constant(mean_ss, name="mean_ss")
         tf_variance_ss = constant_op.constant(variance_ss, name="variance_ss")
@@ -427,7 +437,7 @@ class NormalizeMomentsTest(test.TestCase):
           tf_shift_v = None
         opm, opv = self._opNormalizeMoments(tf_counts, tf_mean_ss,
                                             tf_variance_ss, tf_shift_v)
-        tfm, tfv = sess.run([opm, opv])
+        tfm, tfv = self.evaluate([opm, opv])
         self.assertAllClose(npm, tfm, atol=0.000001)
         self.assertAllClose(npv, tfv, atol=0.000001)
 
@@ -437,7 +447,6 @@ class NormalizeMomentsTest(test.TestCase):
       self._testNormalizeMoments([2, 3], shift)
 
 
-@test_util.with_c_api
 class MomentsTest(test.TestCase):
 
   def _unweighted_moments(self, x, axes, keep_dims=False, extra_out_grads=None):
@@ -451,7 +460,7 @@ class MomentsTest(test.TestCase):
     return nn_impl.moments(x, axes, keep_dims=keep_dims)
 
   def RunMomentTestWithDynamicShape(self, shape, axes, keep_dims, dtype):
-    with self.test_session():
+    with self.cached_session():
       # shape = [batch, width, height, depth]
       assert len(shape) == 4
 
@@ -478,7 +487,7 @@ class MomentsTest(test.TestCase):
           expected_variance, var.eval(feed_dict={x: x_numpy}))
 
   def RunMomentTest(self, shape, axes, keep_dims, dtype):
-    with self.test_session():
+    with self.cached_session():
       # shape = [batch, width, height, depth]
       assert len(shape) == 4
 
@@ -503,9 +512,10 @@ class MomentsTest(test.TestCase):
       expected_variance = expected_x_squared - expected_mean_squared
 
       # Check that the moments are correct.
-      self.assertAllCloseAccordingToType(expected_mean, mean.eval())
-      self.assertAllCloseAccordingToType(expected_variance, var.eval())
+      self.assertAllCloseAccordingToType(expected_mean, self.evaluate(mean))
+      self.assertAllCloseAccordingToType(expected_variance, self.evaluate(var))
 
+  @test_util.run_deprecated_v1
   def testBasic(self):
     for keep_dims in [False, True]:
       for dtype in [dtypes.float32, dtypes.float16]:
@@ -514,6 +524,7 @@ class MomentsTest(test.TestCase):
         self.RunMomentTestWithDynamicShape(
             shape=[2, 3, 5, 4], axes=[0], keep_dims=keep_dims, dtype=dtype)
 
+  @test_util.run_deprecated_v1
   def testGlobalNormalization(self):
     for keep_dims in [False, True]:
       for dtype in [dtypes.float32, dtypes.float16]:
@@ -528,6 +539,7 @@ class MomentsTest(test.TestCase):
             keep_dims=keep_dims,
             dtype=dtype)
 
+  @test_util.run_deprecated_v1
   def testAxes(self):
     for keep_dims in [False, True]:
       for dtype in [dtypes.float32, dtypes.float16]:
@@ -543,7 +555,7 @@ class MomentsTest(test.TestCase):
             dtype=dtype)
 
   def _testGlobalGradient(self, from_y="mean"):
-    with self.test_session():
+    with self.cached_session():
       x_shape = [3, 5, 4, 2]
       x_val = np.random.random_sample(x_shape).astype(np.float64)
       x = constant_op.constant(x_val)
@@ -568,14 +580,15 @@ class MomentsTest(test.TestCase):
         print("Moments %s gradient err vs input %d = %g" % (from_y, i, err))
         self.assertLess(err, 1e-11)
 
+  @test_util.run_deprecated_v1
   def testMeanGlobalGradient(self):
     self._testGlobalGradient(from_y="mean")
 
+  @test_util.run_deprecated_v1
   def testVarGlobalGradient(self):
     self._testGlobalGradient(from_y="var")
 
 
-@test_util.with_c_api
 class WeightedMomentsTest(MomentsTest):
   """Tests for nn.weighted_moments.
 
@@ -641,7 +654,7 @@ class WeightedMomentsTest(MomentsTest):
                             keep_dims,
                             dtype,
                             dynshapes=False):
-    with self.test_session() as s:
+    with self.cached_session() as s:
       x_numpy = np.random.normal(size=shape).astype(np.float32)
       weights_numpy = np.absolute(  # weights must be positive
           np.random.normal(
@@ -680,6 +693,15 @@ class WeightedMomentsTest(MomentsTest):
       self.assertAllCloseAccordingToType(expected_mean, mean_v)
       self.assertAllCloseAccordingToType(expected_variance, var_v)
 
+  def testAllZeroMasks(self):
+    x = np.random.normal(size=[8, 3, 4]).astype(np.float32)
+    weights = np.zeros(shape=[8, 3, 1]).astype(np.float32)
+    axes = (0, 1)
+
+    mean, var = nn_impl.weighted_moments(
+        x, axes, weights, keep_dims=False)
+    self.assertAllClose(mean, np.zeros(shape=[4]))
+    self.assertAllClose(var, np.zeros(shape=[4]))
 
 if __name__ == "__main__":
   test.main()

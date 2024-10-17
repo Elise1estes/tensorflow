@@ -2,16 +2,15 @@
 # This package provides binaries that convert between multi-line and standard
 # pbtxt (text-serialization of protocol message) files.
 
-package(default_visibility = ["//visibility:private"])
-
-licenses(["notice"])  # Apache 2.0
-
 load("//tensorflow:tensorflow.bzl", "tf_cc_binary")
 
-exports_files([
-    "LICENSE",
-    "placeholder.txt",
-])
+package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    default_visibility = ["//visibility:private"],
+    licenses = ["notice"],
+)
+
+exports_files(["placeholder.txt"])
 
 tf_cc_binary(
     name = "tomlpbtxt",

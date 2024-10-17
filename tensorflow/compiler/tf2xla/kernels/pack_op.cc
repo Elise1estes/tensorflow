@@ -18,20 +18,13 @@ limitations under the License.
 #include <limits>
 #include <vector>
 
-#include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/literal_util.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/register_types.h"
-#include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/framework/tensor_types.h"
-#include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/kernels/bounds_check.h"
-#include "tensorflow/core/kernels/concat_lib.h"
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 namespace {
@@ -43,7 +36,7 @@ class PackOp : public XlaOpKernel {
   }
 
   void Compile(XlaOpKernelContext* ctx) override {
-    std::vector<xla::ComputationDataHandle> values;
+    std::vector<xla::XlaOp> values;
     std::vector<TensorShape> shapes;
     OP_REQUIRES_OK(ctx, ctx->InputList("values", &values, &shapes));
     const int num = values.size();
@@ -69,18 +62,17 @@ class PackOp : public XlaOpKernel {
                                         -expanded_num_dims, ", ",
                                         expanded_num_dims, ")"));
 
-    std::vector<xla::ComputationDataHandle> reshaped_inputs(num);
+    std::vector<xla::XlaOp> reshaped_inputs(num);
 
     TensorShape child_shape(shapes[0]);
     child_shape.InsertDim(axis, 1);
 
     for (int i = 0; i < num; ++i) {
       // Reshape the inputs to have an extra dimension of size 1.
-      reshaped_inputs[i] =
-          ctx->builder()->Reshape(values[i], child_shape.dim_sizes());
+      reshaped_inputs[i] = xla::Reshape(values[i], child_shape.dim_sizes());
     }
 
-    ctx->SetOutput(0, ctx->builder()->ConcatInDim(reshaped_inputs, axis));
+    ctx->SetOutput(0, xla::ConcatInDim(ctx->builder(), reshaped_inputs, axis));
   }
 
  private:

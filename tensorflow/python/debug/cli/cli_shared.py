@@ -13,20 +13,16 @@
 # limitations under the License.
 # ==============================================================================
 """Shared functions and classes for tfdbg command-line interface."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import math
 
 import numpy as np
-import six
 
 from tensorflow.python.debug.cli import command_parser
 from tensorflow.python.debug.cli import debugger_cli_common
 from tensorflow.python.debug.cli import tensor_format
 from tensorflow.python.debug.lib import common
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import gfile
 
@@ -367,13 +363,6 @@ def get_run_start_intro(run_call_count,
   out.extend(
       debugger_cli_common.rich_text_lines_from_rich_line_list(more_lines))
 
-  out.extend(
-      _recommend_command(
-          "invoke_stepper",
-          "Use the node-stepper interface, which allows you to interactively "
-          "step through nodes involved in the graph run() call and "
-          "inspect/modify their values", create_link=True))
-
   out.append("")
 
   out.append_rich_line(RL("For more details, see ") +
@@ -384,8 +373,6 @@ def get_run_start_intro(run_call_count,
   # Make main menu for the run-start intro.
   menu = debugger_cli_common.Menu()
   menu.append(debugger_cli_common.MenuItem("run", "run"))
-  menu.append(debugger_cli_common.MenuItem(
-      "invoke_stepper", "invoke_stepper"))
   menu.append(debugger_cli_common.MenuItem("exit", "exit"))
   out.annotations[debugger_cli_common.MAIN_MENU_KEY] = menu
 
@@ -416,7 +403,9 @@ def get_run_short_description(run_call_count,
 
   description = "run #%d: " % run_call_count
 
-  if isinstance(fetches, (ops.Tensor, ops.Operation, variables.Variable)):
+  if isinstance(
+      fetches, (tensor_lib.Tensor, ops.Operation, variables.Variable)
+  ):
     description += "1 fetch (%s); " % common.get_graph_element_name(fetches)
   else:
     # Could be (nested) list, tuple, dict or namedtuple.
@@ -432,8 +421,8 @@ def get_run_short_description(run_call_count,
     if len(feed_dict) == 1:
       for key in feed_dict:
         description += "1 feed (%s)" % (
-            key if isinstance(key, six.string_types) or not hasattr(key, "name")
-            else key.name)
+            key
+            if isinstance(key, str) or not hasattr(key, "name") else key.name)
     else:
       description += "%d feeds" % len(feed_dict)
 
@@ -451,42 +440,48 @@ def get_error_intro(tf_error):
       sample commands for debugging.
   """
 
-  op_name = tf_error.op.name
+  if hasattr(tf_error, "op") and hasattr(tf_error.op, "name"):
+    op_name = tf_error.op.name
+  else:
+    op_name = None
 
   intro_lines = [
       "--------------------------------------",
       RL("!!! An error occurred during the run !!!", "blink"),
       "",
-      "You may use the following commands to debug:",
   ]
 
   out = debugger_cli_common.rich_text_lines_from_rich_line_list(intro_lines)
 
-  out.extend(
-      _recommend_command("ni -a -d -t %s" % op_name,
-                         "Inspect information about the failing op.",
-                         create_link=True))
-  out.extend(
-      _recommend_command("li -r %s" % op_name,
-                         "List inputs to the failing op, recursively.",
-                         create_link=True))
+  if op_name is not None:
+    out.extend(debugger_cli_common.RichTextLines(
+        ["You may use the following commands to debug:"]))
+    out.extend(
+        _recommend_command("ni -a -d -t %s" % op_name,
+                           "Inspect information about the failing op.",
+                           create_link=True))
+    out.extend(
+        _recommend_command("li -r %s" % op_name,
+                           "List inputs to the failing op, recursively.",
+                           create_link=True))
 
-  out.extend(
-      _recommend_command(
-          "lt",
-          "List all tensors dumped during the failing run() call.",
-          create_link=True))
+    out.extend(
+        _recommend_command(
+            "lt",
+            "List all tensors dumped during the failing run() call.",
+            create_link=True))
+  else:
+    out.extend(debugger_cli_common.RichTextLines([
+        "WARNING: Cannot determine the name of the op that caused the error."]))
 
   more_lines = [
       "",
-      "Op name:    " + op_name,
+      "Op name:    %s" % op_name,
       "Error type: " + str(type(tf_error)),
       "",
       "Details:",
       str(tf_error),
       "",
-      "WARNING: Using client GraphDef due to the error, instead of "
-      "executor GraphDefs.",
       "--------------------------------------",
       "",
   ]

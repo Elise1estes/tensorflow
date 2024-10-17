@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/kernel_benchmark_testlib.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/op.h"
@@ -23,8 +24,11 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
+#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test_benchmark.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/public/session_options.h"
+#include "tensorflow/core/public/version.h"
 
 namespace tensorflow {
 
@@ -35,7 +39,7 @@ class ConstantOpTest : public OpsTestBase {
 
 void ConstantOpTest::PersistentMemoryTrackingTest(bool on_gpu) {
   DataType data_type = DT_INT32;
-  std::initializer_list<int64> dims = {2, 3, 4, 5};
+  std::initializer_list<int64_t> dims = {2, 3, 4, 5};
   Tensor tensor(data_type, TensorShape(dims));
   for (int i = 0; i < 2 * 3 * 4 * 5; ++i) {
     tensor.flat<int32>()(i) = i;
@@ -60,6 +64,7 @@ void ConstantOpTest::PersistentMemoryTrackingTest(bool on_gpu) {
   std::unique_ptr<OpKernel> op(CreateOpKernel(device_type, device.get(),
                                               cpu_allocator(), const_node,
                                               TF_GRAPH_DEF_VERSION, &status));
+  TF_ASSERT_OK(status);
 
   OpKernelContext::Params params;
   params.device = device.get();
@@ -78,16 +83,17 @@ void ConstantOpTest::PersistentMemoryTrackingTest(bool on_gpu) {
   }
 
   // Remove memory leak errors.
-  for (auto allocator_pair : ctx.wrapped_allocators()) {
+  for (auto allocator_pair : ctx.ConsumeWrappedAllocators()) {
     allocator_pair.second->GetRecordsAndUnRef();
   }
 }
 
 TEST_F(ConstantOpTest, PersistentMemoryTracking) {
   PersistentMemoryTrackingTest(false);
-#if GOOGLE_CUDA
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA) || \
+    (defined(TENSORFLOW_USE_ROCM) && TENSORFLOW_USE_ROCM)
   PersistentMemoryTrackingTest(true);
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 }
 
 // Returns graph containing "num" const nodes.  If 'sequential' is
@@ -108,15 +114,23 @@ static Graph* ManyConsts(int num, bool sequential) {
   return g;
 }
 
-static void BM_ManyConsts_Parallel(int iters, int num) {
-  testing::ItemsProcessed(static_cast<int64>(iters) * num);
-  test::Benchmark("cpu", ManyConsts(num, false /* !sequential */)).Run(iters);
+static void BM_ManyConsts_Parallel(::testing::benchmark::State& state) {
+  const int num = state.range(0);
+
+  test::Benchmark("cpu", ManyConsts(num, false /* !sequential */),
+                  /*old_benchmark_api*/ false)
+      .Run(state);
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * num);
 }
 BENCHMARK(BM_ManyConsts_Parallel)->Range(1, 1 << 10);
 
-static void BM_ManyConsts_Sequential(int iters, int num) {
-  testing::ItemsProcessed(static_cast<int64>(iters) * num);
-  test::Benchmark("cpu", ManyConsts(num, true /* sequential */)).Run(iters);
+static void BM_ManyConsts_Sequential(::testing::benchmark::State& state) {
+  const int num = state.range(0);
+
+  test::Benchmark("cpu", ManyConsts(num, true /* sequential */),
+                  /*old_benchmark_api*/ false)
+      .Run(state);
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * num);
 }
 BENCHMARK(BM_ManyConsts_Sequential)->Range(1, 1 << 10);
 

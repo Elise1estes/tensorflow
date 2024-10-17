@@ -13,12 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#if GOOGLE_CUDA
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA) || \
+    (defined(TENSORFLOW_USE_ROCM) && TENSORFLOW_USE_ROCM)
 
 #define EIGEN_USE_GPU
 
-#include "tensorflow/core/kernels/broadcast_to_op.h"
 #include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/kernels/broadcast_to_op.h"
 
 namespace tensorflow {
 
@@ -27,8 +28,11 @@ typedef Eigen::GpuDevice GPUDevice;
 #define INSTANTIATE_GPU_KERNEL(Type) \
   template class functor::BroadcastTo<GPUDevice, Type>;
 TF_CALL_GPU_ALL_TYPES(INSTANTIATE_GPU_KERNEL);
+TF_CALL_int64(INSTANTIATE_GPU_KERNEL);
+TF_CALL_float8_e5m2(INSTANTIATE_GPU_KERNEL);
+TF_CALL_float8_e4m3fn(INSTANTIATE_GPU_KERNEL);
 #undef INSTANTIATE_GPU_KERNEL
 
 }  // namespace tensorflow
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM

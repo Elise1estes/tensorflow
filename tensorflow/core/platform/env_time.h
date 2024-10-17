@@ -18,29 +18,10 @@ limitations under the License.
 #include <stdint.h>
 
 #include "tensorflow/core/platform/types.h"
+#include "tsl/platform/env_time.h"
 
 namespace tensorflow {
-
-/// \brief An interface used by the tensorflow implementation to
-/// access timer related operations.
-class EnvTime {
- public:
-  EnvTime();
-  virtual ~EnvTime() = default;
-
-  /// \brief Returns a default impl suitable for the current operating
-  /// system.
-  ///
-  /// The result of Default() belongs to this library and must never be deleted.
-  static EnvTime* Default();
-
-  /// \brief Returns the number of micro-seconds since the Unix epoch.
-  virtual uint64 NowMicros() = 0;
-
-  /// \brief Returns the number of seconds since the Unix epoch.
-  virtual uint64 NowSeconds() { return NowMicros() / 1000000L; }
-};
-
+using tsl::EnvTime;  // NOLINT
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_PLATFORM_ENV_TIME_H_

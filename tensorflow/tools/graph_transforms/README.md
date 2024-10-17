@@ -111,7 +111,7 @@ unsure, the
 tool can inspect the model and provide guesses about likely input and output nodes,
 as well as other information that's useful for debugging. Here's an example of
 how to use it on the [Inception V3
-graph](http://download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz):
+graph](https://storage.googleapis.com/download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz):
 
 ```bash
 bazel build tensorflow/tools/graph_transforms:summarize_graph
@@ -124,7 +124,7 @@ This section has small guides for some of the most frequently-used
 transformation pipelines, aimed at users who want to quickly accomplish one of
 these tasks. A lot of them will use the Inception V3 model for their examples,
 which can be downloaded from
-[http://download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz](http://download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz).
+[https://storage.googleapis.com/download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz](https://storage.googleapis.com/download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz).
 
 ### Optimizing for Deployment
 
@@ -152,19 +152,17 @@ bazel-bin/tensorflow/tools/graph_transforms/transform_graph \
 
 The batch norm folding is included twice because there are two different flavors
 of batch normalization used in TensorFlow. The older version was implemented
-with a single BatchNormWithGlobalNormalization op, but it was deprecated in
-favor of a more recent approach using individual ops to implement the same
-computation. The two transforms are in there so that both styles are recognized
-and optimized.
+with a single op like BatchNormWithGlobalNormalization or FusedBatchNorm, and
+BatchNormWithGlobalNormalization was deprecated in favor of a more recent
+approach using individual ops to implement the same computation. The two
+transforms are in there so that both styles are recognized and optimized.
 
 ### Fixing Missing Kernel Errors on Mobile
 
 The mobile version of TensorFlow is focused on inference, and so by default the
 list of supported ops (defined in
 [tensorflow/core/kernels/BUILD:android_extended_ops](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/kernels/BUILD)
-for Bazel and
-[tensorflow/contrib/makefile/tf_op_files.txt](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/contrib/makefile/tf_op_files.txt)
-for make builds) doesn't include a lot that are training related. This can cause
+for Bazel doesn't include a lot that are training related. This can cause
 `No OpKernel was registered to support Op` errors when a GraphDef is loaded,
 even if the op isn't going to be executed.
 
@@ -388,7 +386,7 @@ input is collapsed down into a simple constant.
 Args:
 
 *   clear_output_shapes: Clears tensor shape information saved as attributes.
-    Some older graphs containes out-of-date information and may cause import
+    Some older graphs contains out-of-date information and may cause import
     errors. Defaults to true.
 
 Prerequisites: None
@@ -405,13 +403,14 @@ to continue on past transient errors, since this is just an optimization phase.
 Args: None \
 Prerequisites: None
 
-In the early days of TensorFlow, batch normalization was implemented using a
-single monolithic `BatchNormWithGlobalNormalization` op. In modern versions,
-adding batch normalization from Python will give you a series of smaller math
-ops instead, to achieve the same effect without special-purpose code. If you
-have a graph that uses the older-style, this transform will recognize and
-optimize those ops for inference, in the same way that the
-[fold_batch_norms](#fold_batch_norms) transform does for the new approach.
+In the early days of TensorFlow, batch normalization was implemented using
+single monolithic ops like `BatchNormWithGlobalNormalization` or
+`FusedBatchNorm`. In modern versions, adding batch normalization from Python
+will give you a series of smaller math ops instead, to achieve the same effect
+without special-purpose code. If you have a graph that uses the older-style,
+this transform will recognize and optimize those ops for inference, in the same
+way that the [fold_batch_norms](#fold_batch_norms) transform does for the new
+approach.
 
 ### freeze_requantization_ranges
 
@@ -805,7 +804,7 @@ Status RenameOp(const GraphDef& input_graph_def,
       !context.params.count("new_op_name") ||
       (context.params.at("new_op_name").size() != 1)) {
     return errors::InvalidArgument(
-        "remove_nodes expects exactly one 'old_op_name' and 'new_op_name' "
+        "rename_op expects exactly one 'old_op_name' and 'new_op_name' "
         "argument, e.g. rename_op(old_op_name=Mul, new_op_name=Multiply)");
   }
 
@@ -820,7 +819,7 @@ Status RenameOp(const GraphDef& input_graph_def,
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("rename_op", RenameOp);
@@ -1001,7 +1000,7 @@ TF_RETURN_IF_ERROR(ReplaceMatchingOpTypes(
       CopyNodeAttr(conv_node, "strides", "strides", &fused_conv);
       new_nodes->push_back(fused_conv);
 
-      return Status::OK();
+      return OkStatus();
     },
     {}, &replaced_graph_def));
 ```
@@ -1086,7 +1085,7 @@ in the future.
 
 The Graph Transform Tool associates names of transforms with the code to
 implement them using the `REGISTER_GRAPH_TRANSFORM()` macro. This takes a string
-and a function, and automagically registers the transform with the tool. You
+and a function, and automatically registers the transform with the tool. You
 will need to watch out for a few things though:
 
 *   Because it's using global C++ objects in each file under the hood, the

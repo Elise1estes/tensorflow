@@ -36,8 +36,9 @@ class TensorResponse;
 // Interface for talking with the TensorFlow Worker service.
 class WorkerInterface {
  public:
-  virtual void GetStatusAsync(const GetStatusRequest* request,
-                              GetStatusResponse* response,
+  virtual void GetStatusAsync(CallOptions* opts,
+                              const GetStatusRequest* request,
+                              GetStatusResponse* response, bool fail_fast,
                               StatusCallback done) = 0;
 
   virtual void CreateWorkerSessionAsync(
@@ -57,18 +58,17 @@ class WorkerInterface {
                                     StatusCallback done) = 0;
 
   virtual void RunGraphAsync(CallOptions* opts, RunGraphRequestWrapper* request,
-                             MutableRunGraphResponseWrapper* repsonse,
+                             MutableRunGraphResponseWrapper* response,
                              StatusCallback done) = 0;
 
   virtual void RunGraphAsync(CallOptions* opts, const RunGraphRequest* request,
                              RunGraphResponse* response, StatusCallback done) {
-    // TODO(mrry): Convert this to std::bind/std::move if the overhead
-    // of std::function copying becomes too much.
     RunGraphRequestWrapper* wrapped_request = new ProtoRunGraphRequest(request);
     MutableRunGraphResponseWrapper* wrapped_response =
         new NonOwnedProtoRunGraphResponse(response);
     RunGraphAsync(opts, wrapped_request, wrapped_response,
-                  [wrapped_request, wrapped_response, done](const Status& s) {
+                  [wrapped_request, wrapped_response,
+                   done = std::move(done)](const Status& s) {
                     done(s);
                     delete wrapped_request;
                     delete wrapped_response;
@@ -112,9 +112,34 @@ class WorkerInterface {
   virtual void TracingAsync(const TracingRequest* request,
                             TracingResponse* response, StatusCallback done) = 0;
 
+  virtual void RecvBufAsync(CallOptions* opts, const RecvBufRequest* request,
+                            RecvBufResponse* response, StatusCallback done) = 0;
+
+  virtual void CompleteGroupAsync(CallOptions* opts,
+                                  const CompleteGroupRequest* request,
+                                  CompleteGroupResponse* response,
+                                  StatusCallback done) = 0;
+
+  virtual void CompleteInstanceAsync(CallOptions* ops,
+                                     const CompleteInstanceRequest* request,
+                                     CompleteInstanceResponse* response,
+                                     StatusCallback done) = 0;
+
+  virtual void GetStepSequenceAsync(const GetStepSequenceRequest* request,
+                                    GetStepSequenceResponse* response,
+                                    StatusCallback done) = 0;
+
   Status GetStatus(const GetStatusRequest* request,
                    GetStatusResponse* response) {
-    return CallAndWait(&ME::GetStatusAsync, request, response);
+    Status ret;
+    Notification n;
+    GetStatusAsync(/*opts=*/nullptr, request, response, /*fail_fast=*/true,
+                   [&ret, &n](const Status& s) {
+                     ret = s;
+                     n.Notify();
+                   });
+    n.WaitForNotification();
+    return ret;
   }
 
   Status CreateWorkerSession(const CreateWorkerSessionRequest* request,
@@ -154,6 +179,11 @@ class WorkerInterface {
 
   Status Tracing(const TracingRequest* request, TracingResponse* response) {
     return CallAndWait(&ME::TracingAsync, request, response);
+  }
+
+  Status GetStepSequence(const GetStepSequenceRequest* request,
+                         GetStepSequenceResponse* response) {
+    return CallAndWait(&ME::GetStepSequenceAsync, request, response);
   }
 
  protected:

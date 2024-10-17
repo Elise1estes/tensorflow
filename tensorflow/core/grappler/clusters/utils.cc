@@ -15,16 +15,16 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/clusters/utils.h"
 
-#include "third_party/eigen3/Eigen/Core"
+#include "Eigen/Core"  // from @eigen_archive
 
 #if GOOGLE_CUDA
-#include "cuda/include/cuda.h"
-#include "cuda/include/cuda_runtime_api.h"
-#include "cuda/include/cudnn.h"
+#include "third_party/gpus/cuda/include/cuda.h"
+#include "third_party/gpus/cuda/include/cuda_runtime_api.h"
+#include "third_party/gpus/cudnn/cudnn.h"
 #endif
 
-#ifdef EIGEN_USE_LIBXSMM
-#include "include/libxsmm.h"
+#if TENSORFLOW_USE_ROCM
+#include "rocm/include/hip/hip_runtime.h"
 #endif
 
 #include "tensorflow/core/common_runtime/gpu/gpu_id.h"
@@ -32,6 +32,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/platform/byte_order.h"
 #include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/core/platform/mem.h"
 
@@ -52,7 +53,7 @@ DeviceProperties GetLocalCPUInfo() {
   device.set_l2_cache_size(Eigen::l2CacheSize());
   device.set_l3_cache_size(Eigen::l3CacheSize());
 
-  int64 free_mem = port::AvailableRam();
+  int64_t free_mem = port::AvailableRam();
   if (free_mem < INT64_MAX) {
     device.set_memory_size(free_mem);
   }
@@ -62,20 +63,18 @@ DeviceProperties GetLocalCPUInfo() {
 
   (*device.mutable_environment())["eigen"] = strings::StrCat(
       EIGEN_WORLD_VERSION, ".", EIGEN_MAJOR_VERSION, ".", EIGEN_MINOR_VERSION);
-#ifdef EIGEN_USE_LIBXSMM
-  (*device.mutable_environment())["libxsmm"] = LIBXSMM_VERSION;
-#endif
 
   return device;
 }
 
-DeviceProperties GetLocalGPUInfo(CudaGpuId cuda_gpu_id) {
+DeviceProperties GetLocalGPUInfo(PlatformDeviceId platform_device_id) {
   DeviceProperties device;
   device.set_type("GPU");
 
 #if GOOGLE_CUDA
   cudaDeviceProp properties;
-  cudaError_t error = cudaGetDeviceProperties(&properties, cuda_gpu_id.value());
+  cudaError_t error =
+      cudaGetDeviceProperties(&properties, platform_device_id.value());
   if (error != cudaSuccess) {
     device.set_type("UNKNOWN");
     LOG(ERROR) << "Failed to get device properties, error code: " << error;
@@ -101,12 +100,42 @@ DeviceProperties GetLocalGPUInfo(CudaGpuId cuda_gpu_id) {
   // 8 is the number of bits per byte. 2 is accounted for
   // double data rate (DDR).
   device.set_bandwidth(properties.memoryBusWidth / 8 *
-                       properties.memoryClockRate * 2);
+                       properties.memoryClockRate * 2ULL);
 
   (*device.mutable_environment())["architecture"] =
       strings::StrCat(properties.major, ".", properties.minor);
   (*device.mutable_environment())["cuda"] = strings::StrCat(CUDA_VERSION);
   (*device.mutable_environment())["cudnn"] = strings::StrCat(CUDNN_VERSION);
+
+#elif TENSORFLOW_USE_ROCM
+  hipDeviceProp_t properties;
+  hipError_t error =
+      hipGetDeviceProperties(&properties, platform_device_id.value());
+  if (error != hipSuccess) {
+    device.set_type("UNKNOWN");
+    LOG(ERROR) << "Failed to get device properties, error code: " << error;
+    return device;
+  }
+
+  // ROCM TODO review if numbers here are valid
+  device.set_vendor("Advanced Micro Devices, Inc");
+  device.set_model(properties.name);
+  device.set_frequency(properties.clockRate * 1e-3);
+  device.set_num_cores(properties.multiProcessorCount);
+  device.set_num_registers(properties.regsPerBlock);
+  device.set_l1_cache_size(16 * 1024);
+  device.set_l2_cache_size(properties.l2CacheSize);
+  device.set_l3_cache_size(0);
+  device.set_shared_memory_size_per_multiprocessor(
+      properties.maxSharedMemoryPerMultiProcessor);
+  device.set_memory_size(properties.totalGlobalMem);
+  // 8 is the number of bits per byte. 2 is accounted for
+  // double data rate (DDR).
+  device.set_bandwidth(properties.memoryBusWidth / 8 *
+                       properties.memoryClockRate * 2ULL);
+
+  (*device.mutable_environment())["architecture"] =
+      strings::StrCat("gfx", properties.gcnArchName);
 #endif
 
   return device;
@@ -120,16 +149,17 @@ DeviceProperties GetDeviceInfo(const DeviceNameUtils::ParsedName& device) {
     return GetLocalCPUInfo();
   } else if (device.type == "GPU") {
     if (device.has_id) {
-      TfGpuId tf_gpu_id(device.id);
-      CudaGpuId cuda_gpu_id;
-      Status s = GpuIdManager::TfToCudaGpuId(tf_gpu_id, &cuda_gpu_id);
+      TfDeviceId tf_device_id(device.id);
+      PlatformDeviceId platform_device_id;
+      absl::Status s =
+          GpuIdManager::TfToPlatformDeviceId(tf_device_id, &platform_device_id);
       if (!s.ok()) {
         LOG(ERROR) << s;
         return unknown;
       }
-      return GetLocalGPUInfo(cuda_gpu_id);
+      return GetLocalGPUInfo(platform_device_id);
     } else {
-      return GetLocalGPUInfo(CudaGpuId(0));
+      return GetLocalGPUInfo(PlatformDeviceId(0));
     }
   }
   return unknown;

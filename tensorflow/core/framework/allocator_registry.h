@@ -13,67 +13,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-// Classes to maintain a static registry of memory allocators
+// Classes to maintain a static registry of memory allocator factories.
 #ifndef TENSORFLOW_CORE_FRAMEWORK_ALLOCATOR_REGISTRY_H_
 #define TENSORFLOW_CORE_FRAMEWORK_ALLOCATOR_REGISTRY_H_
 
 #include <string>
 #include <vector>
 
+#include "xla/tsl/framework/allocator_registry.h"
 #include "tensorflow/core/framework/allocator.h"
+#include "tensorflow/core/platform/macros.h"
+#include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/numa.h"
 
 namespace tensorflow {
 
-// A global AllocatorRegistry is used to hold allocators for CPU backends
-class AllocatorRegistry {
- public:
-  // Add an allocator to the registry.  Caller releases ownership of
-  // 'allocator'.
-  void Register(const string& name, int priority, Allocator* allocator);
-
-  // Return allocator with highest priority
-  // If multiple allocators have the same high priority, return one of them
-  Allocator* GetAllocator();
-
-  // Returns the global registry of allocators.
-  static AllocatorRegistry* Global();
-
- private:
-  typedef struct {
-    string name;
-    int priority;
-    Allocator* allocator;  // not owned
-  } AllocatorRegistryEntry;
-
-  // Returns the Allocator registered for 'name' and 'priority',
-  // or 'nullptr' if not found.
-  Allocator* GetRegisteredAllocator(const string& name, int priority);
-
-  std::vector<AllocatorRegistryEntry> allocators_;
-  Allocator* m_curr_allocator_;  // not owned
-};
-
-namespace allocator_registration {
-
-class AllocatorRegistration {
- public:
-  AllocatorRegistration(const string& name, int priority,
-                        Allocator* allocator) {
-    AllocatorRegistry::Global()->Register(name, priority, allocator);
-  }
-};
-
-}  // namespace allocator_registration
-
-#define REGISTER_MEM_ALLOCATOR(name, priority, allocator) \
-  REGISTER_MEM_ALLOCATOR_UNIQ_HELPER(__COUNTER__, name, priority, allocator)
-
-#define REGISTER_MEM_ALLOCATOR_UNIQ_HELPER(ctr, name, priority, allocator) \
-  REGISTER_MEM_ALLOCATOR_UNIQ(ctr, name, priority, allocator)
-
-#define REGISTER_MEM_ALLOCATOR_UNIQ(ctr, name, priority, allocator) \
-  static allocator_registration::AllocatorRegistration              \
-      register_allocator_##ctr(name, priority, new allocator)
+// NOLINTBEGIN(misc-unused-using-decls)
+using tsl::AllocatorFactory;
+using tsl::AllocatorFactoryRegistration;
+using tsl::AllocatorFactoryRegistry;
+using tsl::ProcessStateInterface;
+// NOLINTEND(misc-unused-using-decls)
 
 }  // namespace tensorflow
 

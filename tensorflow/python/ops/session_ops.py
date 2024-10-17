@@ -13,38 +13,31 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Tensor Handle Operations. See the @{$python/session_ops} guide.
-
-@@get_session_handle
-@@get_session_tensor
-@@delete_session_tensor
-"""
+"""Tensor Handle Operations."""
 
 # pylint: disable=g-bad-name
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import numpy as np
 
 from tensorflow.core.framework import resource_handle_pb2
-from tensorflow.python import pywrap_tensorflow_internal
+from tensorflow.python.client import pywrap_tf_session
 from tensorflow.python.framework import device as pydev
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_data_flow_ops
 from tensorflow.python.util import compat
+from tensorflow.python.util import numpy_compat
 from tensorflow.python.util.tf_export import tf_export
 
 
 def encode_resource_handle(resource_handle):
   """Encode a ResourceHandle proto as custom numpy struct type."""
-  return np.asarray(bytearray(resource_handle.SerializeToString()),
-                    dtype=dtypes.np_resource)
+  return numpy_compat.np_asarray(
+      bytearray(resource_handle.SerializeToString()), dtype=dtypes.np_resource
+  )
 
 
-class TensorHandle(object):
+class TensorHandle:
   """Represents a handle for a live tensor in a session."""
 
   def __init__(self, handle, dtype, session):
@@ -76,8 +69,7 @@ class TensorHandle(object):
     if not self._resource_handle:
       self._resource_handle = resource_handle_pb2.ResourceHandleProto()
       self._resource_handle.device = self._handle.split(";")[-1]
-      self._resource_handle.container = (
-          pywrap_tensorflow_internal.TENSOR_HANDLE_KEY)
+      self._resource_handle.container = (pywrap_tf_session.TENSOR_HANDLE_KEY)
       self._resource_handle.name = self._handle
     return self._resource_handle
 
@@ -141,7 +133,7 @@ class TensorHandle(object):
     return feeder.op.name + ";" + TensorHandle._get_reader_key(handle)
 
 
-@tf_export("get_session_handle")
+@tf_export(v1=["get_session_handle"])
 def get_session_handle(data, name=None):
   """Return the handle of `data`.
 
@@ -167,16 +159,16 @@ def get_session_handle(data, name=None):
 
   ```python
   c = tf.multiply(a, b)
-  h = tf.get_session_handle(c)
+  h = tf.compat.v1.get_session_handle(c)
   h = sess.run(h)
 
-  p, a = tf.get_session_tensor(h.handle, tf.float32)
+  p, a = tf.compat.v1.get_session_tensor(h.handle, tf.float32)
   b = tf.multiply(a, 10)
   c = sess.run(b, feed_dict={p: h.handle})
   ```
 
   """
-  if not isinstance(data, ops.Tensor):
+  if not isinstance(data, tensor_lib.Tensor):
     raise TypeError("`data` must be of type Tensor.")
 
   # Colocate this operation with data.
@@ -184,7 +176,7 @@ def get_session_handle(data, name=None):
     return gen_data_flow_ops.get_session_handle(data, name=name)
 
 
-@tf_export("get_session_tensor")
+@tf_export(v1=["get_session_tensor"])
 def get_session_tensor(handle, dtype, name=None):
   """Get the tensor of type `dtype` by feeding a tensor handle.
 
@@ -208,10 +200,10 @@ def get_session_tensor(handle, dtype, name=None):
 
   ```python
   c = tf.multiply(a, b)
-  h = tf.get_session_handle(c)
+  h = tf.compat.v1.get_session_handle(c)
   h = sess.run(h)
 
-  p, a = tf.get_session_tensor(h.handle, tf.float32)
+  p, a = tf.compat.v1.get_session_tensor(h.handle, tf.float32)
   b = tf.multiply(a, 10)
   c = sess.run(b, feed_dict={p: h.handle})
   ```
@@ -225,7 +217,7 @@ def get_session_tensor(handle, dtype, name=None):
   return (holder, tensor)
 
 
-@tf_export("delete_session_tensor")
+@tf_export(v1=["delete_session_tensor"])
 def delete_session_tensor(handle, name=None):
   """Delete the tensor for the given tensor handle.
 

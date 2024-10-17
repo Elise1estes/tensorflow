@@ -25,9 +25,9 @@ using shape_inference::ShapeHandle;
 namespace {
 
 Status CandidateSamplerShapeFn(InferenceContext* c) {
-  int64 num_sampled;
+  int64_t num_sampled;
   TF_RETURN_IF_ERROR(c->GetAttr("num_sampled", &num_sampled));
-  int64 num_true;
+  int64_t num_true;
   TF_RETURN_IF_ERROR(c->GetAttr("num_true", &num_true));
 
   ShapeHandle true_classes_shape;
@@ -38,7 +38,7 @@ Status CandidateSamplerShapeFn(InferenceContext* c) {
   c->set_output(0, num_sampled_v);
   c->set_output(1, c->Matrix(batch_size, num_true));
   c->set_output(2, num_sampled_v);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -142,22 +142,25 @@ REGISTER_OP("ComputeAccidentalHits")
     .Attr("seed: int = 0")
     .Attr("seed2: int = 0")
     .SetShapeFn([](InferenceContext* c) {
-      int64 num_true;
+      int64_t num_true;
       TF_RETURN_IF_ERROR(c->GetAttr("num_true", &num_true));
 
-      // Validate true_classes.
+      // Validate true_classes, must be a matrix.
       ShapeHandle true_classes;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 2, &true_classes));
       DimensionHandle unused;
       TF_RETURN_IF_ERROR(
           c->WithValue(c->Dim(true_classes, 1), num_true, &unused));
+      // Validate sampled_candidates, must be a vector.
+      ShapeHandle sampled_candidates;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 1, &sampled_candidates));
 
       // All three outputs are the same shape.
       ShapeHandle v = c->Vector(InferenceContext::kUnknownDim);
       c->set_output(0, v);
       c->set_output(1, v);
       c->set_output(2, v);
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 }  // namespace tensorflow

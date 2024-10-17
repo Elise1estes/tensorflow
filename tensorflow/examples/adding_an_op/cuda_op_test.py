@@ -14,10 +14,6 @@
 # ==============================================================================
 """Test for version 1 of the zero_out op."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import tensorflow as tf
 from tensorflow.examples.adding_an_op import cuda_op
 
@@ -26,9 +22,8 @@ class AddOneTest(tf.test.TestCase):
 
   def test(self):
     if tf.test.is_built_with_cuda():
-      with self.test_session():
-        result = cuda_op.add_one([5, 4, 3, 2, 1])
-        self.assertAllEqual(result.eval(), [6, 5, 4, 3, 2])
+      result = cuda_op.add_one([5, 4, 3, 2, 1])
+      self.assertAllEqual(result, [6, 5, 4, 3, 2])
 
 
 if __name__ == '__main__':

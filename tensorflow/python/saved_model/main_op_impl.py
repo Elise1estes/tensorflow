@@ -14,18 +14,21 @@
 # ==============================================================================
 """SavedModel main op implementation."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import lookup_ops
 from tensorflow.python.ops import variables
+from tensorflow.python.util import deprecation
 from tensorflow.python.util.tf_export import tf_export
 
+_DEPRECATION_MSG = (
+    'This API was designed for TensorFlow v1. See '
+    'https://www.tensorflow.org/guide/migrate for instructions on how to '
+    'migrate your code to TensorFlow v2.')
 
-@tf_export('saved_model.main_op.main_op')
+
+@tf_export(v1=['saved_model.main_op.main_op'])
+@deprecation.deprecated(None, _DEPRECATION_MSG)
 def main_op():
   """Returns a main op to init variables and tables.
 
@@ -42,7 +45,9 @@ def main_op():
 
 
 # TODO(sukritiramesh): Integrate with Saver for complete restore functionality.
-@tf_export('saved_model.main_op.main_op_with_restore')
+@tf_export(v1=['saved_model.main_op_with_restore',
+               'saved_model.main_op.main_op_with_restore'])
+@deprecation.deprecated(None, _DEPRECATION_MSG)
 def main_op_with_restore(restore_op_name):
   """Returns a main op to init variables, tables and restore the graph.
 

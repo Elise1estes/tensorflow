@@ -17,11 +17,22 @@ limitations under the License.
 // and feed them as inputs to Grappler. This can be used for quick experiments
 // or to derive small regression tests.
 
-#include "tensorflow/cc/ops/standard_ops.h"
-
-#include "tensorflow/core/framework/graph.pb.h"
-#include "tensorflow/core/grappler/grappler_item.h"
 #include "tensorflow/core/grappler/inputs/trivial_test_graph_input_yielder.h"
+
+#include "tensorflow/cc/framework/ops.h"
+#include "tensorflow/cc/framework/scope.h"
+#include "tensorflow/cc/ops/data_flow_ops.h"
+#include "tensorflow/cc/ops/math_ops.h"
+#include "tensorflow/cc/ops/random_ops.h"
+#include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/grappler/grappler_item.h"
+#include "tensorflow/core/platform/strcat.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/protobuf/queue_runner.pb.h"
+#include "tsl/platform/status.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -47,11 +58,11 @@ GraphDef CreateGraphDef(int num_stages, int width, int tensor_size,
     std::vector<Output> this_stage;
     for (int j = 0; j < width; j++) {
       if (last_stage.size() == 1) {
-        Output unary_op = Square(
-            s.WithDevice(
-                device_names[use_multiple_devices ? j % device_names.size()
-                                                  : 0]),
-            last_stage[0]);
+        Output unary_op =
+            Sign(s.WithDevice(
+                     device_names[use_multiple_devices ? j % device_names.size()
+                                                       : 0]),
+                 last_stage[0]);
         this_stage.push_back(unary_op);
       } else {
         Output combine =

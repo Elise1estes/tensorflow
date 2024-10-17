@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_HISTOGRAM_OP_H_
-#define TENSORFLOW_HISTOGRAM_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_HISTOGRAM_OP_H_
+#define TENSORFLOW_CORE_KERNELS_HISTOGRAM_OP_H_
 
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
@@ -29,10 +29,10 @@ struct HistogramFixedWidthFunctor {
   static Status Compute(OpKernelContext* context,
                         const typename TTypes<T, 1>::ConstTensor& values,
                         const typename TTypes<T, 1>::ConstTensor& value_range,
-                        int32 nbins, typename TTypes<Tout, 1>::Tensor& out);
+                        int32_t nbins, typename TTypes<Tout, 1>::Tensor& out);
 };
 
 }  // end namespace functor
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_HISTOGRAM_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_HISTOGRAM_OP_H_

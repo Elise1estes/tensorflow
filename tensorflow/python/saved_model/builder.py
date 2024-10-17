@@ -19,17 +19,7 @@ enables systems to produce, consume, or transform TensorFlow Models.
 
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 # pylint: disable=unused-import
+from tensorflow.python.saved_model.builder_impl import _SavedModelBuilder
 from tensorflow.python.saved_model.builder_impl import SavedModelBuilder
 # pylint: enable=unused-import
-from tensorflow.python.util.all_util import remove_undocumented
-
-
-_allowed_symbols = [
-    "SavedModelBuilder",
-]
-remove_undocumented(__name__, _allowed_symbols)

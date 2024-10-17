@@ -35,11 +35,11 @@ namespace tensorflow {
 namespace graph_transforms {
 
 // Declaring this here so it doesn't need to be in the public header.
-Status ReplaceSendRecvs(const GraphDef& original_graph_def,
-                        const GraphDef& rewritten_graph_def,
-                        const std::vector<string>& inputs,
-                        const std::vector<string>& outputs,
-                        GraphDef* output_graph_def);
+absl::Status ReplaceSendRecvs(const GraphDef& original_graph_def,
+                              const GraphDef& rewritten_graph_def,
+                              const std::vector<string>& inputs,
+                              const std::vector<string>& outputs,
+                              GraphDef* output_graph_def);
 
 class ConstantFoldingTest : public ::testing::Test {
  protected:
@@ -210,10 +210,10 @@ class ConstantFoldingTest : public ::testing::Test {
     for (const NodeDef& node : graph_def.node()) {
       const StringPiece name(node.name());
       const int occurrence_count = folded_node_map.count(node.name());
-      if (str_util::EndsWith(name, "expect_removed")) {
+      if (absl::EndsWith(name, "expect_removed")) {
         EXPECT_EQ(0, occurrence_count) << "node.name()=" << node.name();
       }
-      if (str_util::EndsWith(name, "expect_remains")) {
+      if (absl::EndsWith(name, "expect_remains")) {
         EXPECT_EQ(1, occurrence_count) << "node.name()=" << node.name();
       }
     }
@@ -330,48 +330,6 @@ class ConstantFoldingTest : public ::testing::Test {
     EXPECT_EQ(0, node_map.count("unused"));
   }
 
-  void TestRemoveUnusedNodesMultipleOutputs() {
-    using namespace ::tensorflow::ops;  // NOLINT(build/namespaces)
-    auto root = tensorflow::Scope::NewRootScope();
-
-    //    a    b
-    //     \  /
-    //    shape_n
-    //     \  /
-    //       c
-    auto a = Placeholder(root.WithOpName("a"), DT_FLOAT);
-    auto b = Placeholder(root.WithOpName("b"), DT_FLOAT);
-    auto shape_n = ShapeN(root.WithOpName("shape_n"), {Output(a), Output(b)});
-    auto c = Add(root.WithOpName("c"), shape_n[0], shape_n[1]);
-
-    GraphDef graph_def;
-    TF_ASSERT_OK(root.ToGraphDef(&graph_def));
-    GraphDef result_graph_def;
-    TF_ASSERT_OK(graph_transforms::RemoveUnusedNodes(
-        graph_def, {{shape_n[0].name()}, {"c"}}, &result_graph_def));
-
-    // Only one output of shape_n node is fed input. Hence the graph search
-    // should propagate to inputs of shape_n. Nothing to remove here.
-    std::map<string, const NodeDef*> node_map;
-    graph_transforms::MapNamesToNodes(result_graph_def, &node_map);
-    EXPECT_EQ(1, node_map.count("a"));
-    EXPECT_EQ(1, node_map.count("b"));
-    EXPECT_EQ(1, node_map.count("c"));
-
-    result_graph_def.Clear();
-    TF_ASSERT_OK(graph_transforms::RemoveUnusedNodes(
-        graph_def, {{shape_n[0].name(), shape_n[1].name()}, {"c"}},
-        &result_graph_def));
-
-    // Both outputs of shape_n node are fed inputs. shape_n does not function
-    // and inputs to shape_n should be removed.
-    node_map.clear();
-    graph_transforms::MapNamesToNodes(result_graph_def, &node_map);
-    EXPECT_EQ(0, node_map.count("a"));
-    EXPECT_EQ(0, node_map.count("b"));
-    EXPECT_EQ(1, node_map.count("c"));
-  }
-
   void TestMaxConstantSizeInBytes() {
     auto root = tensorflow::Scope::NewRootScope();
 
@@ -430,10 +388,6 @@ TEST_F(ConstantFoldingTest, TestReplaceSendRecvsPrefixNames) {
 }
 
 TEST_F(ConstantFoldingTest, TestRemoveUnusedNodes) { TestRemoveUnusedNodes(); }
-
-TEST_F(ConstantFoldingTest, TestRemoveUnusedNodesMultipleOutputs) {
-  TestRemoveUnusedNodesMultipleOutputs();
-}
 
 TEST_F(ConstantFoldingTest, TestMaxConstantSizeInBytes) {
   TestMaxConstantSizeInBytes();

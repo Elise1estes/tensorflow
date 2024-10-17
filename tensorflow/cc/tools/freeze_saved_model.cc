@@ -15,16 +15,25 @@ limitations under the License.
 
 #include "tensorflow/cc/tools/freeze_saved_model.h"
 
+#include <iostream>
 #include <queue>
 
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "tensorflow/cc/saved_model/loader.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/versions.pb.h"
-#include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/strings/str_util.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/statusor.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
+#include "tensorflow/core/public/session.h"
+#include "tsl/platform/errors.h"
 
 namespace tensorflow {
 
@@ -41,6 +50,10 @@ void GetTensorNamesFromTensorInfo(const TensorInfo& tensor_info,
     tensor_names->insert(coo_sparse.values_tensor_name());
     tensor_names->insert(coo_sparse.indices_tensor_name());
     tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+  } else if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
   } else {
     tensor_names->insert(tensor_info.name());
   }
@@ -71,6 +84,15 @@ void GetNodeNameToNodeDefMap(
   }
 }
 
+// Strips off the tensor part of the tensor_name to get the node_name.
+const string GetNodeNameFromTensorName(string tensor_name) {
+  if (tensor_name[0] == '^') {
+    tensor_name.erase(0, 1);
+  }
+  std::vector<string> tensor_name_parts = str_util::Split(tensor_name, ':');
+  return tensor_name_parts[0];
+}
+
 // Gets the set of node names needed by `outputs` and the corresponding set of
 // variable nodes to convert.
 void GetReachableNodesAndVariables(
@@ -83,10 +105,8 @@ void GetReachableNodesAndVariables(
       new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"});
 
   std::queue<string> nodes_to_visit;
-  for (const string& tensor_name : outputs) {
-    // We need to strip off the tensor part to get the node name.
-    std::vector<string> tensor_name_parts = str_util::Split(tensor_name, ':');
-    nodes_to_visit.push(tensor_name_parts[0]);
+  for (const string& output_tensor_name : outputs) {
+    nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
   }
   // We do a traversal backwards from the outputs specified in the MetaGraphDef.
   while (!nodes_to_visit.empty()) {
@@ -100,8 +120,8 @@ void GetReachableNodesAndVariables(
     if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
       variable_node_names->insert(node->name());
     }
-    for (const string& input : node->input()) {
-      nodes_to_visit.push(input);
+    for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
     }
   }
 }
@@ -113,10 +133,12 @@ Status GetVariableNameToTensorMap(
     std::unordered_set<string> variable_names_set,
     std::unordered_map<string, Tensor>* variable_name_to_value_map) {
   if (variable_names_set.empty()) {
-    return Status::OK();
+    return absl::OkStatus();
   }
   std::vector<string> variable_names;
+  variable_names.reserve(variable_names_set.size());
   std::vector<string> tensor_names;
+  tensor_names.reserve(variable_names_set.size());
   for (const string& node_name : variable_names_set) {
     variable_names.push_back(node_name);
     NodeDef* node_def = name_to_node_map.at(node_name);
@@ -134,7 +156,7 @@ Status GetVariableNameToTensorMap(
   for (size_t i = 0; i < variable_names.size(); i++) {
     (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Converts a Variable NodeDef into a Constant NodeDef.
@@ -157,6 +179,46 @@ void ConvertReadVariableOpToIdentity(const NodeDef& node,
   identity_node->add_input(node.input(0));
 }
 
+// Returns the name of the VarHandleOp that provides input (possibly indirectly)
+// to node with node_name. A typical indirect chain of nodes (that can occur due
+// to graph inlining) is the following: VarHandleOp -> Identity -> Identity ->
+// ReadVariableOp. Calling the function on any of these nodes would return the
+// name of the VarHandleOp.
+StatusOr<string> GetVarHandleName(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name) {
+  const NodeDef* node = name_to_node_map.at(node_name);
+  while (node->input_size() > 0) {
+    auto parent = name_to_node_map.find(node->input(0));
+    if (parent == name_to_node_map.end()) break;
+    node = parent->second;
+    if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+  }
+  if (node->op() == "VarHandleOp") {
+    return node->name();
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Looks up the variable handle that provides input to node with node_name,
+// and returns the handle name if the handle corresponds to a variable that we
+// want to freeze (i.e. its name is contained in variable_node_names). If there
+// is no such handle in the graph (or we do not want to save that variable)
+// then NotFound error is returned.
+StatusOr<string> GetHandleNameIfNeedsToFreeze(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name, const std::unordered_set<string>& variable_node_names) {
+  StatusOr<string> var_handle_name =
+      GetVarHandleName(name_to_node_map, node_name);
+  if (var_handle_name.ok() && variable_node_names.count(*var_handle_name)) {
+    return var_handle_name;
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
 // Freezes the subgraph of all nodes needed by `outputs`.
 Status FreezeGraphDef(const SavedModelBundle& saved_model_bundle,
                       const std::unordered_set<string>& outputs,
@@ -167,7 +229,7 @@ Status FreezeGraphDef(const SavedModelBundle& saved_model_bundle,
   *frozen_graph_def->mutable_library() = graph_def.library();
   // If the graph is empty there is nothing left to do.
   if (graph_def.node_size() == 0) {
-    return Status::OK();
+    return absl::OkStatus();
   }
   // name_to_node_map is needed to get the inputs from the NodeDef corresponding
   // the a string node name. These inputs are used when doing our backwards
@@ -190,18 +252,32 @@ Status FreezeGraphDef(const SavedModelBundle& saved_model_bundle,
     if (variable_node_names.find(node.name()) != variable_node_names.end()) {
       ConvertVariableToConstant(node, variable_to_value_map[node.name()],
                                 frozen_graph_def->add_node());
+      continue;
     } else if (node.op() == "ReadVariableOp" &&
-               variable_node_names.find(node.input(0)) !=
-                   variable_node_names.end()) {
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
       // If the node is a ReadVariableOp, its input VarHandleOp will be
       // converted to a Constant, so we will need to convert it to an Identity.
       ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
-    } else {
-      // If the node isn't a variable, just copy the node as-is.
-      *frozen_graph_def->add_node() = node;
+      continue;
+    } else if (node.op() == "Identity") {
+      StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
     }
+    // If the node isn't a variable, just copy the node as-is.
+    *frozen_graph_def->add_node() = node;
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -213,7 +289,7 @@ Status FreezeSavedModel(const SavedModelBundle& saved_model_bundle,
   GetSignatureDefsInputsAndOutputs(saved_model_bundle, inputs, outputs);
   TF_RETURN_IF_ERROR(
       FreezeGraphDef(saved_model_bundle, *outputs, frozen_graph_def));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

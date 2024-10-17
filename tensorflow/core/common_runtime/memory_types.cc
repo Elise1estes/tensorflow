@@ -16,6 +16,7 @@ limitations under the License.
 
 #include <utility>
 
+#include "tensorflow/core/framework/device_factory.h"
 #include "tensorflow/core/framework/memory_types.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/graph/node_builder.h"
@@ -23,6 +24,7 @@ limitations under the License.
 #include "tensorflow/core/lib/gtl/map_util.h"
 #include "tensorflow/core/lib/hash/hash.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/util/dump_graph.h"
 
 namespace tensorflow {
 
@@ -47,13 +49,13 @@ struct EndpointEq {
 static Status ProcessMemoryTypes(
     const DeviceType& device_type, const Graph* g,
     const std::function<Status(const Edge*, MemoryType, MemoryType)>& fn) {
-  if (device_type != DEVICE_GPU && device_type != DEVICE_SYCL) {
-    // On non-GPU and non-SYCL devices, HOST_MEMORY and DEVICE_MEMORY are always
-    // compatible.
-    return Status::OK();
+  if (device_type != DEVICE_GPU &&
+      !DeviceFactory::IsPluggableDevice(device_type.type_string())) {
+    // On non-GPU devices, HOST_MEMORY and DEVICE_MEMORY are always compatible.
+    return absl::OkStatus();
   }
-  // For GPU and SYCL device, HOST_MEMORY and DEVICE_MEMORY is not
-  // compatible. I.e., a conversion/transfer must be done.
+  // For GPU, HOST_MEMORY and DEVICE_MEMORY is not compatible. I.e., a
+  // conversion/transfer must be done.
   //
   // {node id, slot id} -> memory type.
   typedef std::unordered_map<Endpoint, MemoryType, EndpointHash, EndpointEq>
@@ -87,20 +89,21 @@ static Status ProcessMemoryTypes(
             << dm;
     TF_RETURN_IF_ERROR(fn(e, sm, dm));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 Status ValidateMemoryTypes(const DeviceType& device_type, const Graph* g) {
   return ProcessMemoryTypes(
       device_type, g, [](const Edge* e, MemoryType sm, MemoryType dm) {
         if (sm == dm) {
-          return Status::OK();
+          return absl::OkStatus();
         }
-        return errors::Internal(
-            "Memory type mismatch (", sm, " ", dm,
-            ") between :", e->src()->id(), ":", e->src_output(), " and ",
-            e->dst()->id(), ":", e->dst_input(), " : from ",
-            e->src()->DebugString(), " to ", e->dst()->DebugString());
+        return errors::Internal("Memory type mismatch (", sm, " ", dm,
+                                ") between :", e->src()->id(), ":",
+                                e->src_output(), " and ", e->dst()->id(), ":",
+                                e->dst_input(), " : from ",
+                                FormatNodeForError(*e->src()), " to ",
+                                FormatNodeForError(*e->dst()));
       });
 }
 
@@ -112,7 +115,7 @@ Status ValidateMemoryTypes(const DeviceType& device_type, const Graph* g) {
 // is only used on a TensorFlow graph that is gonna to be executed in
 // a single tf device (hence within a single process).
 static string GetTensorName(const Edge* edge) {
-  static std::atomic<int64> counter(0);
+  static std::atomic<int64_t> counter(0);
   return strings::StrCat("memtype_", counter.fetch_add(1), "_",
                          edge->src()->name());
 }
@@ -127,6 +130,8 @@ static Node* Send(Graph* g, const string& tensor_name,
                   .Attr("send_device_incarnation", 0)  // Do not care.
                   .Attr("recv_device", device_name)
                   .Attr("_hostmem_sendrecv", true)
+                  .Attr("_src", edge->src()->name())
+                  .Attr("_dst", edge->dst()->name())
                   .Finalize(g, &ret));
   return ret;
 }
@@ -142,6 +147,8 @@ static Node* Recv(Graph* g, const string& tensor_name,
           .Attr("send_device_incarnation", 0)
           .Attr("recv_device", device_name)
           .Attr("_hostmem_sendrecv", true)
+          .Attr("_src", edge->src()->name())
+          .Attr("_dst", edge->dst()->name())
           .Finalize(g, &ret));
   return ret;
 }
@@ -157,12 +164,12 @@ Status EnsureMemoryTypes(const DeviceType& device_type,
   TF_RETURN_IF_ERROR(ProcessMemoryTypes(
       device_type, g, [&edges](const Edge* e, MemoryType sm, MemoryType dm) {
         if (sm == dm) {
-          return Status::OK();
+          return absl::OkStatus();
         }
         if (((sm == HOST_MEMORY) && (dm == DEVICE_MEMORY)) ||
             ((sm == DEVICE_MEMORY) && (dm == HOST_MEMORY))) {
           edges.push_back({e, sm, dm});
-          return Status::OK();
+          return absl::OkStatus();
         }
         return errors::Internal("Unexpected memory type pair on an edge: ", sm,
                                 " vs. ", dm);
@@ -198,6 +205,12 @@ Status EnsureMemoryTypes(const DeviceType& device_type,
       g->RemoveEdge(e);
     }
   }
+
+  if (VLOG_IS_ON(2)) {
+    VLOG(2) << "Dumped graph after EnsureMemoryTypes to "
+            << DumpGraphToFile("EnsureMemoryTypes", *g);
+  }
+
   return ValidateMemoryTypes(device_type, g);
 }
 
@@ -209,11 +222,11 @@ Status MemoryTypeForOutput(const DeviceType& device_type, const Graph* g,
                                         &inp_mvec, &out_mvec));
   if (out_mvec.size() <= index) {
     return errors::Internal("Trying to get the memory type for ", index,
-                            "'th output of node ", n->DebugString(),
+                            "'th output of node ", FormatNodeForError(*n),
                             " that has only ", out_mvec.size(), " outputs");
   }
   *memory_type = out_mvec[index];
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // end namespace tensorflow

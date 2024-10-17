@@ -13,12 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_FILL_FUNCTOR_H_
-#define TENSORFLOW_KERNELS_FILL_FUNCTOR_H_
+#ifndef TENSORFLOW_CORE_KERNELS_FILL_FUNCTOR_H_
+#define TENSORFLOW_CORE_KERNELS_FILL_FUNCTOR_H_
 
 #define EIGEN_USE_THREADS
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/framework/types.h"
 
@@ -45,18 +45,11 @@ struct SetZeroFunctor<Eigen::ThreadPoolDevice, T> {
                   typename TTypes<T>::Flat out);
 };
 
-#ifdef TENSORFLOW_USE_SYCL
-// Partial specialization of SetZeroFunctor<Device=Eigen::SyclDevice, T>.
-template <typename T>
-struct SetZeroFunctor<Eigen::SyclDevice, T> {
-  void operator()(const Eigen::SyclDevice& d, typename TTypes<T>::Flat out);
-};
-#endif  // TENSORFLOW_USE_SYCL
 
 template <>
-struct SetZeroFunctor<Eigen::ThreadPoolDevice, string> {
+struct SetZeroFunctor<Eigen::ThreadPoolDevice, tstring> {
   void operator()(const Eigen::ThreadPoolDevice& d,
-                  typename TTypes<string>::Flat out);
+                  typename TTypes<tstring>::Flat out);
 };
 
 template <typename Device, typename T>
@@ -72,21 +65,32 @@ struct SetOneFunctor<Eigen::ThreadPoolDevice, T> {
                   typename TTypes<T>::Flat out);
 };
 
-#ifdef TENSORFLOW_USE_SYCL
-// Partial specialization of SetOneFunctor<Device=Eigen::SyclDevice, T>.
-template <typename T>
-struct SetOneFunctor<Eigen::SyclDevice, T> {
-  void operator()(const Eigen::SyclDevice& d, typename TTypes<T>::Flat out);
-};
-#endif  // TENSORFLOW_USE_SYCL
 
 template <>
-struct SetOneFunctor<Eigen::ThreadPoolDevice, string> {
+struct SetOneFunctor<Eigen::ThreadPoolDevice, tstring> {
   void operator()(const Eigen::ThreadPoolDevice& d,
-                  typename TTypes<string>::Flat out);
+                  typename TTypes<tstring>::Flat out);
+};
+
+template <typename Device, typename T>
+struct SetNanFunctor {
+  void operator()(const Device& d, typename TTypes<T>::Flat out);
+};
+
+// Partial specialization of SetNanFunctor<Device=Eigen::ThreadPoolDevice, T>.
+template <typename T>
+struct SetNanFunctor<Eigen::ThreadPoolDevice, T> {
+  void operator()(const Eigen::ThreadPoolDevice& d,
+                  typename TTypes<T>::Flat out);
+};
+
+template <>
+struct SetNanFunctor<Eigen::ThreadPoolDevice, tstring> {
+  void operator()(const Eigen::ThreadPoolDevice& d,
+                  typename TTypes<tstring>::Flat out);
 };
 
 }  // namespace functor
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_FILL_FUNCTOR_H_
+#endif  // TENSORFLOW_CORE_KERNELS_FILL_FUNCTOR_H_

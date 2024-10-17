@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_GRAPH_SUBGRAPH_H_
-#define TENSORFLOW_GRAPH_SUBGRAPH_H_
+#ifndef TENSORFLOW_CORE_GRAPH_SUBGRAPH_H_
+#define TENSORFLOW_CORE_GRAPH_SUBGRAPH_H_
 
 #include <string>
 
@@ -98,9 +98,9 @@ class PruneRewrite {
 //    - fetch output "node:output_index" does not exist in "*g"
 //    - target node "node" does not exist in "*g"
 Status RewriteGraphForExecution(
-    Graph* g, const gtl::ArraySlice<string>& fed_outputs,
-    const gtl::ArraySlice<string>& fetch_outputs,
-    const gtl::ArraySlice<string>& target_node_names,
+    Graph* g, const absl::Span<const string>& fed_outputs,
+    const absl::Span<const string>& fetch_outputs,
+    const absl::Span<const string>& target_node_names,
     const DeviceAttributes& device_info, bool use_function_convention,
     RewriteGraphMetadata* out_metadata);
 
@@ -109,7 +109,7 @@ Status RewriteGraphForExecution(
 Status RewriteGraphForExecution(
     Graph* g, const std::vector<std::unique_ptr<PruneRewrite>>& feed_rewrites,
     const std::vector<std::unique_ptr<PruneRewrite>>& fetch_rewrites,
-    const gtl::ArraySlice<string>& target_node_names,
+    const absl::Span<const string>& target_node_names,
     RewriteGraphMetadata* out_metadata);
 
 /////////////////////////////////////////////////////////
@@ -120,7 +120,7 @@ Status RewriteGraphForExecution(
 class ArgFeedRewrite : public PruneRewrite {
  public:
   ArgFeedRewrite(const string* endpoint_name,
-                 const DeviceAttributes* device_info, int32 arg_index)
+                 const DeviceAttributes* device_info, int32_t arg_index)
       : PruneRewrite(endpoint_name, device_info), arg_index_(arg_index) {}
   Status AddNode(Graph* g, NodeBuilder::NodeOut feed_tensor,
                  Node** out_node) override;
@@ -141,7 +141,7 @@ class RecvFeedRewrite : public PruneRewrite {
 class RetvalFetchRewrite : public PruneRewrite {
  public:
   RetvalFetchRewrite(const string* endpoint_name,
-                     const DeviceAttributes* device_info, int32 retval_index)
+                     const DeviceAttributes* device_info, int32_t retval_index)
       : PruneRewrite(endpoint_name, device_info), retval_index_(retval_index) {}
   Status AddNode(Graph* g, NodeBuilder::NodeOut fetch_tensor,
                  Node** out_node) override;
@@ -162,4 +162,4 @@ class SendFetchRewrite : public PruneRewrite {
 }  // namespace subgraph
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_GRAPH_SUBGRAPH_H_
+#endif  // TENSORFLOW_CORE_GRAPH_SUBGRAPH_H_
